@@ -1,433 +1,610 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RunSummary } from "../server/runs";
-import { COLOR, FieldList, MONO, dur } from "./ui";
+import { FieldList, MONO, SERVICES, btn, dur, type ServiceId } from "./ui";
 
 /**
- * A run as a graph instead of a list.
+ * A run as a page of cards rather than a timeline.
  *
- * Every event becomes a node on the lane of the service it belongs to —
- * iMessage, the model, tools, the browser, bookings — and the spine connects
- * them in the order they happened. So a turn that texts back reads as a flat
- * line along one lane, while one that calls research and comes back with a
- * card visibly dives into the browser lane and climbs out again. That shape is
- * the point: you see which services a turn touched without reading anything.
+ * Every event becomes a card belonging to a service — iMessage, the model,
+ * tools, the browser, bookings, the shop — carrying whatever that step actually
+ * produced: a page capture, the text it sent, the cart it built. Cards wrap like
+ * text and the wires carry the order, so the shape of a turn is visible without
+ * reading anything, and a long run grows downward instead of off the side.
  *
- * X is real time, not step number, with a minimum gap so bursts stay legible.
- * A 42-second research run is therefore a long edge, which is the honest
- * picture of where a turn actually spends its time.
+ * Some cards are editable. A cart's quantities can be changed here and pushed
+ * back to the chat, which rewrites the store cart and redraws the card in the
+ * thread — see editCart on the agent.
  */
-
-type FitMode = "follow" | "overview";
 
 type GraphEvent = { seq: number; ts: number; level: string; event: string; fields: Record<string, unknown> };
 
-const LANES = [
-  { id: "chat", label: "IMESSAGE" },
-  { id: "model", label: "MODEL" },
-  { id: "tool", label: "TOOLS" },
-  { id: "browser", label: "BROWSER" },
-  { id: "booking", label: "BOOKING" },
-] as const;
-type LaneId = (typeof LANES)[number]["id"];
+type CartItem = { variantId?: string; title: string; quantity: number; price: string; imageUrl?: string };
 
-/** Tools that are really a hand-off to another service belong on its lane. */
-const TOOL_LANE: Record<string, LaneId> = { research: "browser", book_option: "booking" };
-
-const LANE_H = 96;
-const NODE_H = 34;
-/** A node carrying a picture is taller and wider, to hold the thumbnail. */
-const SHOT_H = 58;
-const SHOT_W = 86;
-const MIN_GAP = 34;
-/** Below this, node labels stop being readable. */
-const MIN_K = 0.72;
-const MAX_K = 1.0;
-/** Lane names sit in a gutter the graph scrolls underneath. */
-const GUTTER = 92;
-const TIME_BUDGET = 1500; // px the whole run is spread across before min-gap kicks in
-
-type GNode = {
+type Node = {
   seq: number;
-  lane: LaneId;
-  label: string;
-  sub?: string;
+  svc: ServiceId;
+  title: string;
+  sub: string;
   ts: number;
-  ms?: number;
+  ms: number | null;
   level: string;
   event: string;
   fields: Record<string, unknown>;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /** A page capture or product image to show inside the node, if this step has one. */
-  shot?: string;
 };
 
-/** Which lane an event sits on, and what to call it there. */
-function classify(e: GraphEvent): { lane: LaneId; label: string; sub?: string } {
-  const f = e.fields;
-  const n = (k: string) => (typeof f[k] === "number" ? (f[k] as number) : undefined);
-  const s = (k: string) => (typeof f[k] === "string" ? (f[k] as string) : undefined);
+/** Tools that are really a hand-off to another service belong to it. */
+const TOOL_SVC: Record<string, ServiceId> = {
+  research: "browser",
+  book_option: "booking",
+  check_availability: "booking",
+  shop_search: "shop",
+  shop_build_cart: "shop",
+  shop_drop_cart: "shop",
+};
 
-  if (e.event === "tool" || e.event === "tool.failed" || e.event === "dev.tool") {
-    const tool = s("tool") ?? "tool";
-    return { lane: TOOL_LANE[tool] ?? "tool", label: tool, sub: e.event === "tool.failed" ? "failed" : undefined };
+const CARD_W = 236;
+const GAP_X = 34;
+const GAP_Y = 30;
+
+const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+
+function classify(e: GraphEvent): { svc: ServiceId; title: string; sub: string } {
+  const f = e.fields;
+  if (e.event === "tool" || e.event === "tool.failed") {
+    const tool = str(f.tool) ?? "tool";
+    return { svc: TOOL_SVC[tool] ?? "tool", title: tool, sub: e.event === "tool.failed" ? "failed" : "tool call" };
   }
   if (e.event.startsWith("research.")) {
-    const stage = e.event.slice("research.".length);
+    const st = e.event.slice("research.".length);
     const sub =
-      stage === "finished" ? `${n("candidates") ?? 0} found` :
-      stage === "read" ? s("host") :
-      stage === "searched" ? `${n("hits") ?? 0} hits` :
-      stage === "planned" ? `${(f.queries as string[] | undefined)?.length ?? 0} queries` : undefined;
-    return { lane: "browser", label: `research ${stage}`, sub };
+      st === "finished" ? `${num(f.candidates) ?? 0} venues found` :
+      st === "read" ? (str(f.host) ?? "") :
+      st === "searched" ? `${num(f.hits) ?? 0} results` :
+      st === "planned" ? `${num(f.queries) ?? 0} queries written` : (str(f.brief) ?? "");
+    return { svc: "browser", title: `research ${st}`, sub };
   }
-  if (e.event.startsWith("booking.")) return { lane: "booking", label: e.event.replace(".", " "), sub: s("detail") };
-
+  if (e.event.startsWith("booking.")) {
+    return { svc: "booking", title: e.event.replace(".", " "), sub: str(f.detail) ?? str(f.option) ?? "" };
+  }
+  if (e.event.startsWith("cart.")) {
+    return { svc: "shop", title: e.event.replace(".", " "), sub: str(f.shop) ?? "" };
+  }
   switch (e.event) {
-    case "message.in": return { lane: "chat", label: "inbound", sub: s("from") };
-    case "message.stored": return { lane: "chat", label: "stored", sub: "not addressed" };
-    case "message.out": return { lane: "chat", label: "reply sent", sub: `${n("chars") ?? 0} chars` };
-    case "ticket.out": return { lane: "chat", label: "card sent" };
-    case "card.update": return { lane: "chat", label: "card redrawn", sub: `v${n("version") ?? "?"}` };
-    case "vote.cast": return { lane: "chat", label: "vote", sub: s("source") };
-    case "rsvp": return { lane: "chat", label: "rsvp" };
-    case "turn.start": return { lane: "model", label: "turn", sub: s("llm") };
-    case "turn.end": return { lane: "model", label: s("outcome") ?? "turn end", sub: n("tokens") ? `${n("tokens")} tok` : undefined };
-    case "turn.crashed": return { lane: "model", label: "crashed" };
-    default: return { lane: e.event.startsWith("turn.") ? "model" : "chat", label: e.event.replace(/\./g, " ") };
+    case "message.in": return { svc: "chat", title: "inbound", sub: `from ${str(f.from) ?? "?"}` };
+    case "message.stored": return { svc: "chat", title: "stored", sub: "not addressed — no model call" };
+    case "message.out": return { svc: "chat", title: "reply sent", sub: `${num(f.chars) ?? 0} characters` };
+    case "ticket.out": return { svc: "chat", title: "card sent", sub: `${str(f.kind) ?? ""} card, as a photo` };
+    case "card.update": return { svc: "chat", title: "card redrawn", sub: `version ${num(f.version) ?? "?"}` };
+    case "vote.cast": return { svc: "chat", title: "vote", sub: `by ${str(f.source) ?? "?"}` };
+    case "turn.start": return { svc: "model", title: "turn", sub: str(f.llm) ?? "" };
+    case "turn.end": return { svc: "model", title: str(f.outcome) ?? "turn end", sub: `${num(f.steps) ?? 0} model steps` };
+    case "turn.crashed": return { svc: "model", title: "crashed", sub: str(f.error) ?? "" };
+    default: return { svc: e.event.startsWith("turn.") ? "model" : "chat", title: e.event.replace(/\./g, " "), sub: "" };
   }
 }
 
-const nodeWidth = (label: string, sub?: string) =>
-  Math.max(104, Math.min(210, Math.max(label.length, (sub?.length ?? 0) + 1) * 7 + 30));
+/** One plain sentence: what the agent actually did at this step. */
+function describe(n: Node): string {
+  const f = n.fields;
+  switch (n.event) {
+    case "message.in": return "Someone texted the group, and the agent was addressed.";
+    case "message.stored": return "Chatter the agent was not addressed in. Stored for context, no model call — it costs nothing.";
+    case "message.out": return "The agent texted the group back.";
+    case "ticket.out": return "A card went into the thread as a photo, with tapback voting.";
+    case "card.update": return "The card was redrawn in place, so the tally updates without a new message.";
+    case "turn.start": return "The model woke and read the conversation.";
+    case "turn.end": return f.outcome === "silent"
+      ? "The model had nothing useful to add and stayed quiet."
+      : "The turn finished and the agent had spoken.";
+    case "research.started": return "Research started in the background. The agent says it is looking, then stops — findings arrive later.";
+    case "research.planned": return "The brief became search queries.";
+    case "research.searched": return "The queries ran in a real browser.";
+    case "research.read": return "The browser opened a result page and pulled candidate venues off it.";
+    case "research.finished": return f.ok
+      ? "Research returned real venues. Nothing can be proposed that did not come from here."
+      : "Research failed, so the agent has nothing it is allowed to propose.";
+    case "booking.started": return "A browser session opened to make the reservation for real.";
+    case "booking.finished": return f.ok ? "The reservation went through." : "The booking failed, and the agent has to take that back to the group.";
+    case "cart.updated": return "A cart was built at the store and posted to the chat. The agent cannot pay — a person finishes checkout.";
+    case "cart.edited": return "The cart's quantities were changed from this page, and the card in the thread was redrawn.";
+    case "tool": return ({
+      research: "The model asked for research. It returns at once; the work happens in a workflow.",
+      propose_plan: "The model posted options and opened voting.",
+      send_message: "One line to the chat. Text only reaches the group through this tool, never from raw model output.",
+      get_votes: "The model checked the tally before naming a winner.",
+      book_option: "The model asked for a real reservation — allowed at most once per plan.",
+      shop_search: "The model searched the store's catalog over UCP. No browser involved.",
+      shop_build_cart: "The model built the cart at the store and got back a checkout link.",
+    } as Record<string, string>)[str(f.tool) ?? ""] ?? "The model called a tool.";
+    default: return "";
+  }
+}
 
-/**
- * The picture behind a step, when there is one.
- *
- * Browser work has a real capture: research page reads and the booking pilot
- * both save a JPEG on the chat agent, served from /shot. Shopify has no browser
- * at all — UCP is plain JSON-RPC — but the catalog hands back a product image,
- * so a cart step shows what is going in it.
- */
+/** The picture behind a step: a saved browser frame, or a product image. */
 function shotFor(fields: Record<string, unknown>, chat: string): string | undefined {
-  if (typeof fields.shotId === "string") return `/shot/${encodeURIComponent(chat)}/${fields.shotId}.jpg`;
-  if (typeof fields.imageUrl === "string") return fields.imageUrl;
-  return undefined;
+  const id = str(fields.shotId);
+  if (id) return `/shot/${encodeURIComponent(chat)}/${id}.jpg`;
+  return str(fields.imageUrl);
 }
 
-/** Events -> positioned nodes. Time drives x; the lane drives y. */
-function layout(events: GraphEvent[], chat: string) {
-  const used = new Set<LaneId>();
-  const raw = events.map((e) => {
-    const c = classify(e);
-    used.add(c.lane);
-    return { e, c };
-  });
-  const lanes = LANES.filter((l) => used.has(l.id));
-  const laneY = new Map<LaneId, number>(lanes.map((l, i) => [l.id, i * LANE_H + LANE_H / 2]));
+const itemsOf = (fields: Record<string, unknown>): CartItem[] | null =>
+  Array.isArray(fields.items) ? (fields.items as CartItem[]) : null;
 
-  const t0 = events[0]?.ts ?? 0;
-  const span = Math.max(1, (events.at(-1)?.ts ?? t0) - t0);
+/** "$32.00" -> 32. Prices arrive already formatted by the store. */
+const priceNum = (p: string) => Number(String(p).replace(/[^0-9.]/g, "")) || 0;
 
-  let cursor = 0;
-  const nodes: GNode[] = raw.map(({ e, c }, i) => {
-    const shot = shotFor(e.fields, chat);
-    const w = nodeWidth(c.label, c.sub) + (shot ? SHOT_W + 8 : 0);
-    // Proportional to real elapsed time, but never so tight that two nodes touch.
-    const wanted = ((e.ts - t0) / span) * TIME_BUDGET;
-    const x = i === 0 ? 0 : Math.max(wanted, cursor + MIN_GAP);
-    cursor = x + w;
-    const ms = typeof e.fields.ms === "number" ? (e.fields.ms as number) : undefined;
-    return {
-      seq: e.seq, lane: c.lane, label: c.label, sub: c.sub, ts: e.ts, ms,
-      level: e.level, event: e.event, fields: e.fields,
-      x, y: laneY.get(c.lane)!, w, h: shot ? SHOT_H : NODE_H, shot,
-    };
-  });
-
-  return { nodes, lanes, height: lanes.length * LANE_H, width: cursor + 40 };
-}
-
-export function RunGraph({ run, events }: { run: RunSummary; events: GraphEvent[] }) {
-  const { nodes, lanes, height, width } = useMemo(() => layout(events, run.chat), [events, run.chat]);
-  const [picked, setPicked] = useState<number | null>(null);
-  const [view, setView] = useState({ x: GUTTER + 14, y: 34, k: 1 });
-  const [fitMode, setFitMode] = useState<FitMode>("follow");
-  const wrap = useRef<HTMLDivElement>(null);
-  const moved = useRef(false);
-  const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
-  const running = run.ended === null;
-
-  /**
-   * Two framings, because they answer different questions.
-   *
-   * "follow" sizes to the lanes, not the run's length: nodes stay readable and
-   * the camera tracks the newest one, which is what you want while a turn is
-   * happening. A long run simply runs off to the left, the way it should.
-   *
-   * "overview" zooms out far enough to hold the whole run at once — the shape
-   * of which services it touched, at the cost of being able to read the labels.
-   */
-  const fit = useCallback(
-    (m: FitMode) => {
-      const el = wrap.current;
-      if (!el || !width || !height) return;
-      const availW = el.clientWidth - GUTTER - 60;
-      const availH = el.clientHeight - 80;
-
-      if (m === "overview") {
-        const k = Math.max(0.22, Math.min(MAX_K, availW / width, availH / height));
-        setView({ k, x: GUTTER + 14, y: Math.max(30, (el.clientHeight - height * k) / 2) });
-        return;
-      }
-      const k = Math.max(MIN_K, Math.min(MAX_K, availH / height));
-      // Anchor left while it fits; once it does not, pin the newest node near
-      // the right edge so the live end of the run is always the thing on screen.
-      const last = nodes.at(-1);
-      const overflow = width * k > availW;
-      const x = overflow && last ? el.clientWidth - 90 - (last.x + last.w) * k : GUTTER + 14;
-      setView({ k, x, y: Math.max(30, (el.clientHeight - height * k) / 2) });
-    },
-    [width, height, nodes],
+export function RunGraph({ run, events, token }: { run: RunSummary; events: GraphEvent[]; token: string }) {
+  const nodes = useMemo<Node[]>(
+    () => events.map((e) => ({
+      seq: e.seq, ts: e.ts, level: e.level, event: e.event, fields: e.fields,
+      ms: num(e.fields.ms) ?? null, ...classify(e),
+    })),
+    [events],
   );
 
-  // A new run resets the camera; panning by hand takes it back off autopilot.
+  const [picked, setPicked] = useState<number | null>(null);
+  const [cols, setCols] = useState(1);
+  const wrap = useRef<HTMLDivElement>(null);
+  const flow = useRef<HTMLDivElement>(null);
+  const [boxes, setBoxes] = useState<{ x: number; y: number; w: number; h: number; row: number }[]>([]);
+  // Quantity edits, keyed by "<seq>:<line>", until they are pushed to the chat.
+  const [edits, setEdits] = useState<Record<string, number>>({});
+  const [pushing, setPushing] = useState(false);
+
   useEffect(() => {
-    moved.current = false;
     setPicked(null);
-    setFitMode("follow");
+    setEdits({});
   }, [run.runId]);
 
-  // Refit as the run grows, so a live turn stays framed while nodes appear.
-  useEffect(() => {
-    if (!moved.current) fit(fitMode);
-  }, [fit, fitMode, nodes.length, run.runId]);
-
-  useEffect(() => {
-    const onResize = () => !moved.current && fit(fitMode);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [fit, fitMode]);
-
-  const toggleFit = useCallback(() => {
-    moved.current = false;
-    setFitMode((m) => {
-      const next = m === "follow" ? "overview" : "follow";
-      fit(next);
-      return next;
-    });
-  }, [fit]);
-
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    moved.current = true;
-    const rect = wrap.current!.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    setView((v) => {
-      const k = Math.min(2.2, Math.max(0.3, v.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
-      // Keep the point under the cursor fixed while the scale changes.
-      return { k, x: px - ((px - v.x) / v.k) * k, y: py - ((py - v.y) / v.k) * k };
-    });
+  // How many cards fit across. Everything else follows from it.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const w = (wrap.current?.clientWidth ?? CARD_W) - 48;
+      setCols(Math.max(1, Math.floor((w + GAP_X) / (CARD_W + GAP_X))));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
   }, []);
 
-  const pickedNode = picked === null ? null : nodes.find((n) => n.seq === picked);
+  /**
+   * Cards wrap like text, left to right and top to bottom. A snaking layout
+   * follows the wire more neatly but puts the earliest card of a reversed row
+   * on the right, which reads backwards; arrowheads carry direction instead.
+   *
+   * Heights vary with content, so positions are measured from the DOM after
+   * paint rather than guessed.
+   */
+  const place = useCallback(() => {
+    const el = flow.current;
+    if (!el) return;
+    const cards = [...el.querySelectorAll<HTMLElement>("[data-card]")];
+    const next: { x: number; y: number; w: number; h: number; row: number }[] = [];
+    let y = 0;
+    for (let i = 0; i < cards.length; i += cols) {
+      const row = cards.slice(i, i + cols);
+      const h = Math.max(...row.map((c) => c.offsetHeight), 0);
+      row.forEach((c, ci) => {
+        const x = ci * (CARD_W + GAP_X);
+        c.style.left = `${x}px`;
+        c.style.top = `${y}px`;
+        next[i + ci] = { x, y, w: CARD_W, h: c.offsetHeight, row: i / cols };
+      });
+      y += h + GAP_Y;
+    }
+    el.style.height = `${Math.max(0, y - GAP_Y)}px`;
+    el.style.width = `${cols * CARD_W + (cols - 1) * GAP_X}px`;
+    setBoxes(next);
+  }, [cols]);
+
+  useLayoutEffect(() => {
+    place();
+  }, [place, nodes, edits]);
+
+  const wires = useMemo(() => {
+    const paths: { d: string; cross: boolean }[] = [];
+    for (let i = 1; i < boxes.length; i++) {
+      const a = boxes[i - 1], b = boxes[i];
+      if (!a || !b) continue;
+      const cross = nodes[i - 1]?.svc !== nodes[i]?.svc;
+      if (a.row === b.row) {
+        const x1 = a.x + a.w, x2 = b.x;
+        const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2;
+        const bend = Math.max(16, (x2 - x1) * 0.45);
+        paths.push({ d: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`, cross });
+      } else {
+        // Row return: out of the bottom, sweeping back to the top of the next.
+        const x1 = a.x + a.w / 2, y1 = a.y + a.h;
+        const x2 = b.x + b.w / 2, y2 = b.y;
+        const mid = (y1 + y2) / 2;
+        paths.push({ d: `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`, cross });
+      }
+    }
+    return paths;
+  }, [boxes, nodes]);
+
+  const qtyOf = useCallback(
+    (n: Node, li: number, items: CartItem[]) => edits[`${n.seq}:${li}`] ?? items[li].quantity,
+    [edits],
+  );
+  const dirty = useCallback(
+    (n: Node, items: CartItem[]) => items.some((_, li) => `${n.seq}:${li}` in edits),
+    [edits],
+  );
+
+  const [problem, setProblem] = useState<string | null>(null);
+
+  async function pushCart(n: Node, items: CartItem[]) {
+    const lines = items
+      .map((it, li) => ({ variantId: it.variantId ?? "", quantity: qtyOf(n, li, items) }))
+      .filter((l) => l.variantId);
+    setPushing(true);
+    setProblem(null);
+    try {
+      const res = await fetch(`/api/runs/cart${token ? `?token=${encodeURIComponent(token)}` : ""}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat: run.chat, shop: str(n.fields.shop), lines }),
+      });
+      const out = (await res.json().catch(() => ({}))) as { ok?: boolean; detail?: string };
+      if (!res.ok || !out.ok) throw new Error(out.detail ?? `the server answered ${res.status}`);
+      // The edit is the truth now; the agent logs a fresh cart.updated behind it.
+      setEdits({});
+    } catch (err) {
+      setProblem(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPushing(false);
+    }
+  }
+
+  const running = run.ended === null;
+  const t0 = nodes[0]?.ts ?? run.started;
+  const pickedNode = picked === null ? null : nodes.find((n) => n.seq === picked) ?? null;
 
   return (
-    <div style={{ position: "relative", height: "100%", overflow: "hidden", background: COLOR.bg }}>
-      <style>{CSS}</style>
+    <div ref={wrap} style={{ height: "100%", overflow: "auto", padding: "26px 24px 60px", background: "var(--paper)" }}>
+      {problem && (
+        <p style={{ margin: "0 0 16px", fontFamily: MONO, fontSize: 11, color: "var(--error)" }}>
+          Couldn't update the cart: {problem}
+        </p>
+      )}
 
-      <div
-        ref={wrap}
-        onWheel={onWheel}
-        onPointerDown={(e) => {
-          drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-          (e.target as Element).setPointerCapture?.(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (!drag.current) return;
-          moved.current = true;
-          setView((v) => ({ ...v, x: drag.current!.vx + (e.clientX - drag.current!.x), y: drag.current!.vy + (e.clientY - drag.current!.y) }));
-        }}
-        onPointerUp={() => (drag.current = null)}
-        style={{ position: "absolute", inset: 0, cursor: drag.current ? "grabbing" : "grab", touchAction: "none" }}
-      >
-        <svg width="100%" height="100%" style={{ display: "block" }}>
+      <div ref={flow} style={{ position: "relative", margin: "0 auto" }}>
+        <svg style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }} width="100%" height="100%">
           <defs>
-            <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
-              <circle cx="1" cy="1" r="1" fill={COLOR.line} />
-            </pattern>
-            <linearGradient id="fade" x1="0" x2="1">
-              <stop offset="0" stopColor={COLOR.bg} stopOpacity="1" />
-              <stop offset="1" stopColor={COLOR.bg} stopOpacity="0" />
-            </linearGradient>
-            <filter id="glow" x="-70%" y="-70%" width="240%" height="240%">
-              <feGaussianBlur stdDeviation="5" result="b" />
-              <feMerge>
-                <feMergeNode in="b" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
+            <marker id="rg-tip" viewBox="0 0 8 8" refX={7} refY={4} markerWidth={6} markerHeight={6} orient="auto-start-reverse">
+              <path d="M 0 1 L 7 4 L 0 7 z" fill="var(--wire)" />
+            </marker>
           </defs>
-          <rect width="100%" height="100%" fill="url(#dots)" opacity={0.5} />
-
-          <g
-            style={{
-              transform: `translate(${view.x}px,${view.y}px) scale(${view.k})`,
-              transition: drag.current ? "none" : "transform .32s cubic-bezier(.3,.8,.3,1)",
-            }}
-          >
-            {/* Lane rails, so an empty stretch still reads as "that service was idle". */}
-            {lanes.map((l, i) => (
-              <line key={l.id} x1={-40} x2={width} y1={i * LANE_H + LANE_H / 2} y2={i * LANE_H + LANE_H / 2} stroke={COLOR.line} strokeWidth={1} />
-            ))}
-            {nodes.slice(1).map((n, i) => (
-              <Edge key={n.seq} from={nodes[i]} to={n} />
-            ))}
-            {nodes.map((n, i) => (
-              <Node key={n.seq} node={n} t0={nodes[0]?.ts ?? 0} picked={n.seq === picked} live={running && i === nodes.length - 1} onPick={() => setPicked((p) => (p === n.seq ? null : n.seq))} />
-            ))}
-          </g>
-
-          {/* A gutter the graph scrolls underneath, so a node panned off the
-              left fades out instead of colliding with the lane names. */}
-          <rect x={0} y={0} width={GUTTER} height="100%" fill={COLOR.bg} />
-          <rect x={GUTTER} y={0} width={46} height="100%" fill="url(#fade)" />
-          <line x1={GUTTER} x2={GUTTER} y1={0} y2="100%" stroke={COLOR.line} />
-          {lanes.map((l, i) => (
-            <text key={l.id} x={14} y={view.y + (i * LANE_H + LANE_H / 2) * view.k + 3} fill={COLOR.dimmer} fontSize={9} fontFamily={MONO} letterSpacing={1.4}>
-              {l.label}
-            </text>
+          {wires.map((w, i) => (
+            <path
+              key={i}
+              d={w.d}
+              fill="none"
+              stroke="var(--wire)"
+              strokeWidth={w.cross ? 1.6 : 1.2}
+              strokeDasharray={w.cross ? "4 4" : undefined}
+              markerEnd="url(#rg-tip)"
+            />
           ))}
         </svg>
+
+        {nodes.map((n, i) => (
+          <Card
+            key={n.seq}
+            node={n}
+            t0={t0}
+            chat={run.chat}
+            turnMs={run.ms}
+            live={running && i === nodes.length - 1}
+            selected={picked === n.seq}
+            onPick={() => setPicked((p) => (p === n.seq ? null : n.seq))}
+            qtyOf={qtyOf}
+            dirty={dirty}
+            pushing={pushing}
+            onStep={(li, by, items) =>
+              setEdits((e) => ({ ...e, [`${n.seq}:${li}`]: Math.max(0, qtyOf(n, li, items) + by) }))
+            }
+            onPush={(items) => pushCart(n, items)}
+          />
+        ))}
       </div>
 
-      <Legend run={run} nodes={nodes.length} fitMode={fitMode} onToggleFit={toggleFit} />
-      {pickedNode && <Inspector node={pickedNode} t0={nodes[0]?.ts ?? 0} onClose={() => setPicked(null)} />}
-      {!events.length && (
-        <p style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: COLOR.dim, fontSize: 13 }}>
+      {!nodes.length && (
+        <p style={{ color: "var(--muted)", fontSize: 13 }}>
           {running ? "waiting for the first step…" : "no events recorded for this run"}
         </p>
       )}
+
+      {pickedNode && <Sheet node={pickedNode} t0={t0} chat={run.chat} onClose={() => setPicked(null)} />}
     </div>
   );
 }
 
-/** Horizontal cubic between two nodes; flat within a lane, a dive across lanes. */
-function Edge({ from, to }: { from: GNode; to: GNode }) {
-  const x1 = from.x + from.w;
-  const x2 = to.x;
-  const bend = Math.max(22, (x2 - x1) * 0.5);
-  const d = `M ${x1} ${from.y} C ${x1 + bend} ${from.y}, ${x2 - bend} ${to.y}, ${x2} ${to.y}`;
-  const crossing = from.lane !== to.lane;
-  return (
-    <path
-      className="edge"
-      d={d}
-      fill="none"
-      stroke={crossing ? COLOR.accentDim : COLOR.lineHi}
-      strokeWidth={crossing ? 1.5 : 1}
-      strokeDasharray={crossing ? "3 4" : undefined}
-    />
-  );
-}
+function Card({
+  node, t0, chat, turnMs, live, selected, onPick, qtyOf, dirty, pushing, onStep, onPush,
+}: {
+  node: Node; t0: number; chat: string; turnMs: number | null; live: boolean; selected: boolean; onPick: () => void;
+  qtyOf: (n: Node, li: number, items: CartItem[]) => number;
+  dirty: (n: Node, items: CartItem[]) => boolean;
+  pushing: boolean;
+  onStep: (li: number, by: number, items: CartItem[]) => void;
+  onPush: (items: CartItem[]) => void;
+}) {
+  const svc = SERVICES[node.svc];
+  const shot = shotFor(node.fields, chat);
+  const items = itemsOf(node.fields);
+  const text = str(node.fields.text);
+  const share = turnMs && node.ms ? Math.min(1, node.ms / turnMs) : 0;
+  const stats = [
+    node.ms != null ? dur(node.ms) : null,
+    num(node.fields.tokens) ? `${num(node.fields.tokens)!.toLocaleString()} tok` : null,
+    num(node.fields.candidates) != null ? `${num(node.fields.candidates)} found` : null,
+  ].filter(Boolean);
 
-function Node({ node, t0, picked, live, onPick }: { node: GNode; t0: number; picked: boolean; live: boolean; onPick: () => void }) {
-  const tone = node.level === "error" ? COLOR.error : node.level === "warn" ? COLOR.warn : live ? COLOR.accent : COLOR.text;
-  const edge = node.level === "error" ? COLOR.error : node.level === "warn" ? COLOR.warn : picked || live ? COLOR.accent : COLOR.lineHi;
-  const h = node.h;
-  // The thumbnail sits left, the text beside it; without one the text starts at
-  // the node's own edge, so both shapes share a baseline grid.
-  const textX = node.shot ? SHOT_W + 17 : 11;
-  const clip = `clip-${node.seq}`;
-  return (
-    <g className="node" transform={`translate(${node.x},${node.y - h / 2})`} onClick={onPick} style={{ cursor: "pointer" }}>
-      {live && <rect width={node.w} height={h} rx={7} fill="none" stroke={COLOR.accent} strokeWidth={1.5} filter="url(#glow)" className="pulse" />}
-      <rect width={node.w} height={h} rx={7} fill={picked ? COLOR.panelHi : COLOR.panel} stroke={edge} strokeWidth={picked || live ? 1.5 : 1} />
-      {node.shot && (
-        <>
-          <clipPath id={clip}>
-            <rect x={7} y={7} width={SHOT_W} height={h - 14} rx={4} />
-          </clipPath>
-          <image
-            href={node.shot}
-            x={7}
-            y={7}
-            width={SHOT_W}
-            height={h - 14}
-            preserveAspectRatio="xMidYMin slice"
-            clipPath={`url(#${clip})`}
-          />
-          <rect x={7} y={7} width={SHOT_W} height={h - 14} rx={4} fill="none" stroke={COLOR.lineHi} />
-        </>
-      )}
-      <text x={textX} y={h / 2 - 3} fill={tone} fontSize={11} fontFamily={MONO}>
-        {node.label}
-      </text>
-      <text x={textX} y={h / 2 + 9} fill={COLOR.dimmer} fontSize={9} fontFamily={MONO}>
-        {[node.sub, node.ms !== undefined ? dur(node.ms) : null].filter(Boolean).join(" · ").slice(0, 28)}
-      </text>
-      <text x={node.w} y={-6} fill={COLOR.dimmer} fontSize={8.5} fontFamily={MONO} textAnchor="end">
-        +{dur(node.ts - t0)}
-      </text>
-    </g>
-  );
-}
+  const total = items ? items.reduce((s, it, li) => s + qtyOf(node, li, items) * priceNum(it.price), 0) : 0;
+  const changed = items ? dirty(node, items) : false;
+  const border = selected || live ? "var(--accent)" : node.level === "error" ? "var(--error)" : "var(--rule)";
 
-function Legend({ run, nodes, fitMode, onToggleFit }: { run: RunSummary; nodes: number; fitMode: FitMode; onToggleFit: () => void }) {
-  const running = run.ended === null;
   return (
-    <div style={{ position: "absolute", top: 14, right: 16, textAlign: "right", fontFamily: MONO, fontSize: 10, color: COLOR.dimmer, lineHeight: 1.7, background: `${COLOR.bg}D0`, borderRadius: 8, padding: "6px 10px" }}>
-      <div style={{ color: running ? COLOR.accent : COLOR.dim, fontSize: 11 }}>
-        {running ? "● LIVE" : (run.outcome ?? "—").toUpperCase()}
-      </div>
-      <div>{nodes} steps</div>
-      {run.ms !== null && <div>{dur(run.ms)} in turn</div>}
-      {!!run.tokens && <div>{run.tokens.toLocaleString()} tokens</div>}
-      <button onClick={onToggleFit} style={{ marginTop: 8, background: "none", border: `1px solid ${COLOR.line}`, borderRadius: 5, color: COLOR.dim, fontFamily: MONO, fontSize: 9, padding: "3px 7px", cursor: "pointer" }}>
-        {fitMode === "follow" ? "overview" : "follow"}
+    <div
+      data-card
+      className="rg-card"
+      style={{
+        position: "absolute", width: CARD_W, background: "var(--card)",
+        border: `1px solid ${border}`, borderRadius: 11,
+        boxShadow: selected ? "var(--shadow-lift)" : "var(--shadow)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+        transition: "box-shadow .18s, border-color .18s, transform .18s",
+      }}
+    >
+      <button
+        onClick={onPick}
+        style={{ all: "unset", cursor: "pointer", display: "block", font: "inherit" }}
+        aria-label={`${node.event} — open details`}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 11px 0", fontFamily: MONO, fontSize: 9, letterSpacing: "0.1em" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, flex: 1, textTransform: "uppercase", color: `var(${svc.v})` }}>
+            <i style={{ width: 7, height: 7, borderRadius: 2, background: `var(${svc.v})`, flex: "none" }} />
+            {svc.label}
+          </span>
+          <span style={{ color: "var(--faint)", fontVariantNumeric: "tabular-nums" }}>+{dur(node.ts - t0)}</span>
+        </div>
+        <div style={{ padding: "5px 11px 0", fontSize: 14, fontWeight: 600, letterSpacing: "-0.012em", color: "var(--ink)" }}>{node.title}</div>
+        <div style={{ padding: "2px 11px 0", fontFamily: MONO, fontSize: 10.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {node.sub}
+        </div>
+        {shot && !items && (
+          <div style={{ margin: "9px 11px 0", border: "1px solid var(--rule)", borderRadius: 6, overflow: "hidden", height: 92, background: "var(--card-2)" }}>
+            <img src={shot} alt={`What the agent saw at ${node.event}`} loading="lazy" style={{ display: "block", width: "100%", height: "100%", objectFit: "cover", objectPosition: "top" }} />
+          </div>
+        )}
+        {text && !items && (
+          <p style={{ margin: "9px 11px 0", padding: "8px 10px", background: "var(--card-2)", border: "1px solid var(--rule)", borderRadius: 10, fontSize: 12, lineHeight: 1.45, color: "var(--ink)" }}>
+            {text.length > 96 ? `${text.slice(0, 96)}…` : text}
+          </p>
+        )}
       </button>
-    </div>
-  );
-}
 
-/** Clicking a node opens the raw event behind it, and the picture if it has one. */
-function Inspector({ node, t0, onClose }: { node: GNode; t0: number; onClose: () => void }) {
-  return (
-    <div style={{ position: "absolute", left: 16, right: 16, bottom: 16, background: COLOR.panel, border: `1px solid ${COLOR.lineHi}`, borderRadius: 10, padding: "12px 14px", maxHeight: "48%", overflowY: "auto" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-        <span style={{ fontFamily: MONO, fontSize: 12, color: COLOR.text }}>{node.event}</span>
-        <span style={{ fontFamily: MONO, fontSize: 10, color: COLOR.dimmer, flex: 1 }}>
-          +{dur(node.ts - t0)}
-          {node.ms !== undefined && ` · took ${dur(node.ms)}`}
-        </span>
-        <button onClick={onClose} style={{ background: "none", border: "none", color: COLOR.dim, cursor: "pointer", fontSize: 14, lineHeight: 1 }}>
-          ×
-        </button>
-      </div>
-      {node.shot && (
-        <img
-          src={node.shot}
-          alt={`What the agent saw at ${node.event}`}
-          style={{ display: "block", maxWidth: "min(100%, 420px)", marginTop: 10, borderRadius: 6, border: `1px solid ${COLOR.lineHi}` }}
+      {items && (
+        <CartLines
+          node={node} items={items} total={total} changed={changed} pushing={pushing}
+          qtyOf={qtyOf} onStep={onStep} onPush={onPush}
         />
       )}
-      {Object.keys(node.fields).length ? <FieldList fields={node.fields} lines={6} /> : <p style={{ color: COLOR.dimmer, fontSize: 11, margin: "6px 0 0" }}>no fields</p>}
+
+      <div style={{ marginTop: "auto", padding: "9px 11px 10px", display: "flex", alignItems: "center", gap: 8, fontFamily: MONO, fontSize: 9.5, color: "var(--faint)" }}>
+        <span style={{ flex: 1, height: 3, borderRadius: 2, background: "var(--rule)", overflow: "hidden" }}>
+          <i style={{ display: "block", height: "100%", width: `${Math.round(share * 100)}%`, borderRadius: 2, background: `var(${svc.v})` }} />
+        </span>
+        {stats.join(" · ")}
+      </div>
     </div>
   );
 }
 
-const CSS = `
-.node { animation: nodeIn .34s cubic-bezier(.2,.9,.3,1) both; transform-box: fill-box; }
-.node rect { transition: stroke .2s, fill .2s; }
-.edge { animation: edgeIn .5s ease-out both; }
-.pulse { animation: pulse 1.8s ease-in-out infinite; }
-@keyframes nodeIn { from { opacity: 0 } to { opacity: 1 } }
-@keyframes edgeIn { from { opacity: 0 } to { opacity: 1 } }
-@keyframes pulse { 0%,100% { opacity: .25 } 50% { opacity: .75 } }
-@media (prefers-reduced-motion: reduce) {
-  .node, .edge, .pulse { animation: none }
+/** Quantities are editable on the card itself — no panel, no modal. */
+function CartLines({
+  node, items, total, changed, pushing, qtyOf, onStep, onPush,
+}: {
+  node: Node; items: CartItem[]; total: number; changed: boolean; pushing: boolean;
+  qtyOf: (n: Node, li: number, items: CartItem[]) => number;
+  onStep: (li: number, by: number, items: CartItem[]) => void;
+  onPush: (items: CartItem[]) => void;
+}) {
+  // Without variant ids the store cannot be told what changed, so the steppers
+  // would be decoration. Events recorded before they were logged show counts.
+  const editable = items.length > 0 && items.every((it) => it.variantId);
+  return (
+    <>
+      <div style={{ padding: "8px 11px 0", display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.map((it, li) => (
+          <div key={li} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--ink)" }}>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</span>
+            {editable ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 1, border: "1px solid var(--rule)", borderRadius: 6, overflow: "hidden" }}>
+                <button className="rg-step" onClick={() => onStep(li, -1, items)} aria-label={`One fewer ${it.title}`} style={stepStyle}>−</button>
+                <span style={{ minWidth: 20, textAlign: "center", fontFamily: MONO, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
+                  {qtyOf(node, li, items)}
+                </span>
+                <button className="rg-step" onClick={() => onStep(li, 1, items)} aria-label={`One more ${it.title}`} style={stepStyle}>+</button>
+              </span>
+            ) : (
+              <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)" }}>×{it.quantity}</span>
+            )}
+            <span style={{ fontFamily: MONO, fontSize: 11, minWidth: 50, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              ${(qtyOf(node, li, items) * priceNum(it.price)).toFixed(2)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ margin: "9px 11px 0", paddingTop: 8, borderTop: "1px solid var(--rule)", display: "flex", alignItems: "center", fontFamily: MONO, fontSize: 11, color: "var(--ink)" }}>
+        total <b style={{ marginLeft: "auto", fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>${total.toFixed(2)}</b>
+      </div>
+      {editable && (
+        <div style={{ padding: "9px 11px 0", display: "flex", gap: 6, alignItems: "center" }}>
+          {changed && <span style={{ fontFamily: MONO, fontSize: 9, color: "var(--warn)" }}>edited</span>}
+          <button
+            onClick={() => onPush(items)}
+            disabled={!changed || pushing}
+            style={{
+              ...btn, marginLeft: "auto",
+              cursor: changed && !pushing ? "pointer" : "default",
+              opacity: changed ? 1 : 0.5,
+              ...(changed ? { background: "var(--accent)", borderColor: "var(--accent)", color: "#fff" } : {}),
+            }}
+          >
+            {pushing ? "pushing…" : "push to chat"}
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
-`;
+
+const stepStyle: React.CSSProperties = {
+  width: 20, height: 20, background: "var(--card-2)", border: 0, cursor: "pointer",
+  color: "var(--muted)", fontSize: 13, lineHeight: 1, padding: 0,
+};
+
+/** The step's detail, centred over the page. */
+function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: string; onClose: () => void }) {
+  const f = node.fields;
+  const shot = shotFor(f, chat);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const replays = Array.isArray(f.replays) ? (f.replays as string[]) : str(f.replay) ? [str(f.replay)!] : [];
+  const plan = Array.isArray(f.plan) ? (f.plan as string[]) : null;
+  const args = str(f.args);
+  let pretty = args;
+  if (args) {
+    try {
+      pretty = JSON.stringify(JSON.parse(args), null, 2);
+    } catch {
+      /* not JSON; show it as sent */
+    }
+  }
+
+  const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId"]);
+  const raw = Object.fromEntries(Object.entries(f).filter(([k]) => !skip.has(k)));
+
+  return (
+    <div
+      className="rg-scrim"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      style={{ position: "fixed", inset: 0, zIndex: 30, display: "grid", placeItems: "center", padding: "28px 20px", background: "var(--scrim)" }}
+    >
+      <div
+        className="rg-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Step detail"
+        style={{
+          width: "min(580px, 100%)", maxHeight: "min(82vh, 780px)", background: "var(--card)",
+          border: "1px solid var(--rule)", borderRadius: 14, boxShadow: "var(--shadow-lift)",
+          display: "flex", flexDirection: "column", overflow: "hidden",
+        }}
+      >
+        <div style={{ padding: "15px 17px 13px", borderBottom: "1px solid var(--rule)", display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--accent)" }}>{node.event}</span>
+            <h2 style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.35, textWrap: "balance", color: "var(--ink)" }}>
+              {describe(node)}
+            </h2>
+            <span style={{ display: "block", marginTop: 7, fontFamily: MONO, fontSize: 10, color: "var(--faint)" }}>
+              +{dur(node.ts - t0)} into the run{node.ms != null && ` · took ${dur(node.ms)}`}
+            </span>
+          </div>
+          <button ref={closeRef} onClick={onClose} style={btn} aria-label="Close">×</button>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: "15px 17px 28px", display: "flex", flexDirection: "column", gap: 17 }}>
+          {str(f.text) && (
+            <Section label={node.event === "message.in" ? "The message" : "What it sent"}>
+              <p style={{ margin: 0, background: "var(--card-2)", border: "1px solid var(--rule)", borderRadius: 12, padding: "10px 13px", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink)" }}>
+                {str(f.text)}
+              </p>
+            </Section>
+          )}
+          {shot && (
+            <Section label="What the browser saw">
+              <img src={shot} alt="Page capture" style={{ width: "100%", borderRadius: 9, border: "1px solid var(--rule)", display: "block" }} />
+            </Section>
+          )}
+          {plan && (
+            <Section label="Queries it wrote">
+              <pre style={codeStyle}>{plan.map((q) => `→ ${q}`).join("\n")}</pre>
+            </Section>
+          )}
+          {node.event === "research.finished" && (
+            <Section label="Result">
+              <Stats pairs={[
+                [String(num(f.candidates) ?? 0), "venues"],
+                [String(num(f.pagesRead) ?? 0), "pages read"],
+                [num(f.ms) != null ? dur(num(f.ms)!) : "—", "wall clock"],
+                [num(f.tokens)?.toLocaleString() ?? "—", "tokens"],
+              ]} />
+            </Section>
+          )}
+          {node.event === "turn.end" && (
+            <Section label="The turn">
+              <Stats pairs={[
+                [num(f.ms) != null ? dur(num(f.ms)!) : "—", "duration"],
+                [String(num(f.steps) ?? 0), "model steps"],
+                [num(f.tokens)?.toLocaleString() ?? "—", "tokens"],
+                [String(Array.isArray(f.tools) ? (f.tools as string[]).length : 0), "tool calls"],
+              ]} />
+            </Section>
+          )}
+          {pretty && <Section label="Arguments"><pre style={codeStyle}>{pretty}</pre></Section>}
+          {!!replays.length && (
+            <Section label="Session replay">
+              {replays.map((u) => (
+                <a key={u} href={u} target="_blank" rel="noreferrer" style={{ fontFamily: MONO, fontSize: 11, color: "var(--accent)", wordBreak: "break-all", display: "block" }}>
+                  {u}
+                </a>
+              ))}
+            </Section>
+          )}
+          {!!Object.keys(raw).length && <Section label="Raw event"><FieldList fields={raw} lines={6} /></Section>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p style={{ margin: "0 0 7px", fontFamily: MONO, fontSize: 9, letterSpacing: "0.12em", color: "var(--faint)", textTransform: "uppercase" }}>{label}</p>
+      {children}
+    </div>
+  );
+}
+
+function Stats({ pairs }: { pairs: [string, string][] }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, background: "var(--rule)", border: "1px solid var(--rule)", borderRadius: 9, overflow: "hidden" }}>
+      {pairs.map(([v, k]) => (
+        <div key={k} style={{ background: "var(--card)", padding: "9px 11px" }}>
+          <b style={{ display: "block", fontFamily: MONO, fontSize: 14, fontWeight: 500, fontVariantNumeric: "tabular-nums", color: "var(--ink)" }}>{v}</b>
+          <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "0.09em", color: "var(--faint)", textTransform: "uppercase" }}>{k}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const codeStyle: React.CSSProperties = {
+  margin: 0, padding: "10px 12px", background: "var(--card-2)", border: "1px solid var(--rule)",
+  borderRadius: 9, fontFamily: MONO, fontSize: 11, lineHeight: 1.55, color: "var(--muted)",
+  whiteSpace: "pre-wrap", wordBreak: "break-word",
+};

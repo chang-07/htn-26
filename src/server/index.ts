@@ -37,7 +37,7 @@ export default {
     // Run history. Unlike /api/dev/*, this is reachable from the deployed
     // Worker: the runs worth looking at are the ones driven by real texts.
     if (url.pathname === "/api/runs" || url.pathname.startsWith("/api/runs/")) {
-      return requireRunsAuth(request, url, env) ?? handleRuns(url, env);
+      return requireRunsAuth(request, url, env) ?? handleRuns(request, url, env);
     }
 
     if (url.pathname.startsWith("/p/")) {
@@ -389,14 +389,24 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
 /**
  *   GET /api/runs?chat=&outcome=&level=&before=&limit=   newest runs first
  *   GET /api/runs/chats                                  chats that have runs
- *   GET /api/runs/<runId>                                one run and its events
+ *   GET  /api/runs/<runId>                               one run and its events
+ *   POST /api/runs/cart  {chat, shop, lines}             change a cart's quantities
  *
  * Live updates arrive separately, over the RunHub WebSocket that
  * routeAgentRequest serves at /agents/run-hub/global.
  */
-async function handleRuns(url: URL, env: Env): Promise<Response> {
+async function handleRuns(request: Request, url: URL, env: Env): Promise<Response> {
   const rest = url.pathname.slice("/api/runs".length).replace(/^\//, "");
   const q = url.searchParams;
+
+  // Editing a cart from the run viewer changes what the group sees: the store
+  // cart is rewritten and the card in the thread is redrawn. Token-gated above.
+  if (rest === "cart" && request.method === "POST") {
+    const body = (await request.json()) as { chat?: string; shop?: string; lines?: { variantId: string; quantity: number }[] };
+    if (!body.chat || !body.shop || !Array.isArray(body.lines)) return new Response("chat, shop and lines are required", { status: 400 });
+    const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, body.chat);
+    return Response.json(await agent.editCart(body.shop, body.lines));
+  }
 
   if (!rest) {
     const runs = await listRuns(env, {

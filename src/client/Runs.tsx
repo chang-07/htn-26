@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { RunEventRow, RunSummary } from "../server/runs";
 import { RunGraph } from "./RunGraph";
-import { COLOR, FONT, FieldList, MONO, clock, dur, levelColor } from "./ui";
+import { FONT_LINK, FieldList, MONO, SERVICES, THEME_CSS, UI_FONT, btn, clock, dur, levelColor, servicesForTools } from "./ui";
 
 /**
  * Live view of what the agent is doing, across every chat.
@@ -26,6 +26,11 @@ export function Runs() {
   const [live, setLive] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [mode, setMode] = useState<"graph" | "list">("graph");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  // A run linked to directly is often older than the page the list holds. It is
+  // kept apart because both the list fetch and the socket's hello replace `runs`
+  // wholesale, which would drop it again.
+  const [linked, setLinked] = useState<RunSummary | null>(null);
   // /runs?token=… — the API and the live socket both need it when RUNS_TOKEN is set.
   const token = useMemo(() => new URLSearchParams(window.location.search).get("token") ?? "", []);
   const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
@@ -39,6 +44,10 @@ export function Runs() {
     setSelected(runId);
     window.history[push ? "pushState" : "replaceState"]({}, "", `/runs/${runId}`);
   }, []);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
   useEffect(() => {
     const onPop = () => setSelected(runIdFromPath());
     window.addEventListener("popstate", onPop);
@@ -114,10 +123,14 @@ export function Runs() {
   useEffect(() => {
     if (!selected || events[selected]) return;
     fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ events: TimelineEvent[] }>) : null))
-      .then((d) => d && setEvents((prev) => ({ ...prev, [selected]: d.events })))
+      .then((r) => (r.ok ? (r.json() as Promise<{ run: RunSummary; events: TimelineEvent[] }>) : null))
+      .then((d) => {
+        if (!d) return;
+        setEvents((prev) => ({ ...prev, [selected]: d.events }));
+        setLinked(d.run);
+      })
       .catch(() => {});
-  }, [selected, events]);
+  }, [selected, events, tokenParam]);
 
   // Landing on bare /runs with an empty pane is a dead end; open the newest.
   useEffect(() => {
@@ -126,22 +139,26 @@ export function Runs() {
 
   const chats = useMemo(() => [...new Set(runs.map((r) => r.chat))], [runs]);
   const shown = chat ? runs.filter((r) => r.chat === chat) : runs;
-  const detail = selected ? runs.find((r) => r.runId === selected) : undefined;
+  const detail = selected
+    ? (runs.find((r) => r.runId === selected) ?? (linked?.runId === selected ? linked : undefined))
+    : undefined;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 380px) 1fr", height: "100vh", background: COLOR.bg, color: COLOR.text, fontFamily: FONT }}>
-      <aside style={{ borderRight: `1px solid ${COLOR.line}`, overflowY: "auto" }}>
-        <header style={{ padding: "16px 16px 12px", position: "sticky", top: 0, background: COLOR.bg, borderBottom: `1px solid ${COLOR.line}` }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(252px, 300px) 1fr", height: "100vh", background: "var(--paper)", color: "var(--ink)", fontFamily: UI_FONT }}>
+      <style>{THEME_CSS}</style>
+      <link rel="stylesheet" href={FONT_LINK} />
+      <aside style={{ borderRight: `1px solid var(--rule)`, overflowY: "auto" }}>
+        <header style={{ padding: "16px 16px 12px", position: "sticky", top: 0, background: "var(--paper)", borderBottom: `1px solid var(--rule)` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h1 style={{ fontSize: 16, margin: 0, flex: 1 }}>Agent runs</h1>
             {problem ? (
-              <span style={{ fontSize: 12, color: COLOR.error }}>
+              <span style={{ fontSize: 12, color: "var(--error)" }}>
                 {problem === "locked" ? "Locked — open /runs?token=<RUNS_TOKEN>" : `Couldn't load: ${problem}`}
               </span>
             ) : null}
-            <span title={live ? "connected" : "disconnected"} style={{ width: 8, height: 8, borderRadius: 8, background: live ? COLOR.good : COLOR.dim }} />
+            <span title={live ? "connected" : "disconnected"} style={{ width: 8, height: 8, borderRadius: 8, background: live ? "var(--good)" : "var(--muted)" }} />
           </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
             <select value={chat} onChange={(e) => setChat(e.target.value)} style={selectStyle}>
               <option value="">all chats</option>
               {chats.map((c) => (
@@ -155,6 +172,12 @@ export function Runs() {
               follow
             </label>
             <button
+              onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+              style={{ ...btn, cursor: "pointer" }}
+            >
+              {theme === "light" ? "dark" : "light"}
+            </button>
+            <button
               onClick={() => setMode((m) => (m === "graph" ? "list" : "graph"))}
               style={{ ...selectStyle, cursor: "pointer", fontFamily: MONO, marginLeft: "auto" }}
               title="The graph shows which services a turn touched; the list is easier to read field by field."
@@ -166,18 +189,54 @@ export function Runs() {
         {shown.map((r) => (
           <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
         ))}
-        {!shown.length && <p style={{ color: COLOR.dim, padding: 16, fontSize: 13 }}>No runs yet. Text the agent, or POST /api/dev/message.</p>}
+        {!shown.length && <p style={{ color: "var(--muted)", padding: 16, fontSize: 13 }}>No runs yet. Text the agent, or POST /api/dev/message.</p>}
       </aside>
 
-      <section style={{ overflow: mode === "graph" ? "hidden" : "auto", padding: mode === "graph" ? 0 : 24 }}>
-        {!detail ? (
-          <p style={{ color: COLOR.dim, padding: 24 }}>Pick a run.</p>
-        ) : mode === "graph" ? (
-          <RunGraph run={detail} events={events[detail.runId] ?? []} />
-        ) : (
-          <Timeline run={detail} events={events[detail.runId] ?? []} />
-        )}
+      <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
+        {detail && <Telemetry run={detail} events={events[detail.runId] ?? []} />}
+        <div style={{ flex: 1, minHeight: 0, overflow: mode === "graph" ? "hidden" : "auto", padding: mode === "graph" ? 0 : 24 }}>
+          {!detail ? (
+            <p style={{ color: "var(--muted)", padding: 24 }}>Pick a run.</p>
+          ) : mode === "graph" ? (
+            <RunGraph run={detail} events={events[detail.runId] ?? []} token={token} />
+          ) : (
+            <Timeline run={detail} events={events[detail.runId] ?? []} />
+          )}
+        </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * Run totals, read before the detail. Wall clock and turn time differ on
+ * purpose: research runs in a workflow outside the turn, so a short turn can
+ * sit inside a long run.
+ */
+function Telemetry({ run, events }: { run: RunSummary; events: TimelineEvent[] }) {
+  const wall = events.length ? events[events.length - 1].ts - events[0].ts : null;
+  const slowest = [...events]
+    .filter((e) => typeof e.fields.ms === "number")
+    .sort((a, b) => (b.fields.ms as number) - (a.fields.ms as number))[0];
+  const cells: [string, string, string?][] = [
+    ["STATE", run.ended === null ? "live" : (run.outcome ?? "—"),
+      run.ended === null ? "var(--accent)" : run.level === "error" ? "var(--error)" : undefined],
+    ["WALL CLOCK", wall != null ? dur(wall) : "—"],
+    ["IN TURN", run.ms != null ? dur(run.ms) : "—"],
+    ["TOKENS", run.tokens ? run.tokens.toLocaleString() : "—"],
+    ["STEPS", String(events.length || run.events)],
+    ["SLOWEST", slowest ? slowest.event : "—"],
+  ];
+  return (
+    <div style={{ display: "flex", borderBottom: "1px solid var(--rule)", background: "var(--card)", overflowX: "auto", flex: "none" }}>
+      {cells.map(([label, value, color]) => (
+        <div key={label} style={{ padding: "11px 18px", borderRight: "1px solid var(--rule)", minWidth: 104, flex: "none" }}>
+          <b style={{ display: "block", fontFamily: MONO, fontSize: 16, fontWeight: 500, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em", color: color ?? "var(--ink)" }}>
+            {value}
+          </b>
+          <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "0.1em", color: "var(--faint)" }}>{label}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -188,23 +247,28 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
     <button
       onClick={onClick}
       style={{
-        display: "block", width: "100%", textAlign: "left", background: selected ? COLOR.panel : "transparent",
-        border: "none", borderBottom: `1px solid ${COLOR.line}`, borderLeft: `2px solid ${selected ? COLOR.accent : "transparent"}`,
-        color: COLOR.text, padding: "10px 16px", cursor: "pointer", font: "inherit",
+        display: "block", width: "100%", textAlign: "left", background: selected ? "var(--card)" : "transparent",
+        border: "none", borderBottom: `1px solid var(--rule)`, borderLeft: `2px solid ${selected ? "var(--accent)" : "transparent"}`,
+        color: "var(--ink)", padding: "10px 16px", cursor: "pointer", font: "inherit",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-        <span style={{ width: 6, height: 6, borderRadius: 6, background: running ? COLOR.accent : levelColor(run.level), flexShrink: 0 }} />
+        <span style={{ width: 6, height: 6, borderRadius: 6, background: running ? "var(--accent)" : levelColor(run.level), flexShrink: 0 }} />
         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {running ? <em style={{ color: COLOR.accent }}>running…</em> : (run.outcome ?? "—")}
+          {running ? <em style={{ color: "var(--accent)" }}>running…</em> : (run.outcome ?? "—")}
         </span>
-        <span style={{ color: COLOR.dim, fontSize: 11 }}>{clock(run.started)}</span>
+        <span style={{ color: "var(--muted)", fontSize: 11 }}>{clock(run.started)}</span>
       </div>
-      <div style={{ color: COLOR.dim, fontSize: 11, marginTop: 4, display: "flex", gap: 10 }}>
-        <span>{run.chat.slice(0, 8)}</span>
+      <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+        {servicesForTools(run.tools).map((s) => (
+          <span key={s} title={SERVICES[s].label} style={{ width: 16, height: 4, borderRadius: 2, background: `var(${SERVICES[s].v})` }} />
+        ))}
+      </div>
+      <div style={{ color: "var(--faint)", fontSize: 10, marginTop: 6, display: "flex", gap: 9, fontFamily: MONO, whiteSpace: "nowrap", overflow: "hidden" }}>
+        <span>{run.chat.slice(0, 10)}</span>
         {run.ms !== null && <span>{dur(run.ms)}</span>}
-        {!!run.tokens && <span>{run.tokens} tok</span>}
-        {!!run.tools.length && <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.tools.join(" → ")}</span>}
+        {!!run.tokens && <span>{run.tokens.toLocaleString()} tok</span>}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{run.events} steps</span>
       </div>
     </button>
   );
@@ -215,17 +279,17 @@ function Timeline({ run, events }: { run: RunSummary; events: TimelineEvent[] })
   return (
     <>
       <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>
-        {run.trigger ?? "run"} · <span style={{ color: run.level === "error" ? COLOR.error : COLOR.dim }}>{run.ended === null ? "running" : (run.outcome ?? "—")}</span>
+        {run.trigger ?? "run"} · <span style={{ color: run.level === "error" ? "var(--error)" : "var(--muted)" }}>{run.ended === null ? "running" : (run.outcome ?? "—")}</span>
       </h2>
-      <p style={{ color: COLOR.dim, fontSize: 12, margin: "0 0 20px" }}>
+      <p style={{ color: "var(--muted)", fontSize: 12, margin: "0 0 20px" }}>
         {run.chat} · {new Date(run.started).toLocaleString()}
         {run.ms !== null && ` · ${dur(run.ms)}`}
         {!!run.tokens && ` · ${run.tokens} tokens`}
         {run.steps !== null && ` · ${run.steps} steps`}
       </p>
       {events.map((e) => (
-        <div key={e.seq} style={{ display: "grid", gridTemplateColumns: "56px 8px 1fr", gap: 10, padding: "6px 0", borderTop: `1px solid ${COLOR.line}` }}>
-          <span style={{ color: COLOR.dim, fontSize: 11, fontVariantNumeric: "tabular-nums", paddingTop: 2 }}>+{e.ts - t0}ms</span>
+        <div key={e.seq} style={{ display: "grid", gridTemplateColumns: "56px 8px 1fr", gap: 10, padding: "6px 0", borderTop: `1px solid var(--rule)` }}>
+          <span style={{ color: "var(--muted)", fontSize: 11, fontVariantNumeric: "tabular-nums", paddingTop: 2 }}>+{e.ts - t0}ms</span>
           <span style={{ width: 6, height: 6, borderRadius: 6, background: levelColor(e.level), marginTop: 7 }} />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{e.event}</div>
@@ -233,13 +297,13 @@ function Timeline({ run, events }: { run: RunSummary; events: TimelineEvent[] })
           </div>
         </div>
       ))}
-      {!events.length && <p style={{ color: COLOR.dim, fontSize: 13 }}>No events recorded for this run.</p>}
+      {!events.length && <p style={{ color: "var(--muted)", fontSize: 13 }}>No events recorded for this run.</p>}
     </>
   );
 }
 
 const selectStyle: React.CSSProperties = {
-  background: COLOR.panel, color: COLOR.text, border: `1px solid ${COLOR.line}`,
+  background: "var(--card)", color: "var(--ink)", border: `1px solid var(--rule)`,
   borderRadius: 6, padding: "4px 8px", fontSize: 12,
 };
 
