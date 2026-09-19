@@ -39,6 +39,7 @@ export const ONBOARDING = [
   { key: "diet", ask: "any food rules (vegetarian, halal, allergies) or none" },
   { key: "budget", ask: "what a normal night out costs them" },
   { key: "interests", ask: "a few things they are into" },
+  { key: "links", ask: "any socials or links they are happy to share, such as an Instagram handle, Letterboxd or a personal site (optional)" },
   { key: "matchOptIn", ask: "whether they want to be introduced to people here with similar interests (yes or no)" },
 ] as const;
 
@@ -48,7 +49,8 @@ export function missingFields(p: Profile | undefined): (typeof ONBOARDING)[numbe
   return ONBOARDING.filter(({ key }) => {
     if (p?.skipped?.includes(key)) return false;
     const value = p?.[key];
-    return value === undefined || value === "";
+    // links is a list: an empty one means nobody has answered yet.
+    return value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
   });
 }
 
@@ -128,6 +130,7 @@ export function profileLines(p: Profile): string {
     p.budget && `budget: ${p.budget}`,
     p.interests && `into: ${p.interests}`,
     p.about && `says: ${p.about}`,
+    p.links.length && `links: ${p.links.join(", ")}`,
     p.facts.length && `mentioned: ${p.facts.join("; ")}`,
   ].filter(Boolean);
   return parts.join(" · ").slice(0, 420);

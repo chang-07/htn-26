@@ -68,9 +68,12 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
       budget: text("budget", 60),
       interests: text("interests", 300),
       about: text("about", 300),
+      // One per line. A handle ("@chang on instagram") is as good as a URL here:
+      // the chat accepts them, so the form must not silently drop them.
       links: String(form.get("links") ?? "")
-        .split(/\s+/)
-        .filter((l) => /^https?:\/\/\S+\.\S+/.test(l))
+        .split(/\r?\n/)
+        .map((l) => l.trim().slice(0, 120))
+        .filter(Boolean)
         .slice(0, 6),
       matchOptIn: form.get("matchOptIn") === "on",
       // "Fill in what you like; skip the rest" has to mean it: a field left
@@ -107,7 +110,7 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
     <div class="perf"></div>
     <form method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving…';">
       ${inputs}
-      <label>Links, if you want<textarea id="links" name="links" placeholder="Personal site, GitHub, Letterboxd, Spotify… one per line">${esc(profile.links.join("\n"))}</textarea></label>
+      <label>Links, if you want<textarea id="links" name="links" placeholder="@you on instagram, Letterboxd, GitHub, a site… one per line">${esc(profile.links.join("\n"))}</textarea></label>
       <label class="check"><input id="matchOptIn" type="checkbox" name="matchOptIn" ${profile.matchOptIn ? "checked" : ""}>
         <span>Count me in for matching. The planner may introduce me to someone here with similar interests.</span></label>
       <button type="submit">Save</button>

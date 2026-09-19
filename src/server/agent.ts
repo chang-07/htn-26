@@ -112,6 +112,8 @@ type Row = Record<string, string | number | boolean | null>;
 export class PlanAgent extends Agent<Env, PlanState> {
   initialState: PlanState = EMPTY_PLAN;
 
+  /** Set when something worth celebrating just happened; consumed by the next text sent. */
+  private celebrateNextSend = false;
   private turnRunning = false;
   private turnRequested = false;
   /** When the typing bubble was last raised; 0 once a send has cleared it. */
@@ -824,7 +826,9 @@ ${transcript}`,
     switch (name as ToolName) {
       case "send_message": {
         const { text } = parseToolArgs("send_message", rawArgs);
-        await this.say(text);
+        const celebrate = this.celebrateNextSend;
+        this.celebrateNextSend = false;
+        await this.say(text, celebrate ? { screenEffect: "confetti" } : {});
         return "sent";
       }
 
@@ -867,6 +871,8 @@ ${transcript}`,
           delete fields.matchOptIn;
           refused = " matchOptIn was NOT saved: they have not been asked that question yet.";
         }
+        if (fields.links) fields.links = fields.links.map((l) => l.trim().slice(0, 120)).filter(Boolean);
+        if (fields.links && !fields.links.length) delete fields.links;
         const saved = await store.save(person.handle, {
           ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined && v !== "")),
           skipped: [...new Set([...(before?.skipped ?? []), ...(skipped ?? [])])],
@@ -876,6 +882,8 @@ ${transcript}`,
         const left = missingFields(saved);
         if (!left.length && this.getMeta("onboarded") !== "1") {
           this.setMeta("onboarded", "1");
+          // The "you're all set" text that follows this save lands with confetti.
+          this.celebrateNextSend = true;
           // The form is the "edit anytime" door, so it follows the last answer.
           await this.schedule(8, "offerProfile");
         }

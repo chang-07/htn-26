@@ -79,9 +79,14 @@ export const toolSchemas = {
     budget: z.string().optional().describe("What a night out costs them, in their words"),
     interests: z.string().optional().describe("Comma-separated, in their words"),
     about: z.string().optional().describe("Anything else lasting they volunteered"),
+    links: z
+      .array(z.string())
+      .max(6)
+      .optional()
+      .describe("Socials or links exactly as they gave them: '@chang on instagram', 'letterboxd.com/chang', a site. Never guess or complete a handle."),
     matchOptIn: z.boolean().optional().describe("true only if they clearly said yes to being introduced to people"),
     skipped: z
-      .array(z.enum(["name", "area", "diet", "budget", "interests", "matchOptIn"]))
+      .array(z.enum(["name", "area", "diet", "budget", "interests", "links", "matchOptIn"]))
       .optional()
       .describe("Questions they declined or said skip to"),
   }),
