@@ -370,7 +370,7 @@ if (flags.has("--llm")) {
   const m = chat("llm");
   await check("an @mention wakes the agent and it sends exactly one message", async () => {
     await post("/api/dev/message", { chat: m, group: true, from: "+15550001111", text: "we should get bubble tea after class" });
-    await post("/api/dev/message", { chat: m, group: true, mention: true, from: "+15550001111", text: "@plan whats a good spot" });
+    await post("/api/dev/message", { chat: m, group: true, mention: true, from: "+15550001111", text: "@whim whats a good spot" });
     expect(await waitFor(m, "turn.end", 90), "no turn finished within 90s — is `npm run llm` running?");
     const out = (await dump(m)).transcript.filter((t) => t.direction === "out");
     expect(out.length === 1, `${out.length} messages sent in one turn`);

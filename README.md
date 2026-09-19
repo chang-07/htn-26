@@ -1,4 +1,4 @@
-# Plan — an iMessage group-chat planning agent
+# Whim — an iMessage group-chat planning agent
 
 An agent that lives in an iMessage group chat. It brainstorms a hangout with the
 group, posts a card to vote on, books the winner, and builds Shopify carts for
@@ -204,7 +204,7 @@ A successful booking lands with confetti.
 The name and photo are a Linq contact card, set once per number:
 
 ```sh
-node scripts/linq-contact-card.mjs set "Plan"   # photo: <PUBLIC_BASE_URL>/card/avatar.png
+node scripts/linq-contact-card.mjs set "Whim"   # photo: <PUBLIC_BASE_URL>/card/avatar.png
 node scripts/linq-contact-card.mjs show
 ```
 
@@ -698,7 +698,7 @@ None of these are needed to run the agent locally; each turns on one thing.
 node scripts/ig-login.mjs                    # log the bot's Instagram in, by hand,
                                              # in a remote browser. Prints BROWSERBASE_CONTEXT_ID.
                                              # The password never touches this repo.
-node scripts/linq-contact-card.mjs set "Plan"   # the name and photo people see for the number
+node scripts/linq-contact-card.mjs set "Whim"   # the name and photo people see for the number
 node scripts/linq-webhook.mjs create <url> --env   # point Linq at your tunnel (see above)
 ```
 

@@ -501,7 +501,7 @@ export async function attachLink(env: Env, chatId: string, handle: string): Prom
   if (isDry(env, chatId)) return undefined;
   const linq = linqClient(env);
   const p = await linq.payments.create(
-    { handle, amount_cents: 100, currency: "usd", description: "Card setup (not a purchase)", merchant: { name: "Plan setup", url: env.PUBLIC_BASE_URL } },
+    { handle, amount_cents: 100, currency: "usd", description: "Card setup (not a purchase)", merchant: { name: "Whim setup", url: env.PUBLIC_BASE_URL } },
     { idempotencyKey: `setup-${crypto.randomUUID()}` },
   );
   if (p.status === "awaiting_user_action" && p.attach_url) return p.attach_url;

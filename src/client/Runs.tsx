@@ -289,7 +289,7 @@ export function Runs() {
         <aside style={{ borderRight: mid ? "1px solid var(--hair)" : 0, overflowY: "auto", minHeight: 0 }}>
           <header style={{ padding: "18px 18px 14px", position: "sticky", top: 0, background: "var(--ground)", zIndex: 2 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-              <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16, letterSpacing: "-0.01em", lineHeight: 1 }}>Plan</a>
+              <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16, letterSpacing: "-0.01em", lineHeight: 1 }}>Whim</a>
               <span className="rv-meta">Runs</span>
               <span
                 title={live ? "Connected: new runs appear as they happen" : "Not connected. New runs will not appear until it reconnects."}
