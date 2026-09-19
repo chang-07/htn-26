@@ -523,7 +523,7 @@ function Row({
       {showLive && (
         <span className="rv-media rv-frame" style={{ maxWidth: 640, borderColor: "var(--ink)" }} onClick={(e) => e.stopPropagation()}>
           <span className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", color: "var(--ink)" }}>
-            <i className="rv-live" style={{ width: 8, height: 8, background: "var(--s-browser)" }} />
+            <i className="rv-live" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--s-browser)" }} />
             Live browser
           </span>
           <iframe
