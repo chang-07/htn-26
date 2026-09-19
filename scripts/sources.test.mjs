@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { proxiedFetch, SourceError, pageTitle } from "../src/server/sources/fetch.ts";
+import { icaoIdent, parseFlightStatus, flightStatus, describeFlight, fmtLocal } from "../src/server/sources/flight-status.ts";
+import { parseOrderStatus } from "../src/server/sources/order-status.ts";
 
 const env = { BROWSERBASE_API_KEY: "bb-test" };
 
@@ -295,4 +297,59 @@ test("parseLuma skips a malformed entry instead of dropping the whole batch", ()
   const events = parseLuma(json);
   assert.equal(events.length, 1);
   assert.equal(events[0].title, "Good Meetup");
+});
+
+test("icaoIdent turns an airline code into FlightAware's ident", () => {
+  assert.equal(icaoIdent("AC123"), "ACA123");
+  assert.equal(icaoIdent("ac 123"), "ACA123");
+  assert.equal(icaoIdent("WS1234"), "WJA1234");
+  assert.equal(icaoIdent("ACA123"), "ACA123");
+  assert.equal(icaoIdent("N12345"), "N12345");
+});
+
+test("parseFlightStatus reads gates, times and delay from trackpollBootstrap", () => {
+  const s = parseFlightStatus(fixture("flightaware.html"), "https://www.flightaware.com/live/flight/ACA123");
+  assert.ok(s);
+  assert.equal(s.ident, "ACA123");
+  assert.equal(s.iata, "AC123");
+  assert.equal(s.status, "scheduled");
+  assert.equal(s.from, "YYZ");
+  assert.equal(s.to, "YVR");
+  assert.equal(s.fromTz, "America/Toronto");
+  assert.equal(s.gateFrom, "D22");
+  assert.equal(s.terminalFrom, "1");
+  assert.equal(s.gateTo, "C41");
+  assert.equal(s.scheduledDeparture, 1789857000);
+  assert.equal(s.estimatedDeparture, 1789857000);
+  assert.equal(s.actualDeparture, undefined);
+  assert.equal(s.delayMinutes, 0);
+  assert.equal(s.url, "https://www.flightaware.com/live/flight/ACA123");
+  assert.equal(parseFlightStatus("<html></html>", "u"), undefined);
+});
+
+test("flightStatus fetches the www page through the proxy", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.equal(JSON.parse(init.body).url, "https://www.flightaware.com/live/flight/ACA123");
+    return new Response(JSON.stringify({ statusCode: 200, content: fixture("flightaware.html") }), { headers: { "content-type": "application/json" } });
+  });
+  const s = await flightStatus(env, "AC123");
+  assert.equal(s.gateFrom, "D22");
+});
+
+test("describeFlight is one chat line", () => {
+  const base = { ident: "ACA123", iata: "AC123", status: "scheduled", from: "YYZ", to: "YVR", fromTz: "America/Toronto", toTz: "America/Vancouver", gateFrom: "D22", terminalFrom: "1", gateTo: "C41", scheduledDeparture: 1789857000, estimatedDeparture: 1789857000, scheduledArrival: 1789875000, estimatedArrival: 1789875000, delayMinutes: 0, url: "https://fa" };
+  assert.equal(describeFlight(base), `AC123 YYZ→YVR: on time, departs ${fmtLocal(1789857000, "America/Toronto")} from gate D22, terminal 1`);
+  assert.equal(describeFlight({ ...base, delayMinutes: 40, estimatedDeparture: 1789857000 + 2400 }), `AC123 YYZ→YVR: delayed 40 min, now departs ${fmtLocal(1789857000 + 2400, "America/Toronto")} from gate D22, terminal 1`);
+  assert.equal(describeFlight({ ...base, status: "departed", actualDeparture: 1789857000, delayMinutes: 0 }), `AC123 YYZ→YVR: in the air, lands ${fmtLocal(1789875000, "America/Vancouver")} at gate C41`);
+  assert.equal(describeFlight({ ...base, status: "landed", actualArrival: 1789875000 }), `AC123 landed in YVR at ${fmtLocal(1789875000, "America/Vancouver")}, gate C41`);
+  assert.equal(describeFlight({ ...base, status: "cancelled" }), "AC123 YYZ→YVR is cancelled");
+});
+
+test("parseOrderStatus reads a Shopify order page's text", () => {
+  assert.deepEqual(parseOrderStatus("<html><body><h2>Thank you, Maya!</h2><p>Your order is confirmed</p></body></html>"), { fulfilled: false, delivered: false });
+  const shipped = parseOrderStatus(`<html><body><h2>Your order is on its way</h2>
+    <p>Tracking number: <a href="https://www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor=7023210000000001">7023210000000001</a></p>
+    <p>Canada Post · Estimated delivery: Tuesday, September 22</p></body></html>`);
+  assert.deepEqual(shipped, { fulfilled: true, delivered: false, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor=7023210000000001", eta: "Tuesday, September 22" });
+  assert.equal(parseOrderStatus("<html><body><h2>Delivered</h2><p>Your package was delivered.</p></body></html>").delivered, true);
 });
