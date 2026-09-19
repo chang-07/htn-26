@@ -25,6 +25,20 @@ const CURRENCIES: Record<string, { code: string; symbol: string }> = {
   euros: { code: "EUR", symbol: "€" },
 };
 
+/**
+ * A round-trip aria-label reads "…dollars round trip total", not just
+ * "…dollars" — match by the longest known currency name the phrase starts
+ * with, rather than requiring an exact match, and report the qualifier as
+ * `roundTrip` rather than losing it as an unrecognized currency string.
+ */
+function matchCurrency(words: string): { currency: { code: string; symbol: string }; roundTrip: boolean } {
+  const key = Object.keys(CURRENCIES)
+    .filter((k) => words.startsWith(k))
+    .sort((a, b) => b.length - a.length)[0];
+  if (!key) return { currency: { code: words, symbol: `${words} ` }, roundTrip: false };
+  return { currency: CURRENCIES[key], roundTrip: /round trip/i.test(words.slice(key.length)) };
+}
+
 // Google's aria-labels join the time and AM/PM with U+202F (narrow no-break
 // space), not a plain space; normalize it (and U+00A0) so the regex below,
 // and the `departs`/`arrives` strings tests compare against, use " ".
@@ -55,7 +69,7 @@ export function parseFlights(html: string, url: string): Flight[] {
     const row = ROW.exec(unescape(m[1]));
     if (!row) continue;
     const [, amount, currencyWords, stopsText, stopsN, airline, from, departs, date, to, arrives, arriveDate, duration, rest] = row;
-    const currency = CURRENCIES[currencyWords] ?? { code: currencyWords, symbol: `${currencyWords} ` };
+    const { currency, roundTrip } = matchCurrency(currencyWords);
     const stops = stopsText === "Nonstop" ? 0 : Number(stopsN);
     const key = `${airline}|${departs}|${arrives}|${stops}`;
     if (seen.has(key)) continue;
@@ -73,6 +87,7 @@ export function parseFlights(html: string, url: string): Flight[] {
       duration,
       stops,
       ...(layover ? { layover: `${layover[1]} at ${layover[2]}` } : {}),
+      ...(roundTrip ? { roundTrip: true } : {}),
       nextDay: arriveDate !== date,
       url,
     });
@@ -99,7 +114,7 @@ export function flightOption(f: Flight): { title: string; subtitle: string; book
   const stops = f.stops === 0 ? "nonstop" : `${f.stops} stop${f.stops > 1 ? "s" : ""}${f.layover ? ` (${f.layover.replace(/^.* at /, "")})` : ""}`;
   return {
     title: `${f.airline} ${f.departs} → ${f.arrives}${f.nextDay ? " +1" : ""}, ${stops}`,
-    subtitle: `${f.price} · ${f.duration} · ${shortDate(f.date)}`,
+    subtitle: `${f.price}${f.roundTrip ? " round trip" : ""} · ${f.duration} · ${shortDate(f.date)}`,
     bookingUrl: f.url,
   };
 }

@@ -93,6 +93,21 @@ test("parseFlights returns nothing on a page without results", () => {
   assert.deepEqual(parseFlights("<html><title>Google Flights</title></html>", "https://x"), []);
 });
 
+test("parseFlights reads a round-trip total, not just an exact currency match", () => {
+  // A real one-way aria-label from the fixture, with the currency phrase
+  // edited to the "round trip total" form Google uses for round trips
+  // (confirmed live in Step 5): "From 368 Canadian dollars round trip total. …"
+  const label =
+    "From 368 Canadian dollars round trip total. Nonstop flight with Flair Airlines. Leaves Toronto Pearson International Airport at 1:55 PM on Saturday, October 10 and arrives at Vancouver International Airport at 4:05 PM on Saturday, October 10. Total duration 5 hr 10 min.   0 carry-on bags included. 0 checked bags included.  Select flight";
+  const html = `<div aria-label="${label}"></div>`;
+  const flights = parseFlights(html, "https://x");
+  assert.equal(flights.length, 1);
+  assert.equal(flights[0].price, "CA$368");
+  assert.equal(flights[0].currency, "CAD");
+  assert.equal(flights[0].roundTrip, true);
+  assert.equal(flightOption(flights[0]).subtitle, "CA$368 round trip · 5 hr 10 min · Sat Oct 10");
+});
+
 test("searchFlights fetches through the proxy and caps at 12", async (t) => {
   t.mock.method(globalThis, "fetch", async (url, init) => {
     assert.equal(url, "https://api.browserbase.com/v1/fetch");

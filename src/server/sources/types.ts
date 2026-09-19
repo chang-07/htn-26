@@ -15,6 +15,7 @@ export type Flight = {
   duration: string;
   stops: number;
   layover?: string;
+  roundTrip?: boolean;
   nextDay: boolean;
   url: string;
 };
