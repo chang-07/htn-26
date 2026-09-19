@@ -177,3 +177,83 @@ test("stayOption is one ballot line", () => {
   });
   assert.equal(stayOption({ name: "Inn", nightly: "$99", url: "https://g" }).subtitle, "$99/night");
 });
+
+import { parseTicketmasterSearch, parseTicketmasterEvents, parseLuma, findEvents, eventOption } from "../src/server/sources/events.ts";
+
+test("parseTicketmasterSearch resolves a team to its artist id", () => {
+  assert.deepEqual(parseTicketmasterSearch(fixture("ticketmaster-search.html"), "Toronto Raptors"), { id: "806034", title: "Toronto Raptors" });
+  assert.equal(parseTicketmasterSearch("<html></html>", "Toronto Raptors"), undefined);
+});
+
+test("parseTicketmasterEvents maps title, date, venue, on-sale and flags", () => {
+  const events = parseTicketmasterEvents(fixture("ticketmaster-events.json"));
+  assert.ok(events.length >= 5);
+  const first = events[0];
+  assert.equal(first.source, "ticketmaster");
+  assert.ok(first.title.length > 3);
+  assert.equal(first.when, "2026-10-03T23:00:00Z");
+  assert.equal(first.venue, "Centre Videotron");
+  assert.equal(first.city, "Quebec, QC");
+  assert.match(first.url, /^https:\/\/www\.ticketmaster\.ca\/.+\/event\//);
+  assert.equal(first.onsale, "2026-09-11T14:00:00Z");
+  assert.equal(first.soldOut, false);
+  const spurs = events.find((e) => /Spurs/.test(e.title));
+  assert.ok(spurs, "no Spurs game");
+  assert.equal(spurs.city, "Toronto, ON");
+});
+
+test("parseLuma maps the city feed", () => {
+  const events = parseLuma(fixture("luma-toronto.json"));
+  assert.equal(events.length, 5);
+  assert.equal(events[0].source, "luma");
+  assert.match(events[0].title, /^Future Legends/);
+  assert.equal(events[0].when, "2026-09-19T13:00:00.000Z");
+  assert.equal(events[0].venue, "William Doo Auditorium");
+  assert.equal(events[0].city, "Toronto, ON");
+  assert.equal(events[0].url, "https://luma.com/fl0ap8aq");
+});
+
+test("findEvents with a query goes search page → events API, city matches first, soonest first", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const target = JSON.parse(init.body).url;
+    calls.push(target);
+    const content = /\/search\?q=/.test(target) ? fixture("ticketmaster-search.html") : fixture("ticketmaster-events.json");
+    return new Response(JSON.stringify({ statusCode: 200, content }), { headers: { "content-type": "application/json" } });
+  });
+  const events = await findEvents(env, { city: "Toronto", query: "Toronto Raptors" }, new Date("2026-09-20T00:00:00Z"));
+  assert.equal(calls[0], "https://www.ticketmaster.ca/search?q=Toronto%20Raptors");
+  assert.equal(calls[1], "https://www.ticketmaster.ca/api/search/events/artist/806034?page=0&countryCodes=CA");
+  assert.ok(events.length <= 10);
+  assert.equal(events[0].city, "Toronto, ON", "an out-of-town event came first");
+  const firstAway = events.findIndex((e) => e.city !== "Toronto, ON");
+  if (firstAway >= 0) assert.ok(events.slice(firstAway).every((e) => e.city !== "Toronto, ON"), "Toronto events are not all first");
+  const toronto = events.filter((e) => e.city === "Toronto, ON");
+  for (let i = 1; i < toronto.length; i++) assert.ok(toronto[i].when >= toronto[i - 1].when, "not soonest first");
+});
+
+test("findEvents without a query reads Luma directly, next 30 days only", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.equal(url, "https://api.luma.com/discover/get-paginated-events?slug=toronto&pagination_limit=20");
+    assert.equal(init.method ?? "GET", "GET");
+    return new Response(fixture("luma-toronto.json"));
+  });
+  const events = await findEvents(env, { city: "Toronto" }, new Date("2026-09-19T00:00:00Z"));
+  assert.equal(events.length, 5);
+  const none = await findEvents(env, { city: "Toronto" }, new Date("2026-12-01T00:00:00Z"));
+  assert.equal(none.length, 0);
+});
+
+test("eventOption is one ballot line", () => {
+  const e = { title: "Toronto Raptors vs. San Antonio Spurs", when: "2026-12-17T00:30:00Z", venue: "Scotiabank Arena", city: "Toronto, ON", url: "https://t", onsale: "2026-09-17T16:00:00Z", soldOut: false, limited: true, source: "ticketmaster" };
+  // The same formatter the source uses, so the test pins the words around the date, not the locale's punctuation.
+  const when = new Date(e.when).toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  assert.match(when, /Dec 16/);
+  const o = eventOption(e, "America/Toronto");
+  assert.equal(o.title, "Toronto Raptors vs. San Antonio Spurs");
+  assert.equal(o.subtitle, `${when} · Scotiabank Arena · few left`);
+  assert.equal(o.bookingUrl, "https://t");
+  assert.equal(eventOption({ ...e, soldOut: true, limited: false }, "America/Toronto").subtitle, `${when} · Scotiabank Arena · sold out`);
+  assert.equal(eventOption({ ...e, onsale: "2026-12-01T16:00:00Z", limited: false }, "America/Toronto", new Date("2026-11-01T00:00:00Z")).subtitle, `${when} · Scotiabank Arena · on sale Dec 1`);
+  assert.equal(eventOption({ ...e, onsale: undefined, limited: false, source: "luma" }, "America/Toronto").subtitle, `${when} · Scotiabank Arena · free to RSVP`);
+});
