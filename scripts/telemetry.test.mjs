@@ -84,3 +84,18 @@ test("Sentry export scrubs request data, model payloads, personal contexts and e
   assert.deepEqual(log.attributes, { tokens: 100 });
   assert.equal(sentryOptions({}).enabled, false);
 });
+
+test("trace timeline pairs ends with starts, retains unfinished spans, and uses elapsed fallback", async () => {
+  const { traceTimeline } = await import("../src/shared/run-diagnostics.ts");
+  const event = (seq, ts, kind, fields) => ({ seq, ts, event: kind, level: "info", fields });
+  const result = traceTimeline([
+    event(0, 1000, "trace.start", { traceId: "a", spanId: "1", started: 1000 }),
+    event(1, 1200, "trace.end", { traceId: "a", spanId: "1", ms: 200 }),
+    event(2, 1100, "trace.start", { traceId: "b", spanId: "1", started: 1100 }),
+    event(3, 1500, "trace.end", { traceId: "a", spanId: "2", started: 1050, ms: 450 }),
+  ]);
+  assert.equal(result.rows.length, 3);
+  assert.deepEqual(result.rows.map((r) => [r.start, r.duration]), [[1000, 200], [1050, 450], [1100, null]]);
+  assert.equal(result.duration, 500);
+  assert.deepEqual(traceTimeline([]), { rows: [], start: 0, duration: 1 });
+});

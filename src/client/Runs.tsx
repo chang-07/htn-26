@@ -345,8 +345,8 @@ export function Runs() {
               >
                 Background
               </button>
-              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Print every step's fields on the tape">
-                Raw
+              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Include trace events and raw fields in the activity feed">
+                All events
               </button>
               <button className="rv-btn is-quiet" onClick={flipTheme} title="Switch between paper and night">
                 {theme === "light" ? "Night" : "Paper"}
@@ -381,7 +381,9 @@ export function Runs() {
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
-                <RunDiagnostics events={nodes} onPick={setPicked} />
+                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} finished={detail.ended !== null} />
+                <h2 style={{ fontSize: 18, margin: "8px 0" }}>Activity</h2>
+                <p style={{ fontSize: 12, color: "var(--soft)", margin: "0 0 16px" }}>Messages, decisions and results in order. Select an event for details.</p>
                 <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
               </div>
             </>

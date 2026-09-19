@@ -470,7 +470,7 @@ export function RunTape({
       )}
       {hidden > 0 && !running && (
         <p style={{ margin: "18px 0 0 8px", fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)" }}>
-          {hidden} bookkeeping row{hidden === 1 ? "" : "s"} folded away. Raw prints every event.
+          {hidden} bookkeeping row{hidden === 1 ? "" : "s"} folded away. All events shows every recorded event.
         </p>
       )}
 
@@ -511,7 +511,8 @@ function toBlocks(nodes: Node[], raw: boolean, liveSeq: number | null): { blocks
 
   const folded = (n: Node) =>
     n.seq !== liveSeq && n.level !== "error" && (
-      n.event === "presence" || n.event === "turn.start" || n.event === "turn.end" || n.event === "trace.start" ||
+      n.event === "presence" || n.event === "turn.start" || n.event === "turn.end" ||
+      ["trace.start", "trace.end", "provider.response", "llm.usage"].includes(n.event) ||
       // A step with nothing to say for itself: the tool rows after it are what it chose.
       (n.event === "turn.step" && !str(n.fields.decision)) ||
       // Already on the tape in its own words: the message that went out, the research that started.
@@ -881,7 +882,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
             ))}
           </Section>
         )}
-        {Object.keys(raw).length > 0 && <Section label="Raw event"><FieldList fields={raw} lines={8} /></Section>}
+        {Object.keys(raw).length > 0 && <details><summary style={{ cursor: "pointer", fontSize: 13 }}>Technical details & trace IDs</summary><div style={{ marginTop: 12 }}><FieldList fields={raw} lines={8} /></div></details>}
       </div>
     </div>
   );
