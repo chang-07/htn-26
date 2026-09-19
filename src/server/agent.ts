@@ -415,6 +415,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
    */
   private async offerProfileCard() {
     if (this.getMeta("is_group") !== "0" || this.getMeta("profile_card_sent") === "1") return;
+    if (this.getMeta("profile_card_hold") === "1") {
+      this.setMeta("profile_card_hold", "");
+      return;
+    }
     const person = this.participants()[0];
     if (!person) return;
     const store = peopleStore(this.env);
@@ -446,7 +450,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** Called by the profile form when it is saved. */
   async profileSaved(name?: string) {
-    this.note("info", "profile.saved_via_form", {});
+    // A double-tapped Save posts the form several times within a second or two;
+    // one save deserves one text.
+    const recent = Date.now() - Number(this.getMeta("profile_ack_at") ?? 0) < 60_000;
+    this.note("info", "profile.saved_via_form", recent ? { ack: "skipped, just sent" } : {});
+    if (recent) return;
+    this.setMeta("profile_ack_at", String(Date.now()));
     await this.say(`got it${name ? `, ${name}` : ""}. add me to any group chat and @ me when you want something planned`);
   }
 
@@ -678,7 +687,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
         role: "user",
         content: `People in the chat: ${people.map((p) => this.label(p.handle, people)).join(", ")}
 About the people: ${about.text}
-Where the group is based: ${this.getMeta("area") ?? "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
+Where the group is based: ${this.getMeta("area") || "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
 Shopping list: ${this.shoppingListContext()}
 Headcount: ${this.headcountContext()}
@@ -885,7 +894,19 @@ ${transcript}`,
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
         await peopleStore(this.env).forget(person.handle);
-        return "Deleted their profile and everything remembered about them.";
+
+        // "Forget me" has to mean this chat too, not only the shared profile:
+        // the name this chat learned, and in their own direct chat the area and
+        // the record that onboarding already happened — otherwise they are still
+        // greeted by name, and a fresh start never offers the profile card again.
+        this.sql`UPDATE participants SET name = NULL WHERE handle = ${person.handle}`;
+        if (this.getMeta("is_group") === "0") {
+          for (const key of ["area", "profile_card_sent", "profile_link_sent", "profile_ack_at"]) this.setMeta(key, "");
+          // Not in the same breath as the deletion: the card waits until they write again.
+          this.setMeta("profile_card_hold", "1");
+        }
+        this.note("info", "person.forgotten", { who: mask(person.handle) });
+        return "Deleted their profile and everything remembered about them, here and in every other chat. Confirm that in one line and do not use their name.";
       }
 
       case "research": {
