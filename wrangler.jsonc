@@ -69,7 +69,7 @@
     // "demo" = OpenAI credits. "dev" = whatever DEV_LLM_* points at (Workers AI,
     // Ollama, ...) so testing doesn't spend them.
     "LLM_PROFILE": "dev",
-    "OPENAI_MODEL": "gpt-5-mini",
+    "OPENAI_MODEL": "gpt-5.6-luna",
     "BOOKING_DRY_RUN": "true",
     "IMESSAGE_APP_NAME": "Plan",
     // "true" records message text and the model's reasoning into run history,
