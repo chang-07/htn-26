@@ -212,7 +212,8 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/react") {
     // Reacts to whatever the plan card's id currently is, real or dry.
-    const messageId = (await agent.currentCardId()) ?? "dry-plan";
+    // {"on":"rsvp"} reacts to the open Who's in ticket instead.
+    const messageId = (body.on === "rsvp" ? await agent.currentRsvpId() : await agent.currentCardId()) ?? "dry-plan";
     await agent.ingestReaction({ messageId, from: body.from, reactionType: body.reaction });
     return Response.json({ ok: true });
   }
@@ -296,10 +297,24 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
   const plan = (await agent.state) as PlanState;
 
-  const cart = url.searchParams.get("kind") === "cart" ? plan.cart : undefined;
-  const key = `${name}/${cart ? "cart-" : ""}${plan.version}.png`;
   // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
   const bucket = (env as { CARDS?: R2Bucket }).CARDS;
+
+  const ticketId = url.searchParams.get("t");
+  if (ticketId) {
+    // A stored ticket never changes, so its id is the whole cache key.
+    const key = `${name}/t-${ticketId}.png`;
+    const hit = await bucket?.get(key);
+    if (hit) return new Response(hit.body, { headers: pngHeaders });
+    const ticket = await agent.getTicket(ticketId);
+    if (!ticket) return new Response("Not found", { status: 404 });
+    const image = await (await renderTicket(ticket)).arrayBuffer();
+    if (bucket) ctx.waitUntil(bucket.put(key, image));
+    return new Response(image, { headers: pngHeaders });
+  }
+
+  const cart = url.searchParams.get("kind") === "cart" ? plan.cart : undefined;
+  const key = `${name}/${cart ? "cart-" : ""}${plan.version}.png`;
   const cached = await bucket?.get(key);
   if (cached) return new Response(cached.body, { headers: pngHeaders });
 

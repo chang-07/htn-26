@@ -180,7 +180,8 @@ export function cartTicket(cart: CartSummary, people = 0, paidBy?: string): Tick
       ...shown.map((l) => ({ lead: `${l.quantity}×`, text: l.title, tail: l.price })),
       ...(each ? [{ text: `Split ${people} ways`, tail: each }] : []),
     ],
-    stub: { big: short, label: "Tap to pay" },
+    // A photo cannot be tapped; the pay card sits directly under it.
+    stub: { big: short, label: "Total" },
   };
 }
 

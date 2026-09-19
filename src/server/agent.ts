@@ -4,7 +4,8 @@ import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { sendCard, sendText, sendTicket, tapbackLegend, updateCard } from "./linq";
+import { cartTicket, matchTicket, planTicket, rsvpTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { sendCard, sendPhoto, sendText, tapbackLegend, updateCard } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
@@ -44,6 +45,10 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
+- Tickets are photos the group sees: show_venue when someone asks about one
+  place, ask_rsvp once a time and place are fixed, mark_paid when a person says
+  they paid, introduce_match for a pair from the pool. A ticket speaks for
+  itself, so never restate one in text.
 - Only add someone to the match pool when they themselves asked to join.
 - In a group you sleep while people talk among themselves, and are woken only
   when someone @mentions you, replies to one of your messages, or answers a
@@ -113,6 +118,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       ok INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, report TEXT NOT NULL
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS tickets (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL, json TEXT NOT NULL, message_id TEXT, ts INTEGER NOT NULL
+    )`;
+    this.sql`CREATE TABLE IF NOT EXISTS rsvps (handle TEXT PRIMARY KEY, answer TEXT NOT NULL)`;
     this.sql`CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
@@ -196,6 +205,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
   async ingestReaction(r: { messageId: string; from: string; reactionType: string }) {
     // Every redraw gives the card a new message id, and a tapback can land on
     // whichever one the reacting phone last saw — so match all of them.
+    // A thumbs up or down on the open Who's in ticket is an RSVP, not a vote.
+    const onRsvp = this.sql<Row>`SELECT 1 FROM tickets WHERE kind = 'rsvp' AND message_id = ${r.messageId}`.length > 0;
+    if (onRsvp && this.getMeta("rsvp_open") === "1") {
+      const answer = r.reactionType === "like" || r.reactionType === "love" ? "in" : r.reactionType === "dislike" ? "out" : null;
+      if (!answer) return void this.note("info", "reaction.ignored", { reason: "not an rsvp tapback", type: r.reactionType });
+      this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${r.from})`;
+      await this.recordRsvp(r.from, answer, "reaction");
+      return;
+    }
     if (!this.cardIds().includes(r.messageId)) {
       this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
       return;
@@ -300,13 +318,66 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (newId) this.rememberCardId(newId);
   }
 
-  /** Posts the ticket photo. Never worth failing a turn over. */
-  private async ticket() {
-    return; // disabled: was spamming the chat
-    await timed("agent", "ticket.out", { version: this.state.version }, () =>
-      sendTicket(this.env, this.name, this.name, this.state),
-      this.note,
-    ).catch(() => {});
+  // ---------------------------------------------------------------- tickets
+  // Every card the agent shows is a ticket (see card.ts). It is stored here,
+  // rendered on demand at /card/<chat>?t=<id>, and sent as a photo.
+
+  /** Called over RPC by the /card route. */
+  async getTicket(id: string): Promise<Ticket | null> {
+    const row = this.sql<{ json: string }>`SELECT json FROM tickets WHERE id = ${id}`[0];
+    return row ? (JSON.parse(row.json) as Ticket) : null;
+  }
+
+  /** Posts a ticket photo. Never worth failing a turn over. */
+  private async postTicket(kind: string, ticket: Ticket): Promise<string | undefined> {
+    const id = crypto.randomUUID().slice(0, 12);
+    this.sql`INSERT INTO tickets (id, kind, json, ts) VALUES (${id}, ${kind}, ${JSON.stringify(ticket)}, ${Date.now()})`;
+    this.sql`DELETE FROM tickets WHERE ts < ${Date.now() - 7 * 24 * 3600 * 1000}`;
+    const url = `${this.env.PUBLIC_BASE_URL}/card/${encodeURIComponent(this.name)}?t=${id}`;
+    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id }, () => sendPhoto(this.env, this.name, url), this.note).catch(
+      () => undefined,
+    );
+    if (messageId) this.sql`UPDATE tickets SET message_id = ${messageId} WHERE id = ${id}`;
+    return messageId;
+  }
+
+  /**
+   * The plan ticket goes out when the ballot actually changes and when the
+   * booking lands — not on every propose_plan, which models call freely.
+   */
+  private async planTicketIfNew() {
+    const key = this.state.status === "booked" ? `booked:${this.state.chosenOptionId}` : this.state.options.map((o) => o.title).join("|");
+    if (this.getMeta("plan_ticket_key") === key) return;
+    this.setMeta("plan_ticket_key", key);
+    await this.postTicket("plan", planTicket(this.state));
+  }
+
+  private rsvps(): Rsvps {
+    const people = this.participants();
+    const answers = new Map(this.sql<{ handle: string; answer: string }>`SELECT handle, answer FROM rsvps`.map((r) => [r.handle, r.answer]));
+    const names = (want: string | undefined) => people.filter((p) => answers.get(p.handle) === want).map((p) => this.label(p.handle, people));
+    return {
+      title: this.getMeta("rsvp_title") || "Who's in?",
+      when: this.getMeta("rsvp_when") || undefined,
+      going: names("in"),
+      out: names("out"),
+      waiting: names(undefined),
+      locked: this.getMeta("rsvp_open") !== "1",
+    };
+  }
+
+  private async recordRsvp(handle: string, answer: "in" | "out", source: string) {
+    this.sql`INSERT INTO rsvps (handle, answer) VALUES (${handle}, ${answer})
+             ON CONFLICT(handle) DO UPDATE SET answer = excluded.answer`;
+    this.note("info", "rsvp", { from: mask(handle), answer, source });
+    // Photos cannot redraw, so nothing is posted per answer — only the close.
+    if (this.rsvps().waiting.length === 0) await this.lockHeadcount();
+  }
+
+  private async lockHeadcount() {
+    if (this.getMeta("rsvp_open") !== "1") return;
+    this.setMeta("rsvp_open", "0");
+    await this.postTicket("rsvp", rsvpTicket(this.rsvps()));
   }
 
   private async say(text: string) {
@@ -530,7 +601,7 @@ ${transcript}`,
         });
 
         // A new set of options is a moment worth a photo; votes are not.
-        await this.ticket();
+        await this.planTicketIfNew();
         if (this.getMeta("card_message_id")) {
           await this.syncCard();
         } else {
@@ -600,6 +671,8 @@ ${transcript}`,
           return `Nothing could be added, so no card was posted. Store says: ${cart.messages.join("; ") || "no reason given"}. Choose a different variant from shop_search.`;
         }
         this.publish({ cart: { shop, checkoutUrl: cart.checkoutUrl, total: cart.total, lines: cart.lines } });
+        // The photo first, so the pay card lands directly under what it is for.
+        await this.postTicket("cart", cartTicket(this.state.cart!, this.participants().length));
 
         const messageId = this.getMeta(`cart_message_id:${shop}`);
         if (messageId) {
@@ -617,6 +690,70 @@ ${transcript}`,
         return `Cart card ${messageId ? "redrawn" : "posted"} with its checkout link. ${summary}. Total ${cart.total}.${
           cart.messages.length ? ` Store says: ${cart.messages.join("; ")}` : ""
         }`;
+      }
+
+      case "mark_paid": {
+        const { who } = parseToolArgs("mark_paid", rawArgs);
+        if (!this.state.cart) return "There is no cart in this chat.";
+        await this.postTicket("cart", cartTicket(this.state.cart, this.participants().length, who));
+        return "PAID ticket posted.";
+      }
+
+      case "show_venue": {
+        const { name } = parseToolArgs("show_venue", rawArgs);
+        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const same = (s: string) => norm(s).includes(norm(name)) || norm(name).includes(norm(s));
+        const report = this.sql<{ report: string }>`SELECT report FROM research WHERE ok = 1 ORDER BY id DESC LIMIT 1`[0];
+        const found = report ? (JSON.parse(report.report) as ResearchReport).candidates.find((c) => same(c.name)) : undefined;
+        const slot = this.state.options.findIndex((o) => same(o.title));
+        const option = this.state.options[slot];
+        // Only what research found or the plan already says: nothing is invented here.
+        if (!found && !option) return `Nothing is known about "${name}". Run research first, or use the exact name.`;
+        await this.postTicket(
+          "venue",
+          venueTicket(
+            found
+              ? { name: found.name, kind: found.kind, price: found.price, why: found.why, address: found.address, caveat: found.caveat }
+              : { name: option.title, why: option.subtitle },
+            this.state.status === "voting" ? slot : -1,
+            option ? (this.state.counts[option.id] ?? 0) : 0,
+          ),
+        );
+        return "Venue ticket posted. Do not repeat its contents in text.";
+      }
+
+      case "ask_rsvp": {
+        const args = parseToolArgs("ask_rsvp", rawArgs);
+        this.sql`DELETE FROM rsvps`;
+        this.setMeta("rsvp_open", "1");
+        this.setMeta("rsvp_title", args.title ?? "");
+        this.setMeta("rsvp_when", args.when ?? "");
+        await this.postTicket("rsvp", rsvpTicket(this.rsvps()));
+        return "Who's in ticket posted. People answer with a thumbs up or down on it; record_rsvp covers anyone who answers in words.";
+      }
+
+      case "record_rsvp": {
+        const { who, answer } = parseToolArgs("record_rsvp", rawArgs);
+        if (this.getMeta("rsvp_open") !== "1") return "No headcount is open. Call ask_rsvp first.";
+        const person = this.participants().find((p) => this.label(p.handle) === who);
+        if (!person) return `No participant labelled ${who}`;
+        await this.recordRsvp(person.handle, answer, "text");
+        return JSON.stringify(this.rsvps());
+      }
+
+      case "get_rsvps":
+        return JSON.stringify(this.rsvps());
+
+      case "lock_headcount": {
+        if (this.getMeta("rsvp_open") !== "1") return "No headcount is open.";
+        await this.lockHeadcount();
+        return JSON.stringify(this.rsvps());
+      }
+
+      case "introduce_match": {
+        const { a, b, common } = parseToolArgs("introduce_match", rawArgs);
+        await this.postTicket("match", matchTicket(a, b, common));
+        return "Introduction ticket posted. Follow it with one short line, not a summary of the ticket.";
       }
 
       case "join_match_pool": {
@@ -762,6 +899,12 @@ ${transcript}`,
       SELECT linq_id FROM messages WHERE direction = 'out' AND linq_id IS NOT NULL ORDER BY id DESC LIMIT 1`[0]?.linq_id;
   }
 
+  /** Simulator only: the open Who's in ticket's message id. */
+  async currentRsvpId() {
+    return this.sql<{ message_id: string }>`
+      SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
+  }
+
   /** Simulator only: the plan card's current message id. */
   async currentCardId() {
     return this.getMeta("card_message_id");
@@ -791,7 +934,7 @@ ${transcript}`,
       bookingNote: result.ok ? result.confirmation : result.detail,
     });
     await this.syncCard();
-    if (result.ok) await this.ticket();
+    if (result.ok) await this.planTicketIfNew();
     await this.say(
       result.ok
         ? `booked ${option?.title ?? "it"}${result.confirmation ? ` — ${result.confirmation}` : ""}`

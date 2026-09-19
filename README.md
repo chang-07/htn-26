@@ -320,6 +320,14 @@ localhost-only and return 404 on the deployed Worker.
   on every demo phone. (Setting your own identity instead requires your own
   Messages extension on each phone; a *wrong* identity renders as plain text
   with no error.)
+- **Designed cards are photos ("tickets").** Agent Apps draws the card bubble
+  itself and shows none of our image, so every designed card — plan, venue,
+  who's in, order, match intro — is one ticket renderer (`src/server/card.ts`)
+  sent as a photo at the moment it opens and the moment it resolves, never per
+  change. Tickets are stored per chat and served at `/card/<chat>?t=<id>`.
+  Preview any of them without a chat at
+  `/api/dev/card?kind=plan|cart|venue|rsvp|match&state=open|done`; the designs
+  are in `docs/card-system-mockups.html`.
 - **A card's message id changes on every redraw.** `updateCard` returns the new
   id and the caller must store it, or the next redraw and every tapback after
   it will miss. The agent keeps all of a card's ids for tapback matching.
