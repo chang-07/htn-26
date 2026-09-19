@@ -47,8 +47,10 @@ if (cmd === "show") {
   if (!image_url) throw new Error("No photo: set PUBLIC_BASE_URL in .env or pass --image <url>");
   const phone_number = await ourNumber();
   const body = { phone_number, first_name, image_url, ...(rest.length ? { last_name: rest.join(" ") } : {}) };
-  // create refuses (409) once a card is active, so an existing card is updated.
-  const exists = (await cards()).some((c) => c.phone_number === phone_number);
+  // create refuses (409) once a card is active, so an active card is updated.
+  // A number with no card yet is listed as an inactive placeholder, and
+  // update answers 404 for it, so only an active card counts as existing.
+  const exists = (await cards()).some((c) => c.phone_number === phone_number && c.is_active);
   show(exists ? await linq.contactCard.update(body) : await linq.contactCard.create(body));
 } else {
   console.log("usage: linq-contact-card.mjs show | set [name] [--image <url>] [--number <e164>]");
