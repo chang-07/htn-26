@@ -63,8 +63,8 @@ export const toolSchemas = {
       .describe("A place that is part of the outing but not on the ballot, from the Research findings"),
     partySize: z.number().int().min(1),
     isoTime: z.string().describe("ISO 8601 local time of the reservation"),
-    contactName: z.string().describe("Full name the reservation goes under — a real person in the chat, as they gave it"),
-    contactEmail: z.string().describe("That person's email, exactly as they typed it. Never invent one."),
+    contactName: z.string().optional().describe("Full name the reservation goes under — a real person in the chat, as they gave it. Required for a restaurant or venue reservation only."),
+    contactEmail: z.string().optional().describe("That person's email, exactly as they typed it. Never invent one. Required for a restaurant or venue reservation only."),
     contactPhone: z.string().optional().describe("Their phone number, only if they gave one in the chat. Never invent one."),
   }),
   shop_search: z.object({
@@ -188,6 +188,49 @@ export const toolSchemas = {
     who: z.string().optional().describe("The speaker label of whoever asked for it"),
   }),
   show_playlist: z.object({}),
+  search_flights: z.object({
+    from: z.string().min(2).max(40).describe("Airport code or city, e.g. YYZ or Toronto"),
+    to: z.string().min(2).max(40),
+    depart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("YYYY-MM-DD"),
+    return: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD; omit for one way"),
+    adults: z.number().int().min(1).max(9).optional(),
+  }),
+  search_stays: z.object({
+    where: z.string().min(2).max(60).describe("City or neighbourhood, e.g. downtown Vancouver"),
+    checkin: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    checkout: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    adults: z.number().int().min(1).max(9).optional(),
+  }),
+  find_events: z.object({
+    city: z.string().min(2).max(60),
+    query: z.string().max(80).optional().describe("A team, artist or show for ticketed events. Omit for what's on in the city."),
+    country: z.string().length(2).optional().describe("ISO country, default CA"),
+  }),
+  add_to_itinerary: z.object({
+    optionId: z.string().optional().describe("The winning ballot option"),
+    item: z
+      .object({
+        kind: z.enum(["flight", "stay", "event", "venue"]),
+        title: z.string(),
+        subtitle: z.string().optional(),
+        url: z.string().optional(),
+        price: z.string().optional(),
+      })
+      .optional()
+      .describe("Something settled without a vote, e.g. the one flight everyone agreed on in text"),
+    kind: z.enum(["flight", "stay", "event", "venue"]).optional().describe("What the winning option is, when it is a ballot option. Inferred from the option's link when omitted; only a plain venue link needs it said."),
+  }),
+  watch_flight: z.object({
+    ident: z.string().min(3).max(8).describe("Airline code and number, e.g. AC123"),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    itemId: z.string().optional().describe("The itinerary item this flight is, if any"),
+  }),
+  confirm_item: z.object({
+    itemId: z.string(),
+    note: z.string().max(60).optional().describe("Confirmation number or what they said"),
+    price: z.string().optional().describe("What was paid, as they said it, e.g. 'CA$254'"),
+    paidBy: z.string().optional().describe("Who paid, as they are shown in the transcript"),
+  }),
 } as const;
 
 export type ToolName = keyof typeof toolSchemas;
@@ -256,6 +299,18 @@ const descriptions: Record<ToolName, string> = {
     "Add a song someone named to the group playlist. It is looked up on iTunes, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
   show_playlist:
     "Post (or repost) the playlist card so the group can open the player. Use when someone asks to see or play the playlist and there is no card in recent view.",
+  search_flights:
+    "Real flights from Google Flights, cheapest first, back in this turn. Each result is shaped as a ballot option with its price: put 2-4 on propose_plan. The link opens the airline's own checkout on their phone: you never book flights. Dates as YYYY-MM-DD; ask if the group has not said when.",
+  search_stays:
+    "Real hotels from Google Hotels for a city and dates, cheapest first, back in this turn, shaped as ballot options with nightly prices. Same rules as flights: propose, never book.",
+  find_events:
+    "What's on: with a query (a team, an artist, a show) it reads Ticketmaster for real dates, venues and on-sale status; without one it lists the city's upcoming events from Luma. Back in this turn, shaped as ballot options.",
+  add_to_itinerary:
+    "Once a vote has clearly settled (check get_votes), record the winner as a stop on the trip. It posts the itinerary ticket, gives the group the link to finish it, and clears the ballot so the next segment (the hotel, the game) can open. Say kind for a ballot option, or pass item for something agreed in text.",
+  watch_flight:
+    "When someone gives a flight number (AC123), read its live status now and keep watching: gate, delay, departed, landed are posted on their own from 36 hours before departure. Pass itemId when it is a stop on the itinerary.",
+  confirm_item:
+    "When a person says they booked or paid for an itinerary stop, mark it confirmed. With price and paidBy it also logs the expense so the invoice splits it.",
 };
 
 export function openAiTools() {
