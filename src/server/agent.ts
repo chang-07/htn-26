@@ -14,6 +14,9 @@ import { flightOption, searchFlights } from "./sources/flights";
 import { searchStays, stayOption } from "./sources/stays";
 import { eventOption, findEvents } from "./sources/events";
 import { describeFlight, flightStatus } from "./sources/flight-status";
+import { orderStatus } from "./sources/order-status";
+import { diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "./sources/watch";
+import type { FlightStatus, OrderStatus } from "./sources/types";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
 import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
@@ -838,6 +841,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (result.status === "paid" && cart) {
       const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
       this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
+      if (result.orderUrl) {
+        const item = await this.addItineraryItem({ kind: "order", title: result.shop, status: "watching", paidBy: who, url: result.orderUrl, watch: { order: { url: result.orderUrl, shop: result.shop } } });
+        this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+        await this.scheduleWatches();
+      }
       await this.postTicket("cart", cartTicket(paid, this.headcount()));
       // The store's receipt first, then — if that was the last one — the split.
       await this.invoiceIfSettled();
@@ -1204,8 +1212,115 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return `${what} did not answer this time. Say so in one line and offer to try again.`;
   }
 
-  /** Replaced in Task 8: schedules checkWatches while any watch is active. */
-  private async scheduleWatches() {}
+  private static WATCH_SECONDS = 15 * 60;
+
+  /** One timer at a time: a watch added while one is pending does not add a second. */
+  private async scheduleWatches() {
+    if (!this.activeWatches().length) return;
+    if (this.getMeta("watch_timer") === "1") return;
+    this.setMeta("watch_timer", "1");
+    await this.schedule(PlanAgent.WATCH_SECONDS, "checkWatches");
+  }
+
+  private activeWatches(): { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] {
+    const now = Date.now();
+    const out: { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] = [];
+    for (const item of this.itinerary()) {
+      if (!item.watch || item.status === "done") continue;
+      const row = this.sql<{ snapshot: string | null; failures: number; started: number }>`SELECT snapshot, failures, started FROM watches WHERE item_id = ${item.id}`[0];
+      if (!row) continue;
+      const snap = row.snapshot ? (JSON.parse(row.snapshot) as FlightStatus | OrderStatus) : undefined;
+      const active = "flight" in item.watch ? flightWatchActive(snap as FlightStatus | undefined, now) : orderWatchActive(row.started, snap as OrderStatus | undefined, now);
+      if (active) out.push({ item, row });
+    }
+    return out;
+  }
+
+  /**
+   * Scheduled: read every active watch, post only what changed, reschedule
+   * while anything is still worth watching. Three failures in a row on one
+   * item say so once and back off to hourly for it.
+   */
+  async checkWatches() {
+    this.setMeta("watch_timer", "");
+    const watches = this.activeWatches();
+    this.note("info", "watch.check", { active: watches.length });
+    for (const { item, row } of watches) {
+      if (row.failures >= 3 && row.failures % 4 !== 3) {
+        this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
+        continue; // hourly, in 15-minute ticks
+      }
+      const watch = item.watch!; // activeWatches only returns items with one
+      try {
+        const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+        if ("flight" in watch) {
+          const next = await flightStatus(this.env, watch.flight.ident);
+          if (!next) throw new Error("no status");
+          await this.applyWatch(item, next, diffFlight(prev, next));
+        } else {
+          const next = await orderStatus(this.env, watch.order.url);
+          await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop));
+        }
+      } catch (err) {
+        const failures = row.failures + 1;
+        this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+        this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
+        if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+      }
+    }
+    await this.scheduleWatches();
+  }
+
+  /** Store the snapshot, say the lines, and settle the item once it is over. */
+  private async applyWatch(item: ItineraryItem, next: FlightStatus | OrderStatus, lines: string[]) {
+    this.sql`UPDATE watches SET snapshot = ${JSON.stringify(next)}, failures = 0, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+    const over = "delivered" in next ? next.delivered : next.status === "landed" || next.status === "cancelled";
+    if (lines.length || over) {
+      const last = lines.at(-1);
+      this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, ...(over ? { status: "done" as const } : {}), ...(last ? { lastUpdate: last.replace(/^\S+ (is |now )?/, "").replace(/\.\s*https?:\/\/\S+$/, "") } : {}) } : i)));
+    }
+    for (const line of lines) {
+      this.note("info", "watch.posted", { id: item.id, line: line.slice(0, 80) });
+      await this.say(line);
+    }
+    if (over) await this.postItinerary();
+  }
+
+  /** Simulator: the store shipped (or delivered) this order. */
+  async devShipped(itemId: string, snap: OrderStatus) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item || !item.watch || !("order" in item.watch)) return { error: `no order item ${itemId}` };
+    const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
+    const prev = row?.snapshot ? (JSON.parse(row.snapshot) as OrderStatus) : undefined;
+    await this.applyWatch(item, snap, diffOrder(prev, snap, item.watch.order.shop));
+    return { ok: true };
+  }
+
+  /** Simulator: FlightAware now says this about the flight. */
+  async devFlightSnapshot(itemId: string, snap: FlightStatus) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item || !item.watch || !("flight" in item.watch)) return { error: `no flight item ${itemId}` };
+    const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
+    const prev = row?.snapshot ? (JSON.parse(row.snapshot) as FlightStatus) : undefined;
+    await this.applyWatch(item, snap, diffFlight(prev, snap));
+    return { ok: true };
+  }
+
+  /** Simulator: an order item to watch, without a real purchase. */
+  async devSeedOrder(shop: string, url: string) {
+    const item = await this.addItineraryItem({ kind: "order", title: shop, status: "watching", watch: { order: { url, shop } } });
+    this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+    return { id: item.id };
+  }
+
+  /** Simulator: watch this item as a flight without reading FlightAware. */
+  async devSeedFlight(itemId: string, ident: string) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item) return { error: `no item ${itemId}` };
+    this.saveItinerary(this.itinerary().map((i) => (i.id === itemId ? { ...i, status: "watching" as const, note: ident.toUpperCase(), watch: { flight: { ident } } } : i)));
+    this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${itemId}, NULL, 0, ${Date.now()}, NULL)`;
+    return { ok: true };
+  }
 
   /**
    * Who a cost is split across: the people who said they are in, once anyone
@@ -2709,6 +2824,9 @@ this.rememberCardId(id);
         bookingNote: result.ok ? result.confirmation : result.detail,
       });
       await this.syncCard();
+      if (result.ok || handedOff) {
+        await this.addItineraryItem({ kind: "venue", title: name, status: result.ok ? "confirmed" : "handoff", note: result.ok ? result.confirmation : undefined, url: option?.bookingUrl });
+      }
       if (result.ok) await this.planTicketIfNew();
     }
 

@@ -17,6 +17,12 @@ import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, refreshRunTimeouts, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
 import { invoiceFor } from "../invoice";
+import { searchFlights } from "./sources/flights";
+import { searchStays } from "./sources/stays";
+import { findEvents } from "./sources/events";
+import { flightStatus } from "./sources/flight-status";
+import { orderStatus } from "./sources/order-status";
+import type { FlightStatus } from "./sources/types";
 
 import { PlanAgent as PlanAgentBase } from "./agent";
 export type PlanAgent = PlanAgentBase;
@@ -222,6 +228,11 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/booked   {"chat":"demo","optionId"?:"…","confirmation"?:"…"}   land a confirmed booking without a browser
+ *   GET  /api/dev/source?kind=flights|stays|events|flight|order&…   run one browse.sh recipe, no model
+ *   POST /api/dev/watch     {"chat":"demo"}                          run the flight/order watch check now
+ *   POST /api/dev/seedorder {"chat":"demo","shop":"…","url":"…"}     an order item to watch, without buying
+ *   POST /api/dev/shipped   {"chat":"demo","itemId":"…","carrier":"…","tracking":"…","trackingUrl":"…","eta":"…"}   the store shipped
+ *   POST /api/dev/flight    {"chat":"demo","itemId":"…","status":{…}}   FlightAware now says this
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
@@ -388,9 +399,44 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     // Land a confirmed booking without a browser: {"chat":"demo","optionId"?:…,"confirmation"?:…}
     return Response.json(await agent.devBooked(body.optionId || undefined, body.confirmation || undefined));
   }
+  if (url.pathname === "/api/dev/watch") {
+    // Run the watch check now: {"chat":"demo"}
+    await agent.checkWatches();
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/seedorder") {
+    // An order item to watch without buying anything: {"chat":"demo","shop":"partycity.com","url":"https://…/orders/abc"}
+    return Response.json(await agent.devSeedOrder(String(body.shop), String(body.url)));
+  }
+  if (url.pathname === "/api/dev/shipped") {
+    // The store shipped: {"chat":"demo","itemId":"i1a2b","carrier":"Canada Post","tracking":"7023…","trackingUrl":"https://…","eta":"Tuesday","delivered":false}
+    const b = body as unknown as { itemId: string; carrier?: string; tracking?: string; trackingUrl?: string; eta?: string; delivered?: boolean };
+    return Response.json(await agent.devShipped(b.itemId, { fulfilled: true, delivered: b.delivered === true, carrier: b.carrier, tracking: b.tracking, trackingUrl: b.trackingUrl, eta: b.eta }));
+  }
+  if (url.pathname === "/api/dev/flight") {
+    // FlightAware now says: {"chat":"demo","itemId":"i1a2b","status":{…a FlightStatus…}}
+    const b = body as unknown as { itemId: string; status: FlightStatus };
+    return Response.json(await agent.devFlightSnapshot(b.itemId, b.status));
+  }
+  if (url.pathname === "/api/dev/seedflight") {
+    // Watch an itinerary item as a flight without reading FlightAware: {"chat":"demo","itemId":"…","ident":"AC123"}
+    return Response.json(await agent.devSeedFlight(String(body.itemId), String(body.ident)));
+  }
+  if (url.pathname === "/api/dev/source") {
+    // One source, no model: ?kind=flights&from=YYZ&to=YVR&depart=2026-10-10 | kind=stays&where=Vancouver&checkin=…&checkout=… | kind=events&city=Toronto&query=Raptors | kind=flight&ident=AC123 | kind=order&url=…
+    const q = Object.fromEntries(url.searchParams) as Record<string, string>;
+    const rows =
+      q.kind === "flights" ? await searchFlights(env, { from: q.from, to: q.to, depart: q.depart, return: q.return || undefined, adults: q.adults ? Number(q.adults) : undefined })
+      : q.kind === "stays" ? await searchStays(env, { where: q.where, checkin: q.checkin, checkout: q.checkout, adults: q.adults ? Number(q.adults) : undefined })
+      : q.kind === "events" ? await findEvents(env, { city: q.city, query: q.query || undefined, country: q.country || undefined })
+      : q.kind === "flight" ? await flightStatus(env, q.ident)
+      : q.kind === "order" ? await orderStatus(env, q.url)
+      : { error: "kind must be flights, stays, events, flight or order" };
+    return Response.json(rows ?? null);
+  }
   if (url.pathname === "/api/dev/fire") {
     // Run a scheduled callback now instead of waiting for its timer.
-    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn() };
+    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn(), checkWatches: () => agent.checkWatches() };
     const run = callbacks[body.callback as keyof typeof callbacks];
     if (!run) return Response.json({ error: `callback must be one of ${Object.keys(callbacks).join(", ")}` }, { status: 400 });
     await run();

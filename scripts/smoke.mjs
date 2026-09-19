@@ -367,6 +367,41 @@ if (env.BROWSERBASE_API_KEY) {
   console.log("  PASS  search_flights live check  (skipped: no BROWSERBASE_API_KEY in .env)");
 }
 
+console.log("\nwatching (snapshots injected; nothing fetched)");
+const w = chat("watch");
+await check("a shipped order is said once, with the tracking link, then delivered once", async () => {
+  const { id } = await (await post("/api/dev/seedorder", { chat: w, shop: "partycity.com", url: "https://partycity.com/orders/abc" })).json();
+  await post("/api/dev/shipped", { chat: w, itemId: id, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track?x=7023210000000001", eta: "Tuesday" });
+  await post("/api/dev/shipped", { chat: w, itemId: id, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track?x=7023210000000001", eta: "Tuesday" });
+  let text = await logs(w);
+  expect(count(text, "watch.posted") === 1, `watch.posted fired ${count(text, "watch.posted")} times`);
+  expect(/partycity\.com shipped: Canada Post 7023210000000001, arriving Tuesday\. https:/.test(text), "shipped line wrong");
+  let { state } = await dump(w);
+  expect(state.itinerary[0].status === "watching" && /^shipped/.test(state.itinerary[0].lastUpdate ?? ""), JSON.stringify(state.itinerary[0]));
+  await post("/api/dev/shipped", { chat: w, itemId: id, delivered: true });
+  text = await logs(w);
+  expect(count(text, "watch.posted") === 2, "delivered not posted once");
+  ({ state } = await dump(w));
+  expect(state.itinerary[0].status === "done", "item not done after delivery");
+  expect(count(text, '"kind":"itinerary"') >= 1, "no itinerary ticket after delivery");
+});
+await check("a flight delay and a gate change are said; a 10 minute creep is not", async () => {
+  await tool(w, "add_to_itinerary", { item: { kind: "flight", title: "AC123 YYZ→YVR Oct 10", url: "https://www.google.com/travel/flights?q=z" } });
+  const { state } = await dump(w);
+  const item = state.itinerary.find((i) => i.kind === "flight");
+  // watch_flight would fetch; seed the watch row through the same path the tool uses, with a snapshot injected instead.
+  const T0 = Math.floor(Date.now() / 1000) + 3600;
+  const base = { ident: "ACA123", iata: "AC123", status: "scheduled", from: "YYZ", to: "YVR", fromTz: "America/Toronto", toTz: "America/Vancouver", gateFrom: "D22", terminalFrom: "1", gateTo: "C41", scheduledDeparture: T0, estimatedDeparture: T0, scheduledArrival: T0 + 18000, estimatedArrival: T0 + 18000, delayMinutes: 0, url: "https://fa" };
+  await post("/api/dev/seedflight", { chat: w, itemId: item.id, ident: "AC123" });
+  await post("/api/dev/flight", { chat: w, itemId: item.id, status: base });
+  await post("/api/dev/flight", { chat: w, itemId: item.id, status: { ...base, delayMinutes: 10, estimatedDeparture: T0 + 600 } });
+  await post("/api/dev/flight", { chat: w, itemId: item.id, status: { ...base, delayMinutes: 30, estimatedDeparture: T0 + 1800, gateFrom: "D30" } });
+  const text = await logs(w);
+  const posted = text.split("\n").filter((l) => l.includes("watch.posted") && l.includes(item.id));
+  expect(posted.length === 2, `${posted.length} lines posted for the flight`);
+  expect(/delayed 30 min/.test(text) && /gate D30, terminal 1/.test(text), "delay or gate line missing");
+});
+
 console.log("\nrun history");
 await check("run history is locked for anyone arriving by a public hostname", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";
