@@ -6,7 +6,7 @@
 
 **Architecture:** A new `src/server/sources/` folder holds one pure parser plus one fetcher per site, all over a single `proxiedFetch` helper (Browserbase Fetch API with residential proxies, no browser sessions). Five new tools in `tools/index.ts` are executed in `agent.ts` `runTool`, results are shaped as ballot options for the existing `propose_plan`, and a new `itinerary` list on `PlanState` records commitments. A scheduled `checkWatches` method diffs flight and order snapshots and posts changes as text.
 
-**Tech Stack:** TypeScript on Cloudflare Workers (Durable Object agent via the `agents` package), zod 4, `node --test` with Node 24 type stripping for unit tests, `scripts/smoke.mjs` against the dev server on port 5174 in this worktree.
+**Tech Stack:** TypeScript on Cloudflare Workers (Durable Object agent via the `agents` package), zod 4, `node --test` with Node 24 type stripping for unit tests, `scripts/smoke.mjs` against the dev server on port 5176 in this worktree.
 
 **Spec:** `docs/superpowers/specs/2026-09-19-trip-sources-design.md`
 
@@ -18,7 +18,7 @@
 - Response bodies are never logged. Log `source.empty` with the page title when a parser finds nothing.
 - `checkWatches` never runs more often than every 15 minutes and stops scheduling itself when no watch is active.
 - Currency is CAD, the constant `CURR = "CAD"` in `flights.ts`.
-- Run everything from `/Users/loadedguns/Downloads/htn-26/.claude/worktrees/trip-sources`. The dev server for this worktree is `npm run dev` on `http://localhost:5174` (`PUBLIC_BASE_URL` in `.dev.vars` already points there); the smoke script takes `SMOKE_BASE=http://127.0.0.1:5174`.
+- Run everything from `/Users/loadedguns/Downloads/htn-26/.claude/worktrees/trip-sources`. The dev server for this worktree is `npm run dev -- --port 5176 --strictPort` on `http://localhost:5176` (`PUBLIC_BASE_URL` in `.dev.vars` already points there); the smoke script takes `SMOKE_BASE=http://127.0.0.1:5176`.
 - Commit after every task with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - Prettier-style formatting as in the surrounding files: 2-space indent, double quotes, trailing commas, 140-column lines are fine.
 
@@ -1434,11 +1434,11 @@ await check("the itinerary ticket renders in both states", async () => {
 
 - [ ] **Step 5: Typecheck, run the dev server, smoke**
 
-Run: `npm run typecheck` (expected clean), then in the background `npm run dev` (port 5174; leave it running for the rest of the plan), then:
+Run: `npm run typecheck` (expected clean), then in the background `npm run dev -- --port 5176 --strictPort` (port 5176; leave it running for the rest of the plan), then:
 
 ```bash
-SMOKE_BASE=http://127.0.0.1:5174 npm run smoke 2>&1 | grep -E "itinerary|ticket design|FAILED|passed"
-open 'http://localhost:5174/api/dev/card?kind=itinerary&state=open'
+SMOKE_BASE=http://127.0.0.1:5176 npm run smoke 2>&1 | grep -E "itinerary|ticket design|FAILED|passed"
+open 'http://localhost:5176/api/dev/card?kind=itinerary&state=open'
 ```
 
 Expected: the itinerary checks PASS; the PNG shows four rows with emoji leads and a "4 Stops" stub. Look at it.
@@ -1800,10 +1800,10 @@ Note `.env` in this worktree: the smoke script reads `.env`, so run `ln -sfn .de
 Run: `npm run typecheck` (clean), then with the dev server still running:
 
 ```bash
-SMOKE_BASE=http://127.0.0.1:5174 npm run smoke 2>&1 | tail -20
+SMOKE_BASE=http://127.0.0.1:5176 npm run smoke 2>&1 | tail -20
 ```
 
-Expected: the itinerary section PASSes, and the total line says all checks passed. If the live flights check fails on network, re-run once; if it still fails, look at `curl 'localhost:5174/api/dev/logs?chat=<chat>'` for `source.empty` and its title.
+Expected: the itinerary section PASSes, and the total line says all checks passed. If the live flights check fails on network, re-run once; if it still fails, look at `curl 'localhost:5176/api/dev/logs?chat=<chat>'` for `source.empty` and its title.
 
 - [ ] **Step 8: Commit**
 
@@ -2105,9 +2105,9 @@ and to `index.ts` next to the other dev routes:
 Run: `npm run typecheck` (clean), then:
 
 ```bash
-SMOKE_BASE=http://127.0.0.1:5174 npm run smoke 2>&1 | tail -25
-curl -s 'localhost:5174/api/dev/source?kind=flight&ident=AC123' | head -c 400
-curl -s 'localhost:5174/api/dev/source?kind=events&city=Toronto&query=Toronto%20Raptors' | head -c 400
+SMOKE_BASE=http://127.0.0.1:5176 npm run smoke 2>&1 | tail -25
+curl -s 'localhost:5176/api/dev/source?kind=flight&ident=AC123' | head -c 400
+curl -s 'localhost:5176/api/dev/source?kind=events&city=Toronto&query=Toronto%20Raptors' | head -c 400
 ```
 
 Expected: all smoke checks pass; the flight status JSON shows YYZ→YVR with gates; the events list starts with Toronto games.
@@ -2188,12 +2188,12 @@ curl 'localhost:5173/api/dev/source?kind=flights&from=YYZ&to=YVR&depart=2026-10-
 
 - [ ] **Step 2: One model-driven turn**
 
-With the dev server (5174) and the Claude proxy (`npm run llm`, port 11435, already running from the main checkout) up:
+With the dev server (5176) and the Claude proxy (`npm run llm`, port 11435, already running from the main checkout) up:
 
 ```bash
-curl -X POST localhost:5174/api/dev/message -H 'content-type: application/json' \
+curl -X POST localhost:5176/api/dev/message -H 'content-type: application/json' \
   -d '{"chat":"trip1","from":"+15550001111","text":"weekend in vancouver oct 10 to 12, 4 of us from toronto. find flights"}'
-sleep 20; curl -s 'localhost:5174/api/dev/logs?chat=trip1' | grep -E "source\.|tool|message.out|dry\." | cut -c1-200
+sleep 20; curl -s 'localhost:5176/api/dev/logs?chat=trip1' | grep -E "source\.|tool|message.out|dry\." | cut -c1-200
 ```
 
 Expected: a `source.flights` line with `found` above 0, a `propose_plan` tool call with 2 to 4 options carrying `CA$` prices, and a `dry.card`. If the model narrates instead of calling `search_flights`, tighten its description (Task 7 Step 1) and retry; do not add a second message to the prompt.
@@ -2201,9 +2201,9 @@ Expected: a `source.flights` line with `found` above 0, a `propose_plan` tool ca
 Then vote and settle:
 
 ```bash
-curl -X POST localhost:5174/api/dev/react -H 'content-type: application/json' -d '{"chat":"trip1","from":"+15550001111","reaction":"love"}'
-curl -X POST localhost:5174/api/dev/message -H 'content-type: application/json' -d '{"chat":"trip1","from":"+15550001111","text":"go with the first one"}'
-sleep 15; curl -s 'localhost:5174/api/dev/dump?chat=trip1' | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state']['itinerary'], d['state']['status'])"
+curl -X POST localhost:5176/api/dev/react -H 'content-type: application/json' -d '{"chat":"trip1","from":"+15550001111","reaction":"love"}'
+curl -X POST localhost:5176/api/dev/message -H 'content-type: application/json' -d '{"chat":"trip1","from":"+15550001111","text":"go with the first one"}'
+sleep 15; curl -s 'localhost:5176/api/dev/dump?chat=trip1' | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state']['itinerary'], d['state']['status'])"
 ```
 
 Expected: one flight item with `status: handoff` and a Google Flights URL; plan status `idle`.
@@ -2213,7 +2213,7 @@ Expected: one flight item with `status: handoff` and a Google Flights URL; plan 
 ```bash
 npm test 2>&1 | grep -E "^ℹ (tests|pass|fail)"
 npm run typecheck
-SMOKE_BASE=http://127.0.0.1:5174 npm run smoke 2>&1 | tail -3
+SMOKE_BASE=http://127.0.0.1:5176 npm run smoke 2>&1 | tail -3
 ```
 
 Expected: fail 0; typecheck clean; "all checks passed".
