@@ -322,6 +322,51 @@ await check("with nobody sharing, read_locations says so rather than inventing a
   expect(/nobody/i.test(result) && /do not claim/i.test(result), `unexpected answer: ${result.slice(0, 120)}`);
 });
 
+console.log("\nitinerary (no network; the sources are not called)");
+const it = chat("it");
+await check("add_to_itinerary takes the winner, posts one ticket, clears the ballot", async () => {
+  await tool(it, "propose_plan", { title: "Vancouver weekend", options: [{ title: "Flair 1:55 PM → 4:05 PM, nonstop", subtitle: "CA$254 · 5 hr 10 min · Sat Oct 10", bookingUrl: "https://www.google.com/travel/flights?q=x" }, { title: "WestJet 10:30 PM → 12:44 AM +1, nonstop", subtitle: "CA$261 · 5 hr 14 min · Sat Oct 10", bookingUrl: "https://www.google.com/travel/flights?q=y" }] });
+  const before = await dump(it);
+  const out = await tool(it, "add_to_itinerary", { optionId: before.state.options[0].id, kind: "flight" });
+  expect(/^Added i[0-9a-f]{4}\./.test(out), `unexpected reply: ${out}`);
+  const { state } = await dump(it);
+  expect(state.itinerary.length === 1, `${state.itinerary.length} items`);
+  expect(state.itinerary[0].kind === "flight" && state.itinerary[0].status === "handoff" && state.itinerary[0].price === "CA$254", JSON.stringify(state.itinerary[0]));
+  expect(state.options.length === 0 && state.status === "idle", "ballot not cleared");
+  const text = await logs(it);
+  expect(count(text, "itinerary.added") === 1, "itinerary.added fired " + count(text, "itinerary.added"));
+  expect(/ticket\.out.*"kind":"itinerary"/.test(text), "no itinerary ticket posted");
+  expect(/Finish it here: https:\/\/www\.google\.com/.test(text), "the deep link was not said");
+});
+await check("confirm_item marks it booked and logs the expense", async () => {
+  const { state } = await dump(it);
+  const out = await tool(it, "confirm_item", { itemId: state.itinerary[0].id, note: "F8 227", price: "CA$254", paidBy: "+15550001111" });
+  expect(/confirmed\./.test(out), out);
+  const after = await dump(it);
+  expect(after.state.itinerary[0].status === "confirmed" && after.state.itinerary[0].note === "F8 227", JSON.stringify(after.state.itinerary[0]));
+  expect(after.state.expenses.length === 1 && after.state.expenses[0].amount === "CA$254", "expense not logged");
+});
+await check("add_to_itinerary refuses a ballot option without a kind", async () => {
+  await tool(it, "propose_plan", { title: "Vancouver weekend", options: [{ title: "A" }, { title: "B" }] });
+  const { state } = await dump(it);
+  const out = await tool(it, "add_to_itinerary", { optionId: state.options[0].id });
+  expect(/Say what kind/.test(out), out);
+});
+await check("search_flights refuses a date in the past without calling anything", async () => {
+  const out = await tool(it, "search_flights", { from: "YYZ", to: "YVR", depart: "2020-01-01" });
+  expect(/in the past/.test(out), out);
+});
+if (env.BROWSERBASE_API_KEY) {
+  await check("search_flights returns real options (one proxied fetch)", async () => {
+    const d = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const out = JSON.parse(await tool(it, "search_flights", { from: "YYZ", to: "YVR", depart: d }));
+    expect(out.options?.length >= 1, "no flights");
+    expect(/CA\$\d/.test(out.options[0].subtitle), out.options[0].subtitle);
+  });
+} else {
+  console.log("  PASS  search_flights live check  (skipped: no BROWSERBASE_API_KEY in .env)");
+}
+
 console.log("\nrun history");
 await check("run history is locked for anyone arriving by a public hostname", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";

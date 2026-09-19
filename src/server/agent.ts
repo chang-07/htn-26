@@ -3,12 +3,17 @@ import { telemetryScope, traceOperation, traceFields, safeFields } from "./telem
 import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
-import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
+import { EMPTY_PLAN, ITEM_EMOJI, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type ItineraryItem, type PlanOption, type PlanState } from "../types";
 import { llmFor, modelExtras } from "./llm";
 import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { SourceError } from "./sources/fetch";
+import { flightOption, searchFlights } from "./sources/flights";
+import { searchStays, stayOption } from "./sources/stays";
+import { eventOption, findEvents } from "./sources/events";
+import { describeFlight, flightStatus } from "./sources/flight-status";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
 import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
@@ -65,6 +70,16 @@ on a time, book it, and order anything they need.
   appear under "Research" below when done: tell the group you're on it, then
   stop. Never start a second run while one is in progress, and never invent
   places, prices or links — propose only what research found.
+- For a trip or a night out, work in segments and open one ballot at a time:
+  flights first, then where to stay, then what to do. search_flights,
+  search_stays and find_events return real options in this turn with their
+  prices: put 2-4 on propose_plan and quote the prices exactly. Their links
+  open the site's own checkout, so you never book those yourself: once a vote
+  settles, call add_to_itinerary, which posts the link, then move to the next
+  segment. When someone says they booked it, call confirm_item (with what they
+  paid and who paid, so the split is right); when they give a flight number,
+  call watch_flight. Never say a flight, room or ticket is booked until a
+  person says so. The Itinerary below is the trip so far.
 - When someone comes back to a plan after a while, call propose_plan again
   with the options that still apply: that puts the card back in front of them
   instead of pointing at one far up the thread.
@@ -149,6 +164,9 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   request, start by confirming what you understood in one line.
 - If, despite being woken, there is truly nothing for you to do, reply with
   exactly NOOP and nothing else.`;
+
+/** Today as YYYY-MM-DD in Toronto, the demo's zone; date-only comparisons use it. */
+const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
 
 const MAX_STEPS = 8;
 /**
@@ -249,6 +267,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS watches (item_id TEXT PRIMARY KEY, snapshot TEXT, failures INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, checked INTEGER)`;
   }
 
   /**
@@ -1146,6 +1165,48 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.publish({ carts, cart: undefined });
   }
 
+  private itinerary(): ItineraryItem[] {
+    return this.state.itinerary ?? [];
+  }
+
+  private saveItinerary(items: ItineraryItem[]) {
+    this.publish({ itinerary: items });
+  }
+
+  private async addItineraryItem(item: Omit<ItineraryItem, "id">): Promise<ItineraryItem> {
+    const taken = new Set(this.itinerary().map((i) => i.id));
+    let id = "";
+    do id = `i${crypto.randomUUID().slice(0, 4)}`;
+    while (taken.has(id));
+    const added: ItineraryItem = { id, ...item };
+    this.saveItinerary([...this.itinerary(), added]);
+    this.note("info", "itinerary.added", { id, kind: item.kind, status: item.status, title: item.title.slice(0, 60) });
+    return added;
+  }
+
+  private async postItinerary() {
+    const items = this.itinerary();
+    if (!items.length) return;
+    await this.postTicket("itinerary", itineraryTicket(items, this.state.title));
+  }
+
+  /** One line per stop for the model. */
+  private itineraryContext(): string {
+    const items = this.itinerary();
+    if (!items.length) return "nothing settled yet";
+    return items.map((i) => `${i.id} ${ITEM_EMOJI[i.kind]} ${i.title} — ${i.status}${i.note ? ` (${i.note})` : ""}${i.price ? `, ${i.price}` : ""}${i.lastUpdate ? `; ${i.lastUpdate}` : ""}`).join(" | ");
+  }
+
+  /** A source failed: log the cause, tell the model something it can say. */
+  private sourceFailure(err: unknown, what: string): string {
+    this.note("warn", "source.failed", { what, ...errorFields(err) });
+    if (err instanceof SourceError && err.code === "no_browserbase") return `${what} needs BROWSERBASE_API_KEY, which is not set here. Say you can't look that up right now.`;
+    return `${what} did not answer this time. Say so in one line and offer to try again.`;
+  }
+
+  /** Replaced in Task 8: schedules checkWatches while any watch is active. */
+  private async scheduleWatches() {}
+
   /**
    * Who a cost is split across: the people who said they are in, once anyone
    * has; until then everyone in the chat.
@@ -1375,6 +1436,7 @@ Shopping list: ${this.shoppingListContext()}
 Delivery: ${this.deliveryContext()}
 Headcount: ${this.headcountContext()}
 Invoice: ${this.invoiceContext()}
+Itinerary: ${this.itineraryContext()}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
@@ -1747,6 +1809,106 @@ this.rememberCardId(id);
           })),
           awaiting: this.state.awaiting,
         });
+      }
+
+      case "search_flights": {
+        const args = parseToolArgs("search_flights", rawArgs);
+        if (args.depart < today()) return `${args.depart} is in the past. Ask for the date.`;
+        try {
+          const flights = await searchFlights(this.env, args);
+          this.note("info", "source.flights", { from: args.from, to: args.to, depart: args.depart, found: flights.length });
+          if (!flights.length) return `Google Flights showed nothing for ${args.from} to ${args.to} on ${args.depart}. Check the airports and date with the group.`;
+          return JSON.stringify({ options: flights.map(flightOption), note: "Each option's bookingUrl opens Google Flights with a Book button; never say a flight is booked until someone confirms." });
+        } catch (err) {
+          return this.sourceFailure(err, "Google Flights");
+        }
+      }
+
+      case "search_stays": {
+        const args = parseToolArgs("search_stays", rawArgs);
+        if (args.checkin < today() || args.checkout <= args.checkin) return "Check-in must be today or later and before check-out. Ask for the dates.";
+        try {
+          const stays = await searchStays(this.env, args);
+          this.note("info", "source.stays", { where: args.where, checkin: args.checkin, found: stays.length });
+          if (!stays.length) return `Google Hotels showed nothing in ${args.where} for those dates.`;
+          return JSON.stringify({ options: stays.map(stayOption) });
+        } catch (err) {
+          return this.sourceFailure(err, "Google Hotels");
+        }
+      }
+
+      case "find_events": {
+        const args = parseToolArgs("find_events", rawArgs);
+        try {
+          const events = await findEvents(this.env, args);
+          this.note("info", "source.events", { city: args.city, query: args.query ?? "", found: events.length });
+          if (!events.length) return args.query ? `Ticketmaster has no upcoming ${args.query} dates in ${args.city}.` : `Luma lists nothing in ${args.city} for the next month.`;
+          return JSON.stringify({ options: events.map((e) => eventOption(e)) });
+        } catch (err) {
+          return this.sourceFailure(err, args.query ? "Ticketmaster" : "Luma");
+        }
+      }
+
+      case "add_to_itinerary": {
+        const args = parseToolArgs("add_to_itinerary", rawArgs);
+        let item: Omit<ItineraryItem, "id">;
+        if (args.optionId) {
+          const option = this.state.options.find((o) => o.id === args.optionId);
+          if (!option) return "No such option";
+          if (!args.kind) return "Say what kind of stop the winner is: flight, stay, event or venue.";
+          item = { kind: args.kind, title: option.title, subtitle: option.subtitle, url: option.bookingUrl, price: option.subtitle?.match(/(?:CA|US)?\$[\d,]+(?:\.\d\d)?/)?.[0], status: option.bookingUrl ? "handoff" : "confirmed" };
+        } else if (args.item) {
+          item = { ...args.item, status: args.item.url ? "handoff" : "confirmed" };
+        } else {
+          return "Pass the winning optionId (with kind) or an item.";
+        }
+        const added = await this.addItineraryItem(item);
+        if (args.optionId) {
+          this.sql`DELETE FROM votes`;
+          this.publish({ options: [], counts: {}, chosenOptionId: undefined, status: "idle", bookingNote: undefined });
+          this.setMeta("ballot_id", "");
+        }
+        await this.postItinerary();
+        const finish = added.url ? ` Finish it here: ${added.url}` : "";
+        const ask = added.kind === "flight" ? " Tell me the flight number once it's booked and I'll watch it." : added.kind === "stay" || added.kind === "event" ? " Tell me once it's booked and I'll mark it." : "";
+        await this.say(`${ITEM_EMOJI[added.kind]} ${added.title}${added.price ? `, ${added.price}` : ""}.${finish}${ask}`);
+        return `Added ${added.id}. The ticket and the link are posted; the ballot is clear for the next segment. Itinerary: ${this.itineraryContext()}`;
+      }
+
+      case "watch_flight": {
+        const args = parseToolArgs("watch_flight", rawArgs);
+        let item = args.itemId ? this.itinerary().find((i) => i.id === args.itemId) : undefined;
+        if (args.itemId && !item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        if (!item) item = await this.addItineraryItem({ kind: "flight", title: args.ident.toUpperCase(), status: "watching", watch: { flight: { ident: args.ident, date: args.date } } });
+        else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, status: "watching", note: args.ident.toUpperCase(), watch: { flight: { ident: args.ident, date: args.date } } } : i)));
+        this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+        try {
+          const status = await flightStatus(this.env, args.ident);
+          if (!status) return `FlightAware has no ${args.ident.toUpperCase()}. Check the flight number with them.`;
+          this.sql`UPDATE watches SET snapshot = ${JSON.stringify(status)}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+          const line = describeFlight(status);
+          this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, lastUpdate: line.replace(/^\S+ /, "") } : i)));
+          await this.scheduleWatches();
+          return `${line}. Watching it: changes are posted on their own, so say this once and stop.`;
+        } catch (err) {
+          await this.scheduleWatches();
+          return this.sourceFailure(err, "FlightAware");
+        }
+      }
+
+      case "confirm_item": {
+        const args = parseToolArgs("confirm_item", rawArgs);
+        const item = this.itinerary().find((i) => i.id === args.itemId);
+        if (!item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        const paidBy = args.paidBy ? this.nameOf(args.paidBy) : undefined;
+        this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, status: i.status === "watching" ? "watching" : "confirmed", note: args.note ?? i.note, price: args.price ?? i.price, paidBy: paidBy ?? i.paidBy } : i)));
+        this.note("info", "itinerary.confirmed", { id: item.id, paid: Boolean(args.price && paidBy) });
+        let expense = "";
+        if (args.price && paidBy) {
+          expense = await this.runTool("add_expense", JSON.stringify({ who: args.paidBy, amount: args.price, what: item.title.slice(0, 60) }));
+        }
+        await this.postItinerary();
+        return `${item.id} confirmed.${expense ? ` ${expense}` : ""} Itinerary: ${this.itineraryContext()}`;
       }
 
       case "check_availability": {
