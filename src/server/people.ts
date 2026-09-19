@@ -29,8 +29,9 @@ export type Profile = {
   dmChat?: string;
   /** Set once they have connected a wallet for purchases they approve. Never any card detail. */
   payments?: "connected";
-  /** What reading the links THEY shared turned up: a few interests and one line. */
-  online?: { interests: string[]; line: string; from: string[] };
+  /** What reading the links THEY shared turned up: interests, one line, and a
+   *  few observations worth having when planning for them. */
+  online?: { interests: string[]; line: string; notes?: string[]; from: string[] };
   /** The links that `online` was read from, so they are re-read only when they change. */
   onlineReadOf?: string;
   updated: number;
@@ -210,6 +211,9 @@ export function profileLines(p: Profile): string {
     p.payments === "connected" && "has payments set up",
     p.links.length && `links: ${p.links.join(", ")}`,
     p.online?.interests.length && `their ${p.online.from.join(" + ")} shows: ${p.online.interests.join(", ")}`,
+    // The notes are the part worth planning around — an interest tag says
+    // "climbing", a note says they climb most weekends.
+    p.online?.notes?.length && `noted from their links: ${p.online.notes.join("; ")}`,
     p.facts.length && `mentioned: ${p.facts.join("; ")}`,
   ].filter(Boolean);
   return parts.join(" · ").slice(0, 420);
@@ -235,5 +239,7 @@ export async function syncMatchPool(env: Env, handle: string, p: Profile): Promi
 
 /** The blurb the match pool embeds, from the same profile. */
 export function matchBlurb(p: Profile): string {
-  return [p.interests, p.online?.interests.join(", "), p.about, p.area && `Based in ${p.area}`].filter(Boolean).join(". ");
+  return [p.interests, p.online?.interests.join(", "), p.online?.notes?.join(". "), p.about, p.area && `Based in ${p.area}`]
+    .filter(Boolean)
+    .join(". ");
 }

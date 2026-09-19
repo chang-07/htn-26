@@ -596,11 +596,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     const started = Date.now();
     const found = await readLinks(this.env, profile.links);
-    this.note("info", "links.read", { read: found.read, skipped: found.skipped, interests: found.interests.length, tokens: found.tokens, ms: Date.now() - started });
+    this.note("info", "links.read", { read: found.read, skipped: found.skipped, interests: found.interests.length, notes: found.notes.length, tokens: found.tokens, ms: Date.now() - started });
 
     const saved = await store.save(person.handle, {
       onlineReadOf: signature,
-      online: found.interests.length ? { interests: found.interests, line: found.line, from: found.read } : undefined,
+      online: found.interests.length || found.notes.length
+        ? { interests: found.interests, line: found.line, notes: found.notes, from: found.read }
+        : undefined,
     });
     await syncMatchPool(this.env, person.handle, saved);
 
@@ -1656,6 +1658,13 @@ this.rememberCardId(id);
   /** Called over RPC by ResearchWorkflow as it moves through its stages. */
   async researchProgress(stage: string, fields: Fields = {}) {
     this.setMeta("research_progress_at", String(Date.now()));
+    if (stage === "browser" && typeof fields.liveUrl === "string") {
+      // Same treatment as a booking: the url itself stays out of run history —
+      // it carries a session token — and /live/<chat> redirects to it instead.
+      this.setMeta("live_url", fields.liveUrl);
+      this.note("info", "research.browser", { provider: fields.provider, live: true });
+      return;
+    }
     this.note("info", `research.${stage}`, fields);
   }
 

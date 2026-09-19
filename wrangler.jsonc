@@ -71,6 +71,11 @@
     "LLM_PROFILE": "dev",
     "OPENAI_MODEL": "gpt-5-mini",
     "BOOKING_DRY_RUN": "true",
-    "IMESSAGE_APP_NAME": "Plan"
+    "IMESSAGE_APP_NAME": "Plan",
+    // "true" records message text and the model's reasoning into run history,
+    // so /runs can show the conversation and what the agent was thinking.
+    // Run history is served over HTTP: turning this on means it holds what
+    // real people wrote. Handles stay masked either way.
+    "LOG_BODIES": "true"
   }
 }

@@ -413,16 +413,6 @@ npm run deploy      # builds, then deploys with LLM_PROFILE=demo (OpenAI)
 `wrangler.jsonc` keeps `LLM_PROFILE` at `dev` so local work never spends OpenAI
 credits; the deploy script overrides it for production only.
 
-First-time setup on a fresh Cloudflare account:
-
-```sh
-npx wrangler login
-npx wrangler vectorize create htn-people --dimensions=768 --metric=cosine
-npm run deploy
-node scripts/linq-webhook.mjs create https://<worker-url> --deployed   # subscription + its secrets
-for s in LINQ_API_KEY OPENAI_API_KEY BROWSERBASE_API_KEY; do npx wrangler secret put $s; done
-```
-
 R2 (card image caching) is optional and currently off — see the note in
 `wrangler.jsonc`.
 
@@ -441,6 +431,119 @@ node scripts/linq-webhook.mjs prune                    # delete dead, inactive s
 
 Production logs: `npx wrangler tail`. The simulator routes (`/api/dev/*`) are
 localhost-only and return 404 on the deployed Worker.
+
+## Cloudflare setup from scratch
+
+For a teammate standing this up on their own Cloudflare account. Everything the
+Worker binds to has to exist *before* the first deploy — `wrangler deploy` fails
+on a missing binding rather than creating one for you.
+
+**Expect to need a Workers Paid plan.** Browser Rendering, Workflows and
+Vectorize are not on the free tier, and the agent uses all three: research and
+booking drive a browser, and both run as Workflows.
+
+```sh
+npx wrangler login                 # opens a browser; pick the right account
+npx wrangler whoami                # confirm the account id you just authorised
+```
+
+### 1. Create the resources
+
+```sh
+# Run history (the /runs viewer). Copy the printed database_id.
+npx wrangler d1 create htn-runs
+
+# People matching. 768 dims because match.ts embeds with @cf/baai/bge-base-en-v1.5.
+npx wrangler vectorize create htn-people --dimensions=768 --metric=cosine
+```
+
+Paste the D1 id into `wrangler.jsonc` under `d1_databases[0].database_id`. The
+Durable Objects (`PlanAgent`, `RunHub`), the Workflows and the Browser Rendering
+and AI bindings need no setup — they are created from `wrangler.jsonc` on deploy.
+
+### 2. Apply the D1 schema
+
+Not automatic, and both halves are needed — local and remote are separate
+databases:
+
+```sh
+npm run runs:migrate           # local (miniflare), for `npm run dev`
+npm run runs:migrate:remote    # the real D1, before the first deploy
+```
+
+Skip the remote one and `/runs` returns 500 on `no such table: runs`.
+
+### 3. Secrets
+
+Local dev reads `.dev.vars` or `.env`; production needs each one put
+individually. `cp .dev.vars.example .dev.vars` and fill it in, then:
+
+```sh
+for s in LINQ_API_KEY LINQ_WEBHOOK_SECRET OPENAI_API_KEY PUBLIC_BASE_URL \
+         BROWSERBASE_API_KEY IMESSAGE_TEAM_ID IMESSAGE_BUNDLE_ID; do
+  npx wrangler secret put $s
+done
+```
+
+| secret | what it is | needed for |
+| --- | --- | --- |
+| `LINQ_API_KEY` | Linq account key | sending and receiving iMessage |
+| `LINQ_WEBHOOK_SECRET` | written by `scripts/linq-webhook.mjs create` | verifying inbound webhooks |
+| `OPENAI_API_KEY` | OpenAI key | the `demo` LLM profile, which is what deploys use |
+| `PUBLIC_BASE_URL` | this Worker's own URL | card images, the vote page, the Shopify agent profile |
+| `BROWSERBASE_API_KEY` | Browserbase key | research and booking. Optional — without it, Cloudflare Browser Rendering is used, on datacenter IPs that review sites block |
+| `IMESSAGE_TEAM_ID` / `IMESSAGE_BUNDLE_ID` | your Messages extension identity | interactive cards. Blank is fine: cards fall back to image + text |
+| `RUNS_TOKEN` | any random string | locks `/runs` in production. Unset leaves run history public |
+
+`RUNS_TOKEN` is deliberately not in the loop above — decide whether you want it.
+Localhost never asks for it either way.
+
+### 4. Deploy and point Linq at it
+
+```sh
+npm run deploy
+node scripts/linq-webhook.mjs create https://<worker-url> --deployed
+node scripts/linq-webhook.mjs use <worker-url>
+```
+
+Only one subscription may be active at a time — see *Which agent is live* below.
+
+### If a deploy fails
+
+| message | cause |
+| --- | --- |
+| `binding ... not found` | the D1 or Vectorize resource was never created, or the id in `wrangler.jsonc` is wrong |
+| `no such table: runs` on `/runs` | `npm run runs:migrate:remote` was skipped |
+| `not available on your plan` | the account is on the free tier; Browser Rendering, Workflows and Vectorize need Workers Paid |
+| `Invalid cache control` from Shopify | `PUBLIC_BASE_URL` is unset or wrong, so the agent profile is unreachable |
+
+## What this depends on
+
+**Toolchain.** Node 20 or newer (developed on 26) and npm — the lockfile is
+`package-lock.json`, so don't install with pnpm or yarn. `npx wrangler` comes
+from the dev dependency; no global install needed.
+
+**Runtime dependencies**
+
+| package | why |
+| --- | --- |
+| `agents` | the Durable Object framework behind `PlanAgent` and `RunHub` — state, WebSockets, scheduling |
+| `@linqapp/sdk` | iMessage: sending, cards, tapbacks, webhook verification |
+| `openai` | the model client. Points at OpenAI or any OpenAI-compatible endpoint via the `dev` profile |
+| `@cloudflare/puppeteer` | drives the browser for research and booking, over CDP |
+| `workers-og` | renders the plan and cart cards to PNG inside the Worker |
+| `zod` | validates tool arguments coming back from the model |
+| `react` / `react-dom` | the vote page and the `/runs` viewer |
+
+**Dev dependencies:** `vite` + `@cloudflare/vite-plugin` (one dev server for the
+Worker and the React app), `@vitejs/plugin-react`, `typescript`, `wrangler`.
+
+**Cloudflare services:** Durable Objects with SQLite, Workflows, D1, Vectorize,
+Browser Rendering, Workers AI (embeddings), and R2 (optional, off).
+
+**Outside accounts:** Linq (the iMessage number), OpenAI (production model),
+Browserbase (optional but strongly recommended browser sessions). Shopify needs
+no key — stores are called over UCP, which is public.
 
 ## Things that will bite you
 
