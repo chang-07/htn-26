@@ -143,6 +143,7 @@ export const toolSchemas = {
       .string()
       .optional()
       .describe("What they said they want, in their words: 'someone to climb with', 'a board game group'. Omit to match on their whole profile."),
+    near: z.string().optional().describe("A place they named for this search ('Vancouver'), when it is not where they live. Only people based there come back."),
   }),
   request_intro: z.object({
     candidate: z.string().describe("The ref of one candidate from find_matches, e.g. c1"),
