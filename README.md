@@ -4,6 +4,8 @@ An agent that lives in an iMessage group chat. It brainstorms a hangout with the
 group, posts a card to vote on, books the winner, and builds Shopify carts for
 anything the group needs. It runs entirely on Cloudflare Workers.
 
+Browserbase site skills are managed by a selective planning subagent; named-place and weather tools support outdoor plans. See [routing, supported skills, and setup](docs/browserbase-planning.md).
+
 ## Architecture
 
 ```

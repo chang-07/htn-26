@@ -128,13 +128,13 @@ export function selectSources(env: SourceEnv, hits: ScoredHit[], limit: number):
   return selected;
 }
 
-export async function fetchSource(env: SourceEnv, hit: ResearchHit, maxChars: number): Promise<PageText> {
+export async function fetchSource(env: SourceEnv, hit: ResearchHit, maxChars: number, options: { format?: "raw" | "markdown"; proxies?: boolean } = {}): Promise<PageText> {
   if (!env.BROWSERBASE_API_KEY) throw new Error("BROWSERBASE_API_KEY is required for Fetch");
   const url = httpUrl(hit.url);
   if (!url) throw new Error("Fetch source must be an HTTP(S) URL");
   const result = z.object({ statusCode: z.number().int(), content: z.string() }).parse(
     await postJson("https://api.browserbase.com/v1/fetch", { "X-BB-API-Key": env.BROWSERBASE_API_KEY }, {
-      url, format: "markdown", allowRedirects: true,
+      url, format: options.format ?? "markdown", allowRedirects: true, ...(options.proxies ? { proxies: true } : {}),
     }),
   );
   if (result.statusCode < 200 || result.statusCode >= 300) throw new Error(`Source returned HTTP ${result.statusCode}`);

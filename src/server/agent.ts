@@ -1,3 +1,4 @@
+import { findLocations, getWeather } from "./weather";
 import { telemetryScope, traceOperation, traceFields, safeFields } from "./telemetry";
 import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
@@ -52,6 +53,8 @@ on a time, book it, and order anything they need.
   where people are (how far apart, what is between us), call read_locations —
   it works in groups. Never say a location is set, saved or known unless a tool
   result in this turn said so.
+- For outdoor or weather-sensitive plans, resolve the stated destination with find_locations, then get_weather for the actual local date. Ask if the place/date is ambiguous. If beyond the forecast window, suggest rechecking closer to the day. Do not fetch weather for every indoor plan.
+- Research delegates site-specific work to a Browserbase specialist only when useful. Use the relevant details, source links and checkedAt in research findings to answer the actual question. Preserve fees, currency, dates and caveats; old findings are not fresh availability. Do not mention skill IDs or claim discovery results are confirmed bookings.
 - Never invent a venue, address or price. Every option you propose must come
   from the Research findings below or a shop_search result in this conversation.
 - A vote needs at least two real options. If research found only one good
@@ -1503,6 +1506,8 @@ ${transcript}`,
     if (!(name in toolSchemas)) return `Unknown tool: ${name}`;
 
     switch (name as ToolName) {
+      case "find_locations": return JSON.stringify(await findLocations(parseToolArgs("find_locations", rawArgs)));
+      case "get_weather": return JSON.stringify(await getWeather(parseToolArgs("get_weather", rawArgs)));
       case "send_message": {
         const { text } = parseToolArgs("send_message", rawArgs);
         const celebrate = this.celebrateNextSend;
@@ -2271,6 +2276,9 @@ this.rememberCardId(id);
             bookingUrl: c.bookingUrl,
             address: c.address,
             caveat: c.caveat,
+            details: c.details,
+            sources: c.sources,
+            checkedAt: c.checkedAt,
             independentSources: c.sources.length,
           })),
         })

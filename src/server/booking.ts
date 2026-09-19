@@ -6,7 +6,9 @@ import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "
 import type { PlanAgent } from "./agent";
 import { openBrowser, pooled, TABS } from "./browser";
 import { errorFields, log } from "./log";
-import { runPilot, type PilotStatus } from "./pilot";
+import type { PilotStatus } from "./pilot";
+import { runBrowserbasePilot } from "./browserbase/agent";
+import { skillForUrl } from "./browserbase/catalog";
 
 export type BookingParams = {
   title: string;
@@ -218,7 +220,8 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
 
     let session: Awaited<ReturnType<typeof openBrowser>>;
     try {
-      session = await openBrowser(this.env, { timeoutSeconds: 420 });
+      const usesOpenTable = params.checks.some((c) => skillForUrl(c.url)?.id === "opentable.com/check-availability-f2fwrm");
+      session = await openBrowser(this.env, { timeoutSeconds: 420, verified: usesOpenTable, proxies: usesOpenTable });
     } catch (err) {
       log("warn", "book", "availability.failed", { option: "(all)", ...errorFields(err) });
       return params.checks.map(failed);
@@ -228,7 +231,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         let page;
         try {
           page = await session.browser.newPage();
-          const found = await runPilot(
+          const found = await runBrowserbasePilot(
             this.env,
             page,
             {
@@ -278,7 +281,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         : `${when.toLocaleDateString("en-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })} at ${when.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })}`;
       const [first, ...rest] = params.contact.name.trim().split(/\s+/);
 
-      const result = await runPilot(
+      const result = await runBrowserbasePilot(
         this.env,
         page,
         {

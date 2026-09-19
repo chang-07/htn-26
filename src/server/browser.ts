@@ -29,6 +29,8 @@ export async function openBrowser(
   env: Env,
   opts: {
     timeoutSeconds?: number;
+    verified?: boolean;
+    proxies?: boolean;
     /**
      * Use the persistent context that holds the bot account's logins (see
      * scripts/ig-login.mjs). Only for reading a profile its owner handed over —
@@ -51,7 +53,9 @@ export async function openBrowser(
       ...(env.BROWSERBASE_PROJECT_ID ? { projectId: env.BROWSERBASE_PROJECT_ID } : {}),
       // A hard ceiling: a crashed run must not leave a session billing for hours.
       timeout: opts.timeoutSeconds ?? 300,
+      ...(opts.proxies ? { proxies: true } : {}),
       browserSettings: {
+        ...(opts.verified ? { verified: true } : {}),
         solveCaptchas: true,
         blockAds: true,
         // persist: cookies refreshed during the run are written back, which keeps the login alive.

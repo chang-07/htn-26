@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { locationArgs, weatherArgs } from "../weather";
 
 /**
  * Tool contracts. The JSON Schema sent to the model is generated from the same
@@ -6,6 +7,8 @@ import { z } from "zod";
  * Execution lives on the agent (agent.ts), which owns the state these touch.
  */
 export const toolSchemas = {
+  find_locations: locationArgs,
+  get_weather: weatherArgs,
   send_message: z.object({
     text: z.string().describe("One or two short lines. This is a group text."),
   }),
@@ -184,6 +187,8 @@ export const toolSchemas = {
 export type ToolName = keyof typeof toolSchemas;
 
 const descriptions: Record<ToolName, string> = {
+  find_locations: "Resolve a named city or postal code to locations and timezones. Include the known province/country. Ask the user when multiple results fit. This does not access anyone’s live location.",
+  get_weather: "Get a daily forecast for a locationId returned by find_locations and the outing’s local YYYY-MM-DD date. Use for outdoor/weather-sensitive plans or explicit weather questions, not every dinner. Never guess a location id or substitute another date.",
   send_message: "Send a plain text message to the group chat.",
   remember_area:
     "Remember where this group is based, as soon as anyone says it. Every later search uses it, so nobody has to repeat it.",
