@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "htn-planner",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "assets": {
+    "not_found_handling": "single-page-application",
+    // Everything the Worker must answer itself; the rest is the React app.
+    "run_worker_first": ["/api/*", "/agents/*", "/card/*", "/.well-known/*"]
+  },
+
+  // One PlanAgent per iMessage group chat. Each is a Durable Object with its
+  // own SQLite database, WebSockets and scheduler.
+  "durable_objects": {
+    "bindings": [{ "name": "PlanAgent", "class_name": "PlanAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PlanAgent"] }],
+
+  "workflows": [
+    {
+      "name": "booking-workflow",
+      "binding": "BOOKING_WORKFLOW",
+      "class_name": "BookingWorkflow"
+    }
+  ],
+
+  "browser": { "binding": "BROWSER" },
+  "ai": { "binding": "AI" },
+  "vectorize": [{ "binding": "PEOPLE_INDEX", "index_name": "htn-people" }],
+  "r2_buckets": [{ "binding": "CARDS", "bucket_name": "htn-cards" }],
+
+  "vars": {
+    // "demo" = OpenAI credits. "dev" = whatever DEV_LLM_* points at (Workers AI,
+    // Ollama, ...) so testing doesn't spend them.
+    "LLM_PROFILE": "dev",
+    "OPENAI_MODEL": "gpt-5-mini",
+    "BOOKING_DRY_RUN": "true",
+    "IMESSAGE_APP_NAME": "Plan"
+  }
+}

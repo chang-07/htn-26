@@ -1,0 +1,25 @@
+# Copy to .dev.vars (or .env — wrangler reads either) for local dev. For production: `wrangler secret put NAME`.
+
+# --- Linq ---
+LINQ_API_KEY=
+LINQ_WEBHOOK_SECRET=whsec_...
+
+# --- iMessage app card identity ---
+# Must match an installed Messages extension, or the card silently renders as
+# plain text. Leave blank to send the card as a plain image + text instead.
+IMESSAGE_TEAM_ID=
+IMESSAGE_BUNDLE_ID=
+
+# --- LLM: demo profile (spends OpenAI credits) ---
+OPENAI_API_KEY=
+
+# --- LLM: dev profile (any OpenAI-compatible endpoint; spends nothing of OpenAI's) ---
+# Workers AI:  https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1
+#              key = a Cloudflare API token, model = @cf/meta/llama-3.3-70b-instruct-fp8-fast
+# Ollama:      http://localhost:11434/v1   key = ollama   model = qwen3:8b
+DEV_LLM_BASE_URL=
+DEV_LLM_API_KEY=
+DEV_LLM_MODEL=
+
+# --- Public URL of this Worker (card images, vote page, Shopify agent profile) ---
+PUBLIC_BASE_URL=https://htn-planner.<your-subdomain>.workers.dev
