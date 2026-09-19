@@ -119,11 +119,14 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
         return { urls: (urls.length ? urls : found.hits.map((h) => h.url)).slice(0, budget.pages), tokens: r.tokens };
       });
       tokens += picked.tokens;
+      await progress("selected", { count: picked.urls.length, hosts: picked.urls.map((u) => new URL(u).host) });
 
       // 4. Read each page and pull candidates out of it. Extraction is per page
       //    so that each prompt stays small enough for a local dev model.
       const read = await step.do("read", { ...STEP, timeout: "8 minutes" }, async () => {
         const session = await openBrowser(this.env, { timeoutSeconds: 420 });
+        // Watchable while it runs, the same way a booking is.
+        await progress("browser", { provider: session.provider, liveUrl: session.liveUrl });
         let used = 0;
         try {
           // A tab per page, each followed straight away by its own extraction,

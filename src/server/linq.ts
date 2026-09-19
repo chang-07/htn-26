@@ -141,6 +141,23 @@ export async function sendText(env: Env, chatId: string, value: string, opts: Se
   return res.message.id;
 }
 
+/**
+ * Opens a group chat with these people and the agent's number, and returns its
+ * id. Dry — a made-up, non-UUID id, which keeps every later send dry too —
+ * without a key or when any handle is a simulator number (+1555…).
+ */
+export async function createGroupChat(env: Env, to: string[], text: string): Promise<string> {
+  if (!env.LINQ_API_KEY || to.some((h) => /^\+1555/.test(h))) {
+    log("info", "linq", "dry.chat_create", { people: to.length, text });
+    return `intro-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  const linq = linqClient(env);
+  const from = env.LINQ_FROM_NUMBER || (await linq.phoneNumbers.list()).phone_numbers[0]?.phone_number;
+  if (!from) throw new Error("No Linq phone number to open the chat from");
+  const res = await linq.chats.create({ from, to, message: { parts: [{ type: "text", value: text }] } });
+  return res.chat.id;
+}
+
 // ------------------------------------------------------------------ presence
 // The small signals that make the number feel like a person: a read receipt,
 // the typing bubble, a name and photo. All are best-effort — Linq answers 204
