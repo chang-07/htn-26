@@ -162,6 +162,9 @@ export const toolSchemas = {
     who: z.string().optional().describe("The speaker label of whoever asked for it"),
   }),
   show_playlist: z.object({}),
+  make_game: z.object({
+    topic: z.string().describe("What the game should be about, in the asker's words"),
+  }),
 } as const;
 
 export type ToolName = keyof typeof toolSchemas;
@@ -217,6 +220,8 @@ const descriptions: Record<ToolName, string> = {
     "Add a song someone named to the group playlist. It is looked up on iTunes, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
   show_playlist:
     "Post (or repost) the playlist card so the group can open the player. Use when someone asks to see or play the playlist and there is no card in recent view.",
+  make_game:
+    "Generate a trivia game about the topic someone asked for and post its card. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
 export function openAiTools() {

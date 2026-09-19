@@ -46,10 +46,40 @@ export default {
     // WebSocket. Public plan state only, and the unguessable chat id is the
     // capability, exactly as on /w/<chat>.
     if (url.pathname.startsWith("/api/widget/")) {
-      const [chatEnc, action, extra] = url.pathname.slice("/api/widget/".length).split("/");
+      const [chatEnc, action, extra, sub] = url.pathname.slice("/api/widget/".length).split("/");
       const chat = decodeURIComponent(chatEnc ?? "");
       if (!chat) return new Response("Not found", { status: 404 });
       const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
+      // Games: create from a prompt, fetch the redacted view, act (join/answer/advance).
+      if (action === "game") {
+        if (!extra && request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { prompt?: string; voter?: string; name?: string };
+          if (!body.prompt || !body.voter) return new Response("prompt and voter are required", { status: 400 });
+          try {
+            const made = await agent.gameCreate(body.prompt, body.voter, body.name);
+            return Response.json(made);
+          } catch (err) {
+            return new Response(err instanceof Error ? err.message : "generation failed", { status: 502 });
+          }
+        }
+        if (extra && !sub && request.method === "GET") {
+          const v = await agent.gameFetch(extra, url.searchParams.get("voter") ?? "");
+          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        if (extra && sub && request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { voter?: string; name?: string; choice?: number };
+          if (!body.voter) return new Response("voter is required", { status: 400 });
+          const act =
+            sub === "join" ? { type: "join" as const, name: body.name ?? "" }
+            : sub === "answer" ? { type: "answer" as const, choice: Number(body.choice) }
+            : sub === "advance" ? { type: "advance" as const }
+            : null;
+          if (!act) return new Response("Not found", { status: 404 });
+          const v = await agent.gameAct(extra, body.voter, act);
+          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        return new Response("Not found", { status: 404 });
+      }
       if (!action && request.method === "GET") {
         return Response.json(await agent.widgetState(), { headers: { "cache-control": "no-store" } });
       }
