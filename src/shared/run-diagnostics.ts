@@ -38,3 +38,27 @@ export function diagnose(events: DiagnosticEvent[]) {
   if (repeated.length) insights.push(`Repeated operations: ${repeated.map((g) => `${g.name} ×${g.count}`).join(", ")}. Repetition may be legitimate; compare inputs and outcomes before deduplicating.`);
   return { spans, pending, errors, retries, ranked, insights, totals, modelCalls: model.length, p50: percentile(0.5), p95: percentile(0.95), occupiedMs: intervalMs(leaves.map((e) => [number(e.fields.started), number(e.fields.started) + number(e.fields.ms)])) };
 }
+
+/** Completed operations and unmatched starts share one elapsed-time scale. */
+export function traceTimeline(events: DiagnosticEvent[]) {
+  const { spans, pending } = diagnose(events);
+  const rows = [...spans, ...pending].map((event) => {
+    const duration = event.event === "trace.end" ? Math.max(0, number(event.fields.ms)) : null;
+    const start = typeof event.fields.started === "number" && Number.isFinite(event.fields.started)
+      ? event.fields.started : event.ts - (duration ?? 0);
+    return { event, start, duration };
+  }).sort((a, b) => a.start - b.start || a.event.seq - b.event.seq);
+  const start = rows.length ? Math.min(...rows.map((r) => r.start)) : 0;
+  const end = rows.length ? Math.max(...rows.map((r) => r.start + (r.duration ?? 0))) : start;
+  return { rows, start, duration: Math.max(1, end - start) };
+}
+
+export function operationLabel(name: string): string {
+  const labels: Record<string, string> = {
+    "agent.turn": "Agent turn", "agent.model": "Model response", "agent.tool": "Tool execution",
+    "llm.json": "Structured model response", "provider.request": "Provider request",
+    "provider.search": "Search sources", "provider.fetch": "Read source page",
+    "provider.systemone": "Jev relevance scoring",
+  };
+  return labels[name] ?? name.replace(/[._]/g, " ").replace(/^./, (s) => s.toUpperCase());
+}

@@ -432,7 +432,7 @@ export function RunTape({
         </p>
       )}
 
-      {nodes.map((n) => (
+      {nodes.filter((n) => raw || !["trace.start", "trace.end", "provider.response", "llm.usage"].includes(n.event) || n.level === "error").map((n) => (
         <Row
           key={n.seq}
           node={n}
@@ -713,7 +713,7 @@ export function StepDetail({ node, t0, chat, onClose }: { node: Node; t0: number
             ))}
           </Section>
         )}
-        {Object.keys(raw).length > 0 && <Section label="Raw event"><FieldList fields={raw} lines={8} /></Section>}
+        {Object.keys(raw).length > 0 && <details><summary style={{ cursor: "pointer", fontSize: 13 }}>Technical details & trace IDs</summary><div style={{ marginTop: 12 }}><FieldList fields={raw} lines={8} /></div></details>}
       </div>
     </div>
   );

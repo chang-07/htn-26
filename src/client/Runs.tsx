@@ -258,7 +258,7 @@ export function Runs() {
     return () => window.removeEventListener("keydown", onKey);
   }, [wide, picked]);
 
-  const columns = wide ? "300px minmax(0,1fr) 420px" : mid ? "280px minmax(0,1fr)" : "minmax(0,1fr)";
+  const columns = wide && pickedNode ? "280px minmax(0,1fr) 360px" : mid ? "280px minmax(0,1fr)" : "minmax(0,1fr)";
   const showRail = mid || railOpen || !detail;
   const showTape = mid || !showRail;
 
@@ -327,8 +327,8 @@ export function Runs() {
               >
                 Background
               </button>
-              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Print every step's fields on the tape">
-                Raw
+              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Include trace events and raw fields in the activity feed">
+                All events
               </button>
               <button className="rv-btn is-quiet" onClick={flipTheme} title="Switch between paper and night">
                 {theme === "light" ? "Night" : "Paper"}
@@ -358,12 +358,14 @@ export function Runs() {
       )}
 
       {showTape && (
-        <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, borderRight: wide ? "2px dotted var(--rule)" : 0 }}>
+        <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, borderRight: wide && pickedNode ? "2px dotted var(--rule)" : 0 }}>
           {detail ? (
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
-                <RunDiagnostics events={nodes} onPick={setPicked} />
+                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} finished={detail.ended !== null} />
+                <h2 style={{ fontSize: 18, margin: "8px 0" }}>Activity</h2>
+                <p style={{ fontSize: 12, color: "var(--soft)", margin: "0 0 16px" }}>Messages, decisions and results in order. Select an event for details.</p>
                 <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
               </div>
             </>
@@ -373,10 +375,10 @@ export function Runs() {
         </section>
       )}
 
-      {wide && (
+      {wide && pickedNode && (
         <aside style={{ minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           {pickedNode && detail ? (
-            <StepDetail node={pickedNode} t0={t0} chat={detail.chat} />
+            <StepDetail node={pickedNode} t0={t0} chat={detail.chat} onClose={() => setPicked(null)} />
           ) : (
             <div style={{ padding: "22px 22px 0" }}>
               <p className="rv-meta">This step</p>
