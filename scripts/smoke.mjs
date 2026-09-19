@@ -48,6 +48,8 @@ const tool = async (c, name, args) => (await (await post("/api/dev/tool", { chat
 const dump = async (c) => (await get(`/api/dev/dump?chat=${c}`)).json();
 const logs = async (c) => (await get(`/api/dev/logs?chat=${c}&limit=200`)).text();
 const count = (text, needle) => text.split(needle).length - 1;
+/** Ticket photos posted: the ticket.out event lines only, not the trace spans that also name them. */
+const tickets = (text, kind) => text.split("\n").filter((l) => /^\S+ \S+\s+ticket\.out\s/.test(l) && (!kind || l.includes(`"kind":"${kind}"`))).length;
 async function waitFor(c, needle, seconds) {
   for (let i = 0; i < seconds * 2; i++) {
     if ((await logs(c)).includes(needle)) return true;
@@ -75,7 +77,7 @@ await check("one ticket photo per ballot, none per vote", async () => {
   for (const r of ["love", "like", "love"]) await post("/api/dev/react", { chat: a, from: "+15550001111", reaction: r });
   await sleep(1500);
   const text = await logs(a);
-  expect(count(text, "ticket.out") === 1, `ticket.out fired ${count(text, "ticket.out")} times`);
+  expect(tickets(text) === 1, `ticket.out fired ${tickets(text)} times`);
   expect(count(text, "vote.cast") === 3, `vote.cast fired ${count(text, "vote.cast")} times`);
 });
 await check("a voter's latest tapback replaces their earlier one", async () => {
@@ -216,7 +218,7 @@ await check("paying the last cart posts the invoice ticket once, not before", as
   expect(!(await logs(inv)).includes('"kind":"invoice"'), "invoice posted while a cart was still unpaid");
   await tool(inv, "mark_paid", { who: "Sam", shop: "partycity.com" });
   const text = await logs(inv);
-  expect(count(text, '"kind":"invoice"') === 1, `invoice ticket posted ${count(text, '"kind":"invoice"')} times`);
+  expect(tickets(text, "invoice") === 1, `invoice ticket posted ${tickets(text, "invoice")} times`);
   expect(text.indexOf('"kind":"cart","tone":"done"') < text.indexOf('"kind":"invoice"'), "the invoice came before the PAID ticket");
 });
 await check("the invoice splits every cart across the chat and nets the two payers", async () => {
@@ -239,7 +241,7 @@ await check("add_expense for one person is a transfer, and it settles that debt"
 });
 await check("show_invoice posts the ticket; drop_expense takes the entry back out", async () => {
   await tool(inv, "show_invoice", {});
-  expect(count(await logs(inv), '"kind":"invoice"') === 2, "show_invoice did not post a ticket");
+  expect(tickets(await logs(inv), "invoice") === 2, "show_invoice did not post a ticket");
   const id = (await dump(inv)).state.expenses[0].id;
   await tool(inv, "drop_expense", { id });
   const { invoice, state } = await dump(inv);

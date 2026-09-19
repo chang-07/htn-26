@@ -2276,6 +2276,15 @@ this.rememberCardId(id);
     };
   }
 
+  /**
+   * The plan as a method, for the Worker's /card route. Reading `stub.state`
+   * as a property breaks once Sentry's RPC trace propagation proxies the stub:
+   * every property becomes a method wrapper, so the read returns a function.
+   */
+  async planState(): Promise<PlanState> {
+    return this.state;
+  }
+
   /** Simulator only (see /api/dev in index.ts). */
   async dump() {
     return {
