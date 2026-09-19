@@ -267,9 +267,12 @@ transport, even with a live `LINQ_API_KEY`, so testing never texts anyone.
 
 ### Run viewer — what the agent did, turn by turn
 
-`/runs` is a live view of every run across every chat: the run list on the left,
-a timeline of the selected run on the right. It fills in step by step while a
-turn is happening, so a text sent to the number shows up a moment later.
+`/runs` is a live view of every run across every chat: sessions and their runs
+in a rail on the left, the selected run as a tape in the middle — one row per
+step, with whatever the step produced printed under it — and a plain-English
+explanation of the selected step on the right. It fills in step by step while a
+turn is happening, so a text sent to the number shows up a moment later. It has
+a night mode for projecting, and it is the same ticket design as the cards.
 
 ```sh
 open http://localhost:5173/runs        # deployed: https://<worker>/runs
