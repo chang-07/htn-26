@@ -80,6 +80,28 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
   if (e.event.startsWith("booking.")) {
     return { svc: "booking", title: e.event.replace(".", " "), sub: str(f.detail) ?? str(f.option) ?? "" };
   }
+  if (e.event.startsWith("pay.")) {
+    const st = e.event.slice("pay.".length);
+    const total = str(f.total) ?? "";
+    const titles: Record<string, [string, string]> = {
+      asked: ["offer to pay", `${str(f.who) ?? "someone"}, by ${str(f.source) === "reaction" ? "a thumbs up" : str(f.source) === "resume" ? "picking it back up" : "text"}`],
+      ignored: ["ignored", str(f.reason) ?? ""],
+      needs_wallet: ["no wallet yet", "told to set up payments"],
+      needs_address: ["address asked", "private page sent"],
+      started: ["checkout started", f.live === true ? "LIVE: will charge" : "dry run: will not charge"],
+      browser: ["browser open", str(f.shop) ?? ""],
+      step: ["checkout", str(f.line) ?? ""],
+      priced: ["priced", total],
+      needs_card: ["card needed", "add-card link sent"],
+      needs_approval: ["approval asked", `${total} · passkey link sent`],
+      card_ready: ["card minted", "single use, exact amount"],
+      paying: ["approved", "typing the card in"],
+      submitted: ["PAY PRESSED", total],
+      finished: [str(f.status) === "paid" ? "PAID" : `ended: ${(str(f.status) ?? "?").replace(/_/g, " ")}`, [total, str(f.confirmation)].filter(Boolean).join(" · ")],
+    };
+    const [title, sub] = titles[st] ?? [e.event.replace(".", " "), ""];
+    return { svc: st === "asked" || st.startsWith("needs_") ? "chat" : "shop", title, sub };
+  }
   if (e.event.startsWith("location.")) {
     const st = e.event.slice("location.".length);
     return {
@@ -132,6 +154,18 @@ function describe(n: Node): string {
     case "turn.end": return f.outcome === "silent"
       ? "The model had nothing useful to add and stayed quiet."
       : "The turn finished and the agent had spoken.";
+    case "pay.asked": return "Someone offered to cover a cart. Who pays is decided by who reacted, never by the model.";
+    case "pay.needs_wallet": return "They have no wallet connected, so nothing started. They were told how to set one up.";
+    case "pay.needs_address": return "No delivery address on file. A private page was sent; saving it resumes the payment by itself.";
+    case "pay.started": return f.live === true ? "A checkout run started with payments LIVE." : "A checkout run started as a dry run: it prices the order and stops before any card exists.";
+    case "pay.browser": return "A browser opened the store's own checkout page.";
+    case "pay.step": return "The checkout form is filled by rote, with no model involved.";
+    case "pay.priced": return "The store priced shipping and tax. This is the real total, read off the page.";
+    case "pay.needs_approval": return "The wallet wants the person's passkey before it will mint a card. A link was sent; the run waits up to four minutes.";
+    case "pay.needs_card": return "The wallet has no card on file. An add-card link was sent; the run waits.";
+    case "pay.card_ready": return "A single-use card was minted for exactly this total at exactly this store. Its number never reaches a log or a model.";
+    case "pay.submitted": return "Pay was pressed on the store's checkout. From here the order may exist even if the page never confirms.";
+    case "pay.finished": return f.status === "paid" ? "The store confirmed the order." : f.status === "dry_run" ? "Priced and stopped: payments are switched off, so nothing was charged." : "The payment did not go through.";
     case "research.started": return "Research started in the background. The agent says it is looking, then stops — findings arrive later.";
     case "research.planned": return "The brief became search queries.";
     case "research.selected": return "A model picked which search results were worth opening in a browser.";

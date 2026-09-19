@@ -77,6 +77,8 @@ const RUN_START = "turn.start";
  * continuation of the run that started it, however many turns that takes.
  */
 const HUMAN_EVENTS = new Set(["message.in", "message.stored", "message.duplicate", "vote.cast", "vote.ignored", "reaction.ignored", "dev.tool", "person.forgotten", "links.forgotten", "profile.saved_via_form"]);
+/** A thumbs up on a cart is a person acting; the same payment picking itself back up is not. */
+const byAPerson = (o: { event: string; fields: Fields }) => HUMAN_EVENTS.has(o.event) || (o.event === "pay.asked" && o.fields.source !== "resume");
 const CONTINUE_WITHIN_MS = 20 * 60 * 1000;
 const RUN_END = new Set(["turn.end", "turn.crashed"]);
 /** Loose events waiting to be adopted by the next turn are flushed after this. */
@@ -117,7 +119,21 @@ export class RunRecorder {
     private readonly chat: string,
     /** Keeps the DO alive until the write lands; the turn itself never waits. */
     private readonly background: (p: Promise<unknown>) => void,
-  ) {}
+    /**
+     * Where the last run is remembered between wake-ups. In production a chat's
+     * Durable Object is evicted from memory within seconds of going quiet, so a
+     * recorder that only remembered in memory forgot its run before the next
+     * burst of events arrived — and one payment became three hidden runs.
+     */
+    private readonly memory?: { load: () => string | undefined; save: (json: string) => void },
+  ) {
+    try {
+      const kept = memory?.load();
+      if (kept) this.last = JSON.parse(kept);
+    } catch {
+      // Unreadable history only costs continuity, never a turn.
+    }
+  }
 
   record(level: Level, event: string, fields: Fields) {
     const ts = Date.now();
@@ -180,14 +196,19 @@ export class RunRecorder {
     // ended. It is the rest of that interaction, not an event of its own.
     if (this.continuesLast()) this.resume();
     else this.open({ trigger: this.orphans[0].event });
+    // A payment has no model turn to name its outcome, and "background" runs are
+    // hidden by default — so it is named for how the payment stands.
+    const payEvents = this.orphans.filter((o) => o.event.startsWith("pay."));
+    const finished = payEvents.find((o) => o.event === "pay.finished");
+    const outcome = finished ? String(finished.fields.status ?? "finished") : payEvents.length ? "paying" : "background";
     this.emit(this.drainOrphans());
     // Not a crash: nothing ran. Without an outcome close() would call it one.
-    this.close(worst, { outcome: "background" });
+    this.close(worst, { outcome });
   }
 
   /** True when nothing a person did stands between the last run and now. */
   private continuesLast(): boolean {
-    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && !this.orphans.some((o) => HUMAN_EVENTS.has(o.event));
+    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && !this.orphans.some(byAPerson);
   }
 
   /** Pick the last run back up: same id, sequence numbers carry on, totals accumulate. */
@@ -227,6 +248,11 @@ export class RunRecorder {
     };
     this.send({ kind: "close", run: { runId: this.runId, ended, ms: ended - this.carry.started, ...summary } });
     this.last = { runId: this.runId, seq: this.seq, started: this.carry.started, endedAt: ended, ...summary };
+    try {
+      this.memory?.save(JSON.stringify(this.last));
+    } catch {
+      // as above
+    }
     this.runId = null;
   }
 

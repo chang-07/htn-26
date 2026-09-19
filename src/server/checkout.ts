@@ -181,7 +181,7 @@ export async function typeCard(page: Page, card: CardDetails, holder: string) {
  * `expectCents` is re-checked against the page first: if the total moved since
  * the card was minted, nothing is submitted.
  */
-export async function payCheckout(page: Page, card: CardDetails, holder: string, expectCents: number): Promise<{ confirmation: string; url: string }> {
+export async function payCheckout(page: Page, card: CardDetails, holder: string, expectCents: number, onSubmit: () => void | Promise<void> = () => {}): Promise<{ confirmation: string; url: string }> {
   const before = await readTotal(page);
   if (!("totalCents" in before) || before.totalCents !== expectCents) throw new Error("the total changed while waiting, so nothing was charged");
 
@@ -190,6 +190,7 @@ export async function payCheckout(page: Page, card: CardDetails, holder: string,
   const pay = await page.$('button#checkout-pay-button, button[type="submit"][id*="pay" i]');
   if (!pay) throw new Error("the checkout has no pay button");
   await pay.click();
+  await Promise.resolve(onSubmit()).catch(() => {});
   return confirmed(page).catch((err: unknown) => {
     // From here on the store may have the order, so the caller must not say "nothing was charged".
     throw Object.assign(new Error(String((err as Error).message ?? err)), { submitted: true });
