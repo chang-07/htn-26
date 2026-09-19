@@ -131,6 +131,23 @@ await check("availability check refuses options with no link", async () => {
   expect(/nothing to check/i.test(out), `unexpected reply: ${out}`);
 });
 
+console.log("\npayment setup (stubbed for simulator chats; no model involved)");
+await check("wrong code is refused, right code connects, the code never reaches the transcript", async () => {
+  const c = chat("pay");
+  const from = "+15550004242";
+  const say = (text) => post("/api/dev/message", { chat: c, from, text });
+  await say("set up payments");
+  await say("123456");
+  await say("set up payments");
+  await say("000000");
+  await sleep(1200);
+  const text = await logs(c);
+  expect(text.includes("payments.verify_failed") && text.includes("payments.connected"), "setup did not run as expected");
+  expect(!text.includes("turn.start"), "the model was woken during payment setup");
+  const bodies = (await dump(c)).transcript.map((t) => t.body).join(" ");
+  expect(!/\b(123456|000000)\b/.test(bodies), "a verification code was left in the transcript");
+});
+
 console.log("\nrun history");
 await check("run history is locked for anyone arriving by a public hostname", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";

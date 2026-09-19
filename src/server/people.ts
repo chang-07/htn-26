@@ -26,6 +26,8 @@ export type Profile = {
   skipped?: string[];
   /** Their one-to-one chat with the agent, so saving the form can be acknowledged there. */
   dmChat?: string;
+  /** Set once they have connected a wallet for purchases they approve. Never any card detail. */
+  payments?: "connected";
   /** What reading the links THEY shared turned up: a few interests and one line. */
   online?: { interests: string[]; line: string; from: string[] };
   /** The links that `online` was read from, so they are re-read only when they change. */
@@ -134,6 +136,7 @@ export function profileLines(p: Profile): string {
     p.budget && `budget: ${p.budget}`,
     p.interests && `into: ${p.interests}`,
     p.about && `says: ${p.about}`,
+    p.payments === "connected" && "has payments set up",
     p.links.length && `links: ${p.links.join(", ")}`,
     p.online?.interests.length && `their ${p.online.from.join(" + ")} shows: ${p.online.interests.join(", ")}`,
     p.facts.length && `mentioned: ${p.facts.join("; ")}`,

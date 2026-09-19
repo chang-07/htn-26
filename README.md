@@ -270,6 +270,29 @@ curl -G localhost:5173/api/dev/links --data-urlencode 'l=@someone on instagram' 
 curl -G localhost:5173/api/dev/links --data-urlencode raw=<handle>     # the unsummarised text
 ```
 
+### Payment setup — per person, never a card number
+
+Linq's agent payments let a person connect a wallet once and then approve
+purchases one at a time with a passkey; each approval mints a single-use virtual
+card for that purchase alone. This app implements the **setup half only** — no
+money moves, and nothing here ever sees a card number.
+
+In a direct chat a person texts `set up payments`. Linq sends them a one-time
+code and runs the consent step itself; they text the code back, the agent
+verifies it, marks their profile `has payments set up`, and sends Linq's
+"Add a card" card. `remove my payments` revokes this app's permission (their
+wallet is theirs and untouched).
+
+All of it is handled in code in `handlePaymentSetup`, never by the model: it is
+the one flow where a misread intent costs someone money or trust. The model is
+only told which words to point people at, and that it must never ask for or
+accept card details. Verification codes are replaced with `[verification code]`
+in the transcript before the model can read them. Simulator chats use a stub
+(`000000` is the right code) so tests never touch a real wallet.
+
+Spending — `payments.create`, the passkey approval, and handing a virtual card
+to a checkout — is deliberately not built yet.
+
 ### Booking and availability — the browser pilot
 
 `src/server/pilot.ts` drives a venue's own booking page: it lists what a person

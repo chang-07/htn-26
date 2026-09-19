@@ -218,6 +218,65 @@ export async function sendLinkCard(
   return res.message.id;
 }
 
+// ------------------------------------------------------------------ payments
+//
+// Linq's agent payments: a person connects once (a one-time code and a consent
+// step that Linq itself runs in the thread), adds a card to a wallet Linq's
+// provider holds, and later approves each purchase with a passkey, which mints
+// a single-use virtual card for that purchase alone. Nothing here ever sees a
+// card number. These three calls are only the SETUP half: no money moves.
+
+export type PaymentConnection = { status: "not_connected" | "pending" | "connected" | "revoked"; connectId?: string };
+
+export async function paymentConnection(env: Env, chatId: string, handle: string): Promise<PaymentConnection> {
+  if (isDry(env, chatId)) return { status: "not_connected" };
+  const c = await linqClient(env).paymentHandles.connection(handle);
+  return { status: c.status ?? "not_connected" };
+}
+
+/** Starts the ceremony. Linq sends the code; the returned connectId must be held until it is verified. */
+export async function connectPayments(env: Env, chatId: string, handle: string): Promise<PaymentConnection> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.payments_connect", { chat: short(chatId) });
+    return { status: "pending", connectId: "dry-connect" };
+  }
+  const c = await linqClient(env).paymentHandles.connect(handle);
+  return { status: c.status ?? "pending", connectId: c.connect_id };
+}
+
+export async function verifyPayments(env: Env, chatId: string, handle: string, connectId: string, code: string): Promise<PaymentConnection> {
+  if (isDry(env, chatId)) {
+    if (code !== "000000") throw new Error("that code is not right");
+    return { status: "connected" };
+  }
+  const c = await linqClient(env).paymentHandles.verify(handle, { connect_id: connectId, code });
+  return { status: c.status ?? "not_connected" };
+}
+
+/** Withdraws this app's permission to request payments. The person's wallet itself is theirs and untouched. */
+export async function revokePayments(env: Env, chatId: string, handle: string): Promise<void> {
+  if (isDry(env, chatId)) return void log("info", "linq", "dry.payments_revoke", { chat: short(chatId) });
+  await linqClient(env).paymentHandles.revoke(handle);
+}
+
+/** The card that asks someone to add a payment card to their wallet. */
+export async function sendAttachCard(env: Env, chatId: string): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.attach_card", { chat: short(chatId) });
+    return `dry-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
+    message: {
+      experience: {
+        name: "agentcard",
+        action: "attach_card",
+        params: { title: "Add a card", subtitle: "Used only for purchases you approve, one at a time.", button: "Add card" },
+      },
+    },
+  });
+  return res.message.id;
+}
+
 /**
  * Shopify serves product images at full resolution; a width hint keeps the
  * download small. Other hosts get the URL untouched.

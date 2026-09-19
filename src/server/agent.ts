@@ -7,7 +7,7 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { markRead, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
@@ -62,6 +62,9 @@ on a time, book it, and order anything they need.
   at most once per plan. It needs the full name and email the reservation goes
   under: if nobody has given them, ask who is booking and for their email, and
   never make either up.
+- Payment setup is not yours to run. If someone wants you to be able to pay for
+  things, tell them to text you "set up payments" in a direct chat; "remove my
+  payments" undoes it. Never ask for or accept card details in the chat.
 - You cannot pay for anything. shop_build_cart posts one store's cart card with
   a checkout link for a human to complete. When the group changes that order,
   call it again with that store's whole new cart; never describe cart changes in
@@ -185,6 +188,17 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /**
+   * Message bodies and model reasoning for the run viewer, when LOG_BODIES is
+   * on. Run history is served over HTTP, so switching this on means it holds
+   * what real people wrote in their group chat, not just how long it was.
+   * Handles stay masked either way.
+   */
+  private body(text: string, key = "text"): Fields {
+    if ((this.env as { LOG_BODIES?: string }).LOG_BODIES !== "true") return {};
+    return { [key]: text.slice(0, 2000) };
+  }
+
+  /**
    * Logs to the console *and* to this chat's own event history. The console
    * scrolls away and `wrangler tail` only shows what happens while you watch;
    * the history answers "what did the agent do with that message an hour ago?"
@@ -231,6 +245,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       chars: msg.text.length,
       group: msg.isGroup,
       ...(wake ? { wake } : {}),
+      ...this.body(msg.text),
     });
     if (!wake) return;
 
@@ -242,6 +257,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // request, or once on its own when onboarding finishes.
     if (msg.isGroup === false) {
       if (/^\s*(my\s+)?profile\b/i.test(msg.text)) await this.sendProfileLink();
+
+      // Payment setup is handled here, in code, and never by the model: it is
+      // the one flow where a misread intent or an invented step costs someone
+      // money or trust. The model only ever tells people the words to text.
+      if (await this.handlePaymentSetup(msg)) return;
       // A promise made to the person ("say forget my links"), so it is kept in
       // code rather than left to the model to interpret.
       if (/\bforget (my )?(links|socials|insta(gram)?)\b/i.test(msg.text)) {
@@ -447,6 +467,67 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /** Scheduler callback: once per direct chat, right after onboarding finishes. */
+  /**
+   * "set up payments" starts Linq's connect ceremony for the person texting, in
+   * their own direct chat; the code Linq sends them, typed back here, finishes
+   * it. Returns true when the message was part of this flow and is fully dealt
+   * with. Setup only: connecting lets the agent ASK for a payment later, and
+   * every purchase still needs that person's passkey.
+   */
+  private async handlePaymentSetup(msg: { linqId: string; from: string; text: string }): Promise<boolean> {
+    const pending = this.getMeta("pay_connect_id");
+    const code = msg.text.match(/^\s*(\d{4,8})\s*$/)?.[1];
+
+    if (pending && code) {
+      // A one-time code has no business in the transcript the model reads.
+      this.sql`UPDATE messages SET body = '[verification code]' WHERE linq_id = ${msg.linqId}`;
+      try {
+        const done = await verifyPayments(this.env, this.name, msg.from, pending, code);
+        if (done.status !== "connected") throw new Error(`status ${done.status}`);
+        this.setMeta("pay_connect_id", "");
+        await peopleStore(this.env).save(msg.from, { payments: "connected" });
+        this.note("info", "payments.connected", { who: mask(msg.from) });
+        await this.say("you're connected. one more step: add a card below. i can only ever charge it for things you approve, one at a time", { screenEffect: "confetti" });
+        await timed("agent", "payments.attach_card", {}, () => sendAttachCard(this.env, this.name), this.note).catch(() => undefined);
+      } catch (err) {
+        this.note("warn", "payments.verify_failed", errorFields(err));
+        await this.say("that code didn't work. it may have expired. text \"set up payments\" to get a new one");
+        this.setMeta("pay_connect_id", "");
+      }
+      return true;
+    }
+
+    if (/\b(set ?up|connect|add) (my |a )?(payments?|card|wallet)\b/i.test(msg.text)) {
+      try {
+        const now = await paymentConnection(this.env, this.name, msg.from);
+        if (now.status === "connected") {
+          await peopleStore(this.env).save(msg.from, { payments: "connected" });
+          await this.say("you're already connected. here's the card to add or change your payment method");
+          await sendAttachCard(this.env, this.name).catch(() => undefined);
+          return true;
+        }
+        const started = await connectPayments(this.env, this.name, msg.from);
+        if (!started.connectId) throw new Error(`no connect id (status ${started.status})`);
+        this.setMeta("pay_connect_id", started.connectId);
+        this.note("info", "payments.connect_started", { who: mask(msg.from) });
+        await this.say("sending you a code now. text it back here and you're connected. nothing is charged by setting this up");
+      } catch (err) {
+        this.note("error", "payments.connect_failed", errorFields(err));
+        await this.say("couldn't start payment setup just now. try again in a bit");
+      }
+      return true;
+    }
+
+    if (/\b(remove|disconnect|forget) (my )?(payments?|card|wallet)\b/i.test(msg.text)) {
+      await revokePayments(this.env, this.name, msg.from).catch((err: unknown) => this.note("warn", "payments.revoke_failed", errorFields(err)));
+      await peopleStore(this.env).save(msg.from, { payments: undefined });
+      this.note("info", "payments.revoked", { who: mask(msg.from) });
+      await this.say("done. i can no longer request payments from you. your card in the wallet itself is yours to remove");
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Form-first onboarding: right after the agent's first reply in a new direct
    * chat, a tappable card offers the whole profile as one 30-second form. The
@@ -782,7 +863,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
   private async say(text: string, opts: SendOptions = {}) {
     this.setMeta("awaiting_answer_until", "0");
     this.typingAt = 0; // a send clears the bubble
-    const id = await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text, opts), this.note);
+    const id = await timed("agent", "message.out", { chars: text.length, ...this.body(text) }, () => sendText(this.env, this.name, text, opts), this.note);
     this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${text}, ${Date.now()})`;
   }
 
@@ -897,6 +978,16 @@ ${transcript}`,
       messages.push(reply);
 
       const calls = (reply.tool_calls ?? []).filter((c) => c.type === "function");
+      // What the model decided on this round trip. Its prose is reasoning, not
+      // anything the group sees — text reaches the chat only through
+      // send_message — so it is the closest thing to a record of its thinking.
+      this.note("info", "turn.step", {
+        step: step + 1,
+        calls: calls.map((c) => c.function.name),
+        ...(reply.content?.trim() && reply.content.trim() !== "NOOP"
+          ? this.body(reply.content.trim(), "thinking")
+          : {}),
+      });
       if (calls.length === 0) {
         // Text reaches the chat only through send_message, never from raw
         // content: some models leak their reasoning into content, and that
