@@ -441,7 +441,7 @@ export function RunTape({
             className={`rv-phase${b.pick !== null && picked === b.pick ? " is-selected" : ""}`}
             onClick={() => b.pick !== null && onPick(picked === b.pick ? null : b.pick)}
           >
-            <i style={{ width: 9, height: 9, background: `var(${SERVICES[b.svc].v})`, flex: "none", alignSelf: "center" }} />
+            <i style={{ width: 9, height: 9, borderRadius: "50%", background: `var(${SERVICES[b.svc].v})`, flex: "none", alignSelf: "center" }} />
             <b>{b.label}</b>
             <span>{b.meta.join("  ·  ")}</span>
           </button>
@@ -699,7 +699,7 @@ function Row({
       {showLive && (
         <span className="rv-media rv-frame" style={{ maxWidth: 640, borderColor: "var(--ink)" }} onClick={(e) => e.stopPropagation()}>
           <span className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", color: "var(--ink)" }}>
-            <i className="rv-live" style={{ width: 8, height: 8, background: "var(--s-browser)" }} />
+            <i className="rv-live" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--s-browser)" }} />
             The agent's browser, live
           </span>
           <iframe
@@ -803,7 +803,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
       <div style={{ padding: "18px 22px 14px", display: "flex", gap: 12, alignItems: "flex-start", flex: "none" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <i style={{ width: 9, height: 9, background: `var(${svc.v})`, flex: "none" }} />
+            <i style={{ width: 9, height: 9, borderRadius: "50%", background: `var(${svc.v})`, flex: "none" }} />
             <span style={{ color: `var(${svc.v})` }}>{svc.label}</span>
             <span>{node.event}</span>
           </div>

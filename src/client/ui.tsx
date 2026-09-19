@@ -72,7 +72,7 @@ html, body { margin:0; background:var(--ground); }
 .rv-row:hover { background:var(--paper2); }
 .rv-row.is-selected { border-left-color:var(--ink); background:var(--paper2); }
 .rv-row.is-static, .rv-row.is-static:hover { cursor:default; background:none; }
-.rv-row .rv-mark { display:block; width:11px; height:11px; align-self:center; justify-self:center; background:currentColor; }
+.rv-row .rv-mark { display:block; width:11px; height:11px; border-radius:50%; align-self:center; justify-self:center; background:currentColor; }
 .rv-row.is-error .rv-title { color:var(--error); }
 /* A step that has just printed: one short reveal, nothing slides. */
 .rv-row.is-new { animation:rvPrint .26s ease-out both; }

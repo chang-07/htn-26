@@ -294,7 +294,7 @@ export function Runs() {
               <span
                 title={live ? "Connected: new runs appear as they happen" : "Not connected. New runs will not appear until it reconnects."}
                 aria-label={live ? "connected" : "disconnected"}
-                style={{ marginLeft: "auto", width: 9, height: 9, background: live ? "var(--good)" : "var(--faint)" }}
+                style={{ marginLeft: "auto", width: 9, height: 9, borderRadius: "50%", background: live ? "var(--good)" : "var(--faint)" }}
               />
             </div>
             {problem ? (
@@ -410,7 +410,7 @@ function Legend() {
     <p style={{ margin: "0 0 12px", display: "flex", flexWrap: "wrap", gap: "4px 14px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)" }}>
       {(Object.keys(SERVICES) as (keyof typeof SERVICES)[]).map((k) => (
         <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <i style={{ width: 8, height: 8, background: `var(${SERVICES[k].v})` }} />
+          <i style={{ width: 8, height: 8, borderRadius: "50%", background: `var(${SERVICES[k].v})` }} />
           {SERVICES[k].label}
         </span>
       ))}
@@ -551,7 +551,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
               <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
             )}
             <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
-              <i className={running ? "rv-live" : undefined} style={{ width: 8, height: 8, background: running ? "var(--ink)" : levelColor(run.level) }} />
+              <i className={running ? "rv-live" : undefined} style={{ width: 8, height: 8, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
               {verdict}
             </span>
             <span title={run.chat}>chat {run.chat.slice(0, 8)}</span>
@@ -597,7 +597,7 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
       <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
         <span style={{ display: "flex", gap: 3 }}>
           {servicesForTools(run.tools).map((s) => (
-            <i key={s} title={SERVICES[s].label} style={{ width: 8, height: 8, background: `var(${SERVICES[s].v})` }} />
+            <i key={s} title={SERVICES[s].label} style={{ width: 8, height: 8, borderRadius: "50%", background: `var(${SERVICES[s].v})` }} />
           ))}
         </span>
         {facts.map((f) => <span key={f}>{f}</span>)}
