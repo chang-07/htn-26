@@ -182,6 +182,12 @@ export const toolSchemas = {
   answer_intro: z.object({
     answer: z.enum(["yes", "no"]).describe("Their answer to the pending introduction"),
   }),
+  add_song: z.object({
+    title: z.string().describe("Song title as they said it"),
+    artist: z.string().optional().describe("Artist if they named one"),
+    who: z.string().optional().describe("The speaker label of whoever asked for it"),
+  }),
+  show_playlist: z.object({}),
 } as const;
 
 export type ToolName = keyof typeof toolSchemas;
@@ -246,6 +252,10 @@ const descriptions: Record<ToolName, string> = {
     "Ask one candidate, privately in their own chat, whether they want to be introduced. Only after the asker picked that candidate. The asker hears back when they answer.",
   answer_intro:
     "Record this person's yes or no to the pending introduction shown in your context. Call it FIRST, before send_message. On yes a group chat is opened for the two of them.",
+  add_song:
+    "Add a song someone named to the group playlist. It is looked up on iTunes, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
+  show_playlist:
+    "Post (or repost) the playlist card so the group can open the player. Use when someone asks to see or play the playlist and there is no card in recent view.",
 };
 
 export function openAiTools() {
