@@ -1229,7 +1229,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
       if (!item.watch || item.status === "done") continue;
       const row = this.sql<{ snapshot: string | null; failures: number; started: number }>`SELECT snapshot, failures, started FROM watches WHERE item_id = ${item.id}`[0];
       if (!row) continue;
-      const snap = row.snapshot ? (JSON.parse(row.snapshot) as FlightStatus | OrderStatus) : undefined;
+      let snap: FlightStatus | OrderStatus | undefined;
+      if (row.snapshot) {
+        try {
+          snap = JSON.parse(row.snapshot) as FlightStatus | OrderStatus;
+        } catch (err) {
+          this.note("warn", "watch.snapshot_bad", { id: item.id, ...errorFields(err) });
+        }
+      }
       const active = "flight" in item.watch ? flightWatchActive(snap as FlightStatus | undefined, now) : orderWatchActive(row.started, snap as OrderStatus | undefined, now);
       if (active) out.push({ item, row });
     }
@@ -1243,45 +1250,48 @@ export class PlanAgent extends Agent<Env, PlanState> {
    */
   async checkWatches() {
     this.setMeta("watch_timer", "");
-    const watches = this.activeWatches();
-    this.note("info", "watch.check", { active: watches.length });
-    for (const { item, row } of watches) {
-      if (row.failures >= 3 && row.failures % 4 !== 3) {
-        this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
-        continue; // hourly, in 15-minute ticks
-      }
-      const watch = item.watch!; // activeWatches only returns items with one
-      try {
-        const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
-        if ("flight" in watch) {
-          const next = await flightStatus(this.env, watch.flight.ident);
-          if (!next) throw new Error("no status");
-          await this.applyWatch(item, next, diffFlight(prev, next));
-        } else {
-          const next = await orderStatus(this.env, watch.order.url);
-          await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop));
+    try {
+      const watches = this.activeWatches();
+      this.note("info", "watch.check", { active: watches.length });
+      for (const { item, row } of watches) {
+        if (row.failures >= 3 && row.failures % 4 !== 3) {
+          this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
+          continue; // hourly, in 15-minute ticks
         }
-      } catch (err) {
-        const failures = row.failures + 1;
-        this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
-        this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
-        if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+        const watch = item.watch!; // activeWatches only returns items with one
+        try {
+          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+          if ("flight" in watch) {
+            const next = await flightStatus(this.env, watch.flight.ident);
+            if (!next) throw new Error("no status");
+            await this.applyWatch(item, next, diffFlight(prev, next));
+          } else {
+            const next = await orderStatus(this.env, watch.order.url);
+            await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop));
+          }
+        } catch (err) {
+          const failures = row.failures + 1;
+          this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+          this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
+          if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+        }
       }
+    } finally {
+      await this.scheduleWatches();
     }
-    await this.scheduleWatches();
   }
 
-  /** Store the snapshot, say the lines, and settle the item once it is over. */
+  /** Post the lines, then persist the snapshot and settle the item once it is over: an unsent line survives to the next tick. */
   private async applyWatch(item: ItineraryItem, next: FlightStatus | OrderStatus, lines: string[]) {
+    for (const line of lines) {
+      await this.say(line);
+      this.note("info", "watch.posted", { id: item.id, line: line.slice(0, 80) });
+    }
     this.sql`UPDATE watches SET snapshot = ${JSON.stringify(next)}, failures = 0, checked = ${Date.now()} WHERE item_id = ${item.id}`;
     const over = "delivered" in next ? next.delivered : next.status === "landed" || next.status === "cancelled";
     if (lines.length || over) {
       const last = lines.at(-1);
       this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, ...(over ? { status: "done" as const } : {}), ...(last ? { lastUpdate: last.replace(/^\S+ (is |now )?/, "").replace(/\.\s*https?:\/\/\S+$/, "") } : {}) } : i)));
-    }
-    for (const line of lines) {
-      this.note("info", "watch.posted", { id: item.id, line: line.slice(0, 80) });
-      await this.say(line);
     }
     if (over) await this.postItinerary();
   }
