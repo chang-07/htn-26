@@ -148,6 +148,15 @@ await check("wrong code is refused, right code connects, the code never reaches 
   expect(!/\b(123456|000000)\b/.test(bodies), "a verification code was left in the transcript");
 });
 
+await check("a misspelt \"remove my paymente\" is still handled in code, never by the model", async () => {
+  const c = chat("payremove");
+  await post("/api/dev/message", { chat: c, from: "+15550004243", text: "remove my paymente" });
+  await sleep(800);
+  const text = await logs(c);
+  expect(text.includes("payments.revoked"), "the removal did not run");
+  expect(!text.includes("turn.start"), "the model was left to answer a payment removal");
+});
+
 console.log("\npaying (guards only: no browser, no wallet, no store)");
 await check("a thumbs up on a cart from someone with no wallet starts nothing", async () => {
   const c = chat("payguard");
