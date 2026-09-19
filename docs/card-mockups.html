@@ -1,0 +1,380 @@
+<title>Plan Card Directions</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
+<style>
+  *,*::before,*::after{box-sizing:border-box;}
+  :root{
+    --ground:#f2f1ee; --surface:#ffffff; --ink:#1c1b19; --ink-2:#55524c;
+    --ink-3:#8a8680; --rule:#dedbd4; --accent:#1f5f4f; --warn:#9a5b1e;
+    --bubble:#e8e6e1; --bubble-edge:#d8d5ce;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --ground:#141413; --surface:#1e1d1b; --ink:#f0eeea; --ink-2:#b3afa7;
+    --ink-3:#7d7973; --rule:#332f2b; --accent:#6fbfa5; --warn:#d99a4e;
+    --bubble:#26251f; --bubble-edge:#37352e;
+  }}
+  :root[data-theme="dark"]{
+    --ground:#141413; --surface:#1e1d1b; --ink:#f0eeea; --ink-2:#b3afa7;
+    --ink-3:#7d7973; --rule:#332f2b; --accent:#6fbfa5; --warn:#d99a4e;
+    --bubble:#26251f; --bubble-edge:#37352e;
+  }
+  body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto;padding-inline:20px;padding-block:44px 80px;}
+
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);margin:0 0 14px;}
+  h1{font-family:"Archivo",sans-serif;font-weight:800;font-size:clamp(30px,5vw,46px);
+    line-height:1.04;letter-spacing:-.02em;margin:0 0 16px;text-wrap:balance;}
+  .lede{font-size:16px;line-height:1.6;color:var(--ink-2);max-width:62ch;margin:0 0 30px;}
+
+  .anatomy{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
+    padding:20px;margin-bottom:56px;}
+  .anatomy h2{font-family:"Archivo",sans-serif;font-size:13px;letter-spacing:.06em;
+    text-transform:uppercase;margin:0 0 14px;color:var(--ink-2);}
+  .anatomy dl{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:9px 20px;margin:0;
+    font-size:14px;line-height:1.5;}
+  .anatomy dt{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--accent);font-weight:600;}
+  .anatomy dd{margin:0;color:var(--ink-2);}
+  .anatomy dd b{color:var(--ink);font-weight:600;}
+
+  .dir{margin-bottom:64px;}
+  .dir-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;
+    border-top:2px solid var(--ink);padding-top:12px;margin-bottom:6px;}
+  .dir-n{font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:600;color:var(--ink-3);}
+  .dir-head h2{font-family:"Archivo",sans-serif;font-weight:700;font-size:23px;
+    letter-spacing:-.015em;margin:0;}
+  .dir-why{font-size:14.5px;line-height:1.6;color:var(--ink-2);max-width:64ch;margin:0 0 22px;}
+  .dir-why .risk{color:var(--warn);font-weight:600;}
+
+  .cards{display:flex;flex-wrap:wrap;gap:28px;}
+  .slot{width:360px;max-width:100%;}
+  .slot-label{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink-3);margin:0 0 9px;}
+
+  /* ---- iMessage bubble chrome (Apple's, not stylable) ---- */
+  .bubble{margin:0;background:var(--bubble);border:1px solid var(--bubble-edge);
+    border-radius:17px;overflow:hidden;}
+  .art{aspect-ratio:3/2;width:100%;overflow:hidden;position:relative;display:flex;}
+  .chrome{display:flex;align-items:center;gap:9px;padding:9px 12px 11px;}
+  .ico{width:26px;height:26px;border-radius:7px;flex:none;
+    background:linear-gradient(150deg,#3d8f77,#1f5f4f);
+    display:flex;align-items:center;justify-content:center;
+    font-family:"Archivo",sans-serif;font-weight:800;font-size:13px;color:#fff;}
+  .ctext{flex:1;min-width:0;}
+  .ctext b{display:block;font-size:13.5px;font-weight:600;color:var(--ink);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .ctext span{display:block;font-size:12px;color:var(--ink-3);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .ctrail{text-align:right;flex:none;}
+  .ctrail b{display:block;font-size:13.5px;font-weight:600;color:var(--ink);}
+  .ctrail span{display:block;font-size:12px;color:var(--ink-3);}
+
+  /* ============ 01 TICKET ============ */
+  .tk{background:#efe7d6;color:#241f17;padding:14px 16px;flex-direction:column;
+    justify-content:space-between;position:relative;
+    font-family:"IBM Plex Mono",monospace;}
+  .tk::after{content:"";position:absolute;top:0;bottom:0;right:58px;width:2px;
+    background-image:radial-gradient(circle,#241f17 1.1px,transparent 1.2px);
+    background-size:2px 9px;opacity:.32;}
+  .tk-top{display:flex;justify-content:space-between;font-size:9.5px;
+    letter-spacing:.13em;text-transform:uppercase;opacity:.62;}
+  .tk-ttl{font-family:"Archivo",sans-serif;font-weight:800;font-size:23px;
+    line-height:1;letter-spacing:-.02em;margin:2px 0 0;max-width:195px;}
+  .tk-rows{display:flex;flex-direction:column;gap:3px;max-width:246px;}
+  .tk-row{display:flex;gap:7px;font-size:11px;align-items:baseline;}
+  .tk-row i{font-style:normal;width:15px;text-align:center;font-size:12px;opacity:.85;}
+  .tk-row s{text-decoration:none;font-weight:500;}
+  .tk-stub{position:absolute;right:0;top:0;bottom:0;width:58px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+    text-align:center;}
+  .tk-stub b{font-family:"Archivo",sans-serif;font-size:20px;font-weight:800;line-height:1;}
+  .tk-stub span{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;opacity:.6;line-height:1.25;}
+  .tk--ok{background:#1f5f4f;color:#f0ece2;}
+  .tk--ok::after{background-image:radial-gradient(circle,#f0ece2 1.1px,transparent 1.2px);opacity:.3;}
+
+  /* ============ 02 BOARD ============ */
+  .bd{background:#131310;color:#f5c344;padding:14px 16px;flex-direction:column;gap:9px;
+    font-family:"IBM Plex Mono",monospace;}
+  .bd-top{display:flex;justify-content:space-between;align-items:center;
+    border-bottom:1px solid rgba(245,195,68,.26);padding-bottom:7px;}
+  .bd-top b{font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;font-weight:600;}
+  .bd-top span{font-size:10px;color:#8d8a7c;letter-spacing:.08em;}
+  .bd-rows{display:flex;flex-direction:column;gap:6px;}
+  .bd-row{display:flex;align-items:center;gap:9px;font-size:12px;}
+  .bd-row em{font-style:normal;font-size:13px;width:17px;flex:none;}
+  .bd-row s{text-decoration:none;flex:1;min-width:0;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;font-weight:500;letter-spacing:.01em;}
+  .bd-row u{text-decoration:none;color:#8d8a7c;font-size:10.5px;flex:none;
+    font-variant-numeric:tabular-nums;}
+  .bd-row.hot s{color:#fff;}
+  .bd-ok{flex:1;display:flex;flex-direction:column;justify-content:center;gap:5px;}
+  .bd-ok b{font-family:"Archivo",sans-serif;font-size:24px;font-weight:800;
+    color:#fff;line-height:1;letter-spacing:-.02em;}
+  .bd-ok span{font-size:11px;color:#f5c344;letter-spacing:.06em;}
+  .bd-ok u{text-decoration:none;font-size:10.5px;color:#8d8a7c;}
+
+  /* ============ 03 POSTER ============ */
+  .ps{background:#d8452e;color:#fdf6ec;padding:16px;flex-direction:column;
+    justify-content:space-between;}
+  .ps-k{font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.17em;
+    text-transform:uppercase;opacity:.82;}
+  .ps-ttl{font-family:"Instrument Serif",Georgia,serif;font-size:32px;line-height:.95;
+    letter-spacing:-.01em;margin:6px 0 0;}
+  .ps-ttl i{font-style:italic;}
+  .ps-list{display:flex;gap:6px;flex-wrap:wrap;}
+  .ps-chip{font-family:"IBM Plex Mono",monospace;font-size:10px;padding:4px 8px;
+    border:1px solid rgba(253,246,236,.42);border-radius:999px;white-space:nowrap;}
+  .ps-chip b{font-weight:600;}
+  .ps--ok{background:#123f34;}
+  .ps-foot{font-family:"IBM Plex Mono",monospace;font-size:10.5px;opacity:.85;letter-spacing:.04em;}
+
+  /* ============ 04 RECEIPT ============ */
+  .rc{background:#fbfaf7;color:#1a1916;padding:13px 16px;flex-direction:column;gap:5px;
+    font-family:"IBM Plex Mono",monospace;font-size:11px;}
+  .rc-hd{text-align:center;border-bottom:1px dashed #b9b4a8;padding-bottom:7px;}
+  .rc-hd b{display:block;font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;}
+  .rc-hd span{display:block;font-size:9.5px;color:#7d786c;letter-spacing:.07em;margin-top:2px;}
+  .rc-li{display:flex;justify-content:space-between;gap:10px;align-items:baseline;}
+  .rc-li s{text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rc-li u{text-decoration:none;font-variant-numeric:tabular-nums;color:#7d786c;flex:none;}
+  .rc-tot{display:flex;justify-content:space-between;border-top:1px dashed #b9b4a8;
+    padding-top:7px;margin-top:auto;font-weight:700;font-size:12px;}
+  .rc-stamp{align-self:center;border:2px solid #1f5f4f;color:#1f5f4f;
+    font-family:"Archivo",sans-serif;font-weight:800;font-size:15px;letter-spacing:.1em;
+    padding:4px 13px;transform:rotate(-4deg);margin-top:2px;}
+
+  .note{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--warn);
+    border-radius:8px;padding:16px 18px;margin-top:10px;font-size:14px;line-height:1.6;color:var(--ink-2);}
+  .note b{color:var(--ink);}
+  .note code{font-family:"IBM Plex Mono",monospace;font-size:12.5px;
+    background:var(--bubble);padding:1px 5px;border-radius:4px;color:var(--ink);}
+  @media (max-width:430px){ .slot{width:100%;} }
+  .art>*{min-width:0;}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Linq · imessage_app · layout.image_url</p>
+  <h1>Four ways the plan card could look</h1>
+  <p class="lede">The PNG is the only surface you control — the caption rows underneath are Apple's
+  chrome, in Apple's font, with an app icon you can't set. So the image carries the whole idea.
+  Each direction is shown in the two states that matter, because the card
+  <b>redraws in the same bubble</b> as the plan progresses.</p>
+
+  <div class="anatomy">
+    <h2>What you can and can't set</h2>
+    <dl>
+      <dt>image_url</dt><dd><b>Yours.</b> Renders for everyone, app installed or not. This is the design.</dd>
+      <dt>image_title / _subtitle</dt><dd>Apple overlays these <b>on top</b> of your image. Every direction below leaves them unset and bakes type into the PNG instead — otherwise they collide.</dd>
+      <dt>caption / subcaption</dt><dd>Bottom-left, Apple's font. Not stylable.</dd>
+      <dt>trailing_caption / _subcaption</dt><dd>Bottom-right, same deal.</dd>
+      <dt>app icon</dt><dd>Fixed to your extension's icon. Not settable per message.</dd>
+    </dl>
+  </div>
+
+  <!-- 01 -->
+  <section class="dir">
+    <div class="dir-head"><span class="dir-n">01</span><h2>Ticket stub</h2></div>
+    <p class="dir-why">Treats the plan as a physical thing you're holding. The tear-off stub gives the
+    booked state somewhere obvious to land, and the perforation reads instantly at bubble size.
+    Warmest of the four, and the one that feels least like software.
+    <span class="risk">Risk:</span> the stub steals ~20% of the width, so long venue names get tight.</p>
+    <div class="cards">
+      <div class="slot">
+        <p class="slot-label">Vote</p>
+        <figure class="bubble">
+          <div class="art tk">
+            <div>
+              <div class="tk-top"><span>Friday · Sept 25</span><span>Party of 6</span></div>
+              <p class="tk-ttl">Pick a spot</p>
+            </div>
+            <div class="tk-rows">
+              <div class="tk-row"><i>👍</i><s>Death Valley's Little Brother</s></div>
+              <div class="tk-row"><i>❤️</i><s>Graffiti Market</s></div>
+              <div class="tk-row"><i>😂</i><s>Beertown Public House</s></div>
+            </div>
+            <div class="tk-stub"><b>6</b><span>Going</span></div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Friday plan</b><span>React to vote</span></div>
+            <div class="ctrail"><b>3</b><span>options</span></div>
+          </div>
+        </figure>
+      </div>
+      <div class="slot">
+        <p class="slot-label">Booked</p>
+        <figure class="bubble">
+          <div class="art tk tk--ok">
+            <div>
+              <div class="tk-top"><span>Confirmed</span><span>Party of 6</span></div>
+              <p class="tk-ttl">Death Valley's</p>
+            </div>
+            <div class="tk-rows">
+              <div class="tk-row"><i>🕗</i><s>Fri Sept 25 · 8:00 PM</s></div>
+              <div class="tk-row"><i>📍</i><s>274 Lancaster St W, Kitchener</s></div>
+            </div>
+            <div class="tk-stub"><b>8:00</b><span>PM</span></div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Booked</b><span>Death Valley's Little Brother</span></div>
+            <div class="ctrail"><b>8:00 PM</b><span>Fri</span></div>
+          </div>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section class="dir">
+    <div class="dir-head"><span class="dir-n">02</span><h2>Departure board</h2></div>
+    <p class="dir-why">Built for the thing the card actually does well: changing in place. Live vote
+    counts tick up the right-hand column with no message spam, and the amber-on-black holds up at
+    thumbnail size better than anything else here. Reads as infrastructure, in a good way.
+    <span class="risk">Risk:</span> the coldest of the four — a hangout with friends shouldn't
+    necessarily feel like a train station.</p>
+    <div class="cards">
+      <div class="slot">
+        <p class="slot-label">Vote · 4 of 6 in</p>
+        <figure class="bubble">
+          <div class="art bd">
+            <div class="bd-top"><b>Friday 8 PM</b><span>4/6 VOTED</span></div>
+            <div class="bd-rows">
+              <div class="bd-row hot"><em>👍</em><s>Death Valley's Little Brother</s><u>▓▓▓ 3</u></div>
+              <div class="bd-row"><em>❤️</em><s>Graffiti Market</s><u>▓ 1</u></div>
+              <div class="bd-row"><em>😂</em><s>Beertown Public House</s><u>— 0</u></div>
+            </div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Friday plan</b><span>React to vote</span></div>
+            <div class="ctrail"><b>4/6</b><span>voted</span></div>
+          </div>
+        </figure>
+      </div>
+      <div class="slot">
+        <p class="slot-label">Booked</p>
+        <figure class="bubble">
+          <div class="art bd">
+            <div class="bd-top"><b>Confirmed</b><span>TABLE FOR 6</span></div>
+            <div class="bd-ok">
+              <b>Death Valley's</b>
+              <span>FRI SEPT 25 · 8:00 PM</span>
+              <u>274 Lancaster St W, Kitchener</u>
+            </div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Booked</b><span>Confirmation #DV4821</span></div>
+            <div class="ctrail"><b>8:00 PM</b><span>Fri</span></div>
+          </div>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 -->
+  <section class="dir">
+    <div class="dir-head"><span class="dir-n">03</span><h2>Invitation poster</h2></div>
+    <p class="dir-why">The only direction that leads with a voice instead of data. Big serif, one
+    saturated ground, options demoted to chips — it looks like something a person made, which is
+    the whole premise of an agent that hangs out in your group chat. Also the most screenshot-able.
+    <span class="risk">Risk:</span> it holds the least information, and the colour has to change per
+    state to carry meaning.</p>
+    <div class="cards">
+      <div class="slot">
+        <p class="slot-label">Vote</p>
+        <figure class="bubble">
+          <div class="art ps">
+            <div>
+              <p class="ps-k">Friday · Sept 25 · six of us</p>
+              <p class="ps-ttl">Where are<br><i>we going?</i></p>
+            </div>
+            <div class="ps-list">
+              <span class="ps-chip"><b>👍</b> Death Valley's</span>
+              <span class="ps-chip"><b>❤️</b> Graffiti Market</span>
+              <span class="ps-chip"><b>😂</b> Beertown</span>
+            </div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Friday plan</b><span>React to vote</span></div>
+            <div class="ctrail"><b>3</b><span>options</span></div>
+          </div>
+        </figure>
+      </div>
+      <div class="slot">
+        <p class="slot-label">Booked</p>
+        <figure class="bubble">
+          <div class="art ps ps--ok">
+            <div>
+              <p class="ps-k">Booked · table for six</p>
+              <p class="ps-ttl">Death Valley's,<br><i>eight o'clock</i></p>
+            </div>
+            <p class="ps-foot">274 LANCASTER ST W · KITCHENER</p>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Booked</b><span>Confirmation #DV4821</span></div>
+            <div class="ctrail"><b>8:00 PM</b><span>Fri</span></div>
+          </div>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section class="dir">
+    <div class="dir-head"><span class="dir-n">04</span><h2>Itemized receipt</h2></div>
+    <p class="dir-why">Leans into the agent doing errands on your behalf — every line is something it
+    actually did, so the card doubles as a log. Scales to the parts of the plan beyond the
+    reservation (ride, food, tickets) better than the other three, which all assume one venue.
+    <span class="risk">Risk:</span> dense mono at bubble size is the hardest to read on a phone
+    held at arm's length.</p>
+    <div class="cards">
+      <div class="slot">
+        <p class="slot-label">Vote</p>
+        <figure class="bubble">
+          <div class="art rc">
+            <div class="rc-hd"><b>Friday Plan</b><span>SEPT 25 · PARTY OF 6</span></div>
+            <div class="rc-li"><s>👍 Death Valley's Little Bro</s><u>3</u></div>
+            <div class="rc-li"><s>❤️ Graffiti Market</s><u>1</u></div>
+            <div class="rc-li"><s>😂 Beertown Public House</s><u>0</u></div>
+            <div class="rc-tot"><span>VOTES IN</span><span>4 / 6</span></div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Friday plan</b><span>React to vote</span></div>
+            <div class="ctrail"><b>4/6</b><span>voted</span></div>
+          </div>
+        </figure>
+      </div>
+      <div class="slot">
+        <p class="slot-label">Booked</p>
+        <figure class="bubble">
+          <div class="art rc">
+            <div class="rc-hd"><b>Death Valley's</b><span>FRI SEPT 25 · 8:00 PM</span></div>
+            <div class="rc-li"><s>Table for 6</s><u>CONF</u></div>
+            <div class="rc-li"><s>Uber, 2 cars</s><u>7:35P</u></div>
+            <div class="rc-li"><s>Calendar invite</s><u>SENT</u></div>
+            <div class="rc-stamp">BOOKED</div>
+          </div>
+          <div class="chrome">
+            <div class="ico">P</div>
+            <div class="ctext"><b>Booked</b><span>Confirmation #DV4821</span></div>
+            <div class="ctrail"><b>8:00 PM</b><span>Fri</span></div>
+          </div>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <div class="note">
+    <b>Two things to know before you pick.</b>
+    These are HTML mockups, but the real PNG renders through Satori (<code>workers-og</code>),
+    which is <b>flexbox only</b> — no CSS grid, no <code>transform: rotate</code>, no
+    <code>background-image</code> gradients on text. Directions 01–04 are all reachable, but the
+    receipt's rotated <code>BOOKED</code> stamp and the ticket's dotted perforation each need a
+    workaround. Second: <code>image_url</code> requires <b>a trusted chat with inbound activity</b> —
+    the image won't render into a cold thread until someone has texted the number first.
+  </div>
+</div>
