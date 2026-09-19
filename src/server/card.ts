@@ -1,5 +1,5 @@
 import { ImageResponse, loadGoogleFont } from "workers-og";
-import { SLOT_EMOJI, type CartSummary, type PlanState } from "../types";
+import { SLOT_EMOJI, cartsTotal, type CartSummary, type PlanState } from "../types";
 
 /**
  * Every card the agent posts is the same object: the ticket stub from
@@ -151,8 +151,8 @@ export function planTicket(plan: PlanState): Ticket {
   };
 }
 
-/** `people` is the headcount to split across; `paidBy` flips the ticket to green. */
-export function cartTicket(cart: CartSummary, people = 0, paidBy?: string): Ticket {
+/** `people` is the headcount to split across; a paid cart flips the ticket to green. */
+export function cartTicket(cart: CartSummary, people = 0, paidBy: string | undefined = cart.paidBy): Ticket {
   const items = cart.lines.reduce((n, l) => n + l.quantity, 0);
   const total = Number(cart.total.replace(/[^0-9.]/g, ""));
   const symbol = cart.total.replace(/[0-9.,\s]/g, "") || "$";
@@ -182,6 +182,41 @@ export function cartTicket(cart: CartSummary, people = 0, paidBy?: string): Tick
     ],
     // A photo cannot be tapped; the pay card sits directly under it.
     stub: { big: short, label: "Total" },
+  };
+}
+
+/**
+ * Every store's order on one ticket. An event shops in several places, and the
+ * per-store tickets alone never show what the whole thing costs or what is
+ * still unpaid. Totals are summed only when the stores share a currency.
+ */
+export function shoppingListTicket(carts: CartSummary[], people = 0): Ticket {
+  const storeName = (shop: string) => shop.replace(/\.[a-z.]+$/, "");
+  const items = carts.reduce((n, c) => n + c.lines.reduce((m, l) => m + l.quantity, 0), 0);
+  const sum = cartsTotal(carts);
+  const unpaid = carts.filter((c) => !c.paidBy);
+  const allPaid = carts.length > 0 && unpaid.length === 0;
+  const each = sum && people > 1 && sum.amount ? `${sum.symbol}${(sum.amount / people).toFixed(2)} each` : undefined;
+  const short = sum ? `${sum.symbol.slice(-1)}${Math.round(sum.amount)}` : String(carts.length);
+
+  // Four rows at most: stores first, then the split when there is room.
+  const shown = carts.slice(0, each ? 3 : 4);
+  const hidden = carts.length - shown.length;
+  return {
+    tone: allPaid ? "done" : "open",
+    metaLeft: allPaid ? "All ordered" : "Shopping list",
+    metaRight: `${carts.length} store${carts.length === 1 ? "" : "s"} · ${items} item${items === 1 ? "" : "s"}`,
+    title: allPaid ? "Everything's paid" : unpaid.length === carts.length ? "What we're ordering" : `${unpaid.length} left to pay`,
+    rows: [
+      ...shown.map((c, i) => ({
+        lead: c.paidBy ? "✅" : "🛒",
+        text: storeName(c.shop) + (i === shown.length - 1 && hidden > 0 ? ` +${hidden} more` : ""),
+        tail: c.paidBy ? `${c.paidBy} paid` : c.total,
+        dim: Boolean(c.paidBy) && !allPaid,
+      })),
+      ...(each ? [{ text: `Split ${people} ways`, tail: each }] : []),
+    ],
+    stub: allPaid ? { big: "PAID", label: sum ? short : "All stores" } : { big: short, label: sum ? "Total" : "Stores" },
   };
 }
 

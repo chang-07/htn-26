@@ -49,19 +49,24 @@ export const toolSchemas = {
     query: z.string(),
   }),
   shop_build_cart: z.object({
-    shop: z.string(),
+    shop: z.string().describe("The store this cart is at. Every store has its own cart."),
     lines: z
       .array(
         z.object({
-          variantId: z.string().describe("variantId exactly as returned by shop_search"),
+          variantId: z.string().describe("variantId exactly as returned by shop_search for THIS shop"),
           quantity: z.number().int().min(1),
         }),
       )
       .min(1)
-      .describe("The whole cart, not just what changed"),
+      .describe("This store's whole cart, not just what changed. Other stores' carts are untouched."),
   }),
+  shop_drop_cart: z.object({
+    shop: z.string().describe("The store whose cart to remove from the shopping list"),
+  }),
+  show_shopping_list: z.object({}),
   mark_paid: z.object({
     who: z.string().describe("Name of the person who said they paid"),
+    shop: z.string().describe("Which store's order they paid for, as listed under Shopping list"),
   }),
   show_venue: z.object({
     name: z.string().describe("Venue name as it appears in the research findings or the plan options"),
@@ -111,8 +116,12 @@ const descriptions: Record<ToolName, string> = {
   shop_search:
     "Search a Shopify store's catalog for things to order (decor, snacks, gifts). Prices come back ready to quote.",
   shop_build_cart:
-    "Set the cart's full contents and post the cart card with its checkout link for someone to pay. Calling it again for the same shop replaces the contents of the same cart and redraws the card, so use it for every change. You never pay yourself.",
-  mark_paid: "Someone said they paid for the cart. Posts the green PAID ticket. Only when a person in the chat says so.",
+    "Set ONE store's cart to these contents and post its card with a checkout link for someone to pay. Each store has its own cart, so an event can shop at several: build them one store at a time. Calling it again for the same shop replaces that shop's contents and redraws its card, leaving every other store's cart alone. You never pay yourself.",
+  shop_drop_cart: "Remove one store's cart from the shopping list, when the group decides not to order from there after all.",
+  show_shopping_list:
+    "Post one ticket covering every store's order: what is being bought where, the combined total, the per-person split, and what is still unpaid. Use once the shopping is settled or when someone asks what it all comes to. Not after every cart change.",
+  mark_paid:
+    "Someone said they paid for one store's order. Posts that store's green PAID ticket. Only when a person in the chat says so, and only for the store they named or clearly meant.",
   show_venue:
     "Post a ticket with one venue's details (what it is, price, address, caveats). Use when someone asks about a specific place. One venue per turn.",
   ask_rsvp:

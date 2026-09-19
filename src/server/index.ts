@@ -7,10 +7,10 @@ import type {
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
 import { openBrowser, readPage, searchWeb } from "./browser";
-import { cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, venueTicket, type Ticket } from "./card";
+import { cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
-import type { PlanState } from "../types";
+import { cartsOf, shopKey, type PlanState } from "../types";
 
 export { PlanAgent } from "./agent";
 export { BookingWorkflow } from "./booking";
@@ -137,7 +137,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
- *   GET  /api/dev/card?kind=plan|cart|venue|rsvp|match&state=open|done   card preview from sample data (plan also takes status, title, o, votes)
+ *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
@@ -160,15 +160,33 @@ function samplePlan(url: URL): PlanState {
     chosenOptionId: status === "booked" || status === "booking" ? "0" : undefined,
     awaiting: [],
     bookingNote: status === "booked" ? (q.get("note") ?? "Table for 6 · conf #R7K2") : undefined,
-    cart: {
-      shop: "levainbakery.com",
-      checkoutUrl: "https://example.com",
-      total: "$128.00",
-      lines: [
-        { title: "Chocolate Chip Walnut - 4 PK", quantity: 3, price: "$32.00" },
-        { title: "Signature Cookie Assortment - 4 PK", quantity: 1, price: "$32.00" },
-      ],
-    },
+    // A birthday shops in three places; ?state=partial marks the first one paid.
+    carts: [
+      {
+        shop: "levainbakery.com",
+        checkoutUrl: "https://example.com",
+        total: "$128.00",
+        lines: [
+          { title: "Chocolate Chip Walnut - 4 PK", quantity: 3, price: "$32.00" },
+          { title: "Signature Cookie Assortment - 4 PK", quantity: 1, price: "$32.00" },
+        ],
+      },
+      {
+        shop: "partycity.com",
+        checkoutUrl: "https://example.com",
+        total: "$41.50",
+        lines: [
+          { title: "Gold Number Balloon", quantity: 2, price: "$12.00" },
+          { title: "Happy Birthday Banner", quantity: 1, price: "$17.50" },
+        ],
+      },
+      {
+        shop: "explodingkittens.com",
+        checkoutUrl: "https://example.com",
+        total: "$24.99",
+        lines: [{ title: "Exploding Kittens: Party Pack", quantity: 1, price: "$24.99" }],
+      },
+    ],
     version: 0,
   };
 }
@@ -180,7 +198,15 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     const people = ["Maya", "Jordan", "Sam"];
     const tickets: Record<string, Ticket> = {
       plan: planTicket(plan),
-      cart: cartTicket(plan.cart!, 4, done ? "Maya" : undefined),
+      cart: cartTicket(plan.carts![0], 4, done ? "Maya" : undefined),
+      // state=open: nothing paid · partial: one store paid · done: all paid
+      list: shoppingListTicket(
+        plan.carts!.map((c, i) => ({
+          ...c,
+          paidBy: done ? ["Maya", "Sam", "Jordan"][i] : url.searchParams.get("state") === "partial" && i === 0 ? "Maya" : undefined,
+        })),
+        4,
+      ),
       venue: venueTicket(
         { name: "Kinton Ramen", kind: "Ramen", price: "$$", why: "Loud, fast, good for six", address: "51 Baldwin St", caveat: "No reservations after 8" },
         0,
@@ -321,8 +347,11 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     return new Response(image, { headers: pngHeaders });
   }
 
-  const cart = url.searchParams.get("kind") === "cart" ? plan.cart : undefined;
-  const key = `${name}/${cart ? "cart-" : ""}${plan.version}.png`;
+  // kind=cart&shop=… is one store's pay-card image; without shop, the first cart.
+  const wanted = url.searchParams.get("shop");
+  const carts = url.searchParams.get("kind") === "cart" ? cartsOf(plan) : [];
+  const cart = carts.find((c) => wanted && shopKey(c.shop) === shopKey(wanted)) ?? carts[0];
+  const key = `${name}/${cart ? `cart-${shopKey(cart.shop)}-` : ""}${plan.version}.png`;
   const cached = await bucket?.get(key);
   if (cached) return new Response(cached.body, { headers: pngHeaders });
 

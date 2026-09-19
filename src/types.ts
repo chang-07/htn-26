@@ -16,6 +16,8 @@ export type CartSummary = {
   /** Display strings, already formatted ("$36.00"). */
   total: string;
   lines: { title: string; quantity: number; price: string; imageUrl?: string }[];
+  /** Display name of whoever said they paid. Cleared when the cart is edited. */
+  paidBy?: string;
 };
 
 /**
@@ -31,6 +33,12 @@ export type PlanState = {
   chosenOptionId?: string;
   /** Display names only. */
   awaiting: string[];
+  /**
+   * One cart per store, keyed by `shop`. An event usually shops in several
+   * places (cake here, balloons there), and editing one must not disturb another.
+   */
+  carts?: CartSummary[];
+  /** @deprecated Pre-multi-store state. Read through cartsOf(); never written. */
   cart?: CartSummary;
   bookingNote?: string;
   /** Bumped on every change; used to bust the card image cache. */
@@ -43,8 +51,35 @@ export const EMPTY_PLAN: PlanState = {
   options: [],
   counts: {},
   awaiting: [],
+  carts: [],
   version: 0,
 };
+
+/**
+ * Every cart in the plan. Durable Objects created before carts were per-store
+ * still hold a single `cart`; it is read as a one-store list so nothing breaks,
+ * and disappears the first time any cart is written.
+ */
+export function cartsOf(plan: Pick<PlanState, "carts" | "cart">): CartSummary[] {
+  if (plan.carts?.length) return plan.carts;
+  return plan.cart ? [plan.cart] : [];
+}
+
+/** "https://www.PartyCity.com/x" and "partycity.com" are the same store. */
+export function shopKey(shop: string) {
+  return shop.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+}
+
+/**
+ * Sum of cart totals, which are display strings ("$36.00", "CA$128.00"). Null
+ * when the stores charge in different currencies: adding those would be a lie.
+ */
+export function cartsTotal(carts: CartSummary[]): { symbol: string; amount: number } | null {
+  const symbols = new Set(carts.map((c) => c.total.replace(/[0-9.,\s]/g, "") || "$"));
+  if (symbols.size !== 1) return null;
+  const amount = carts.reduce((n, c) => n + (Number(c.total.replace(/[^0-9.]/g, "")) || 0), 0);
+  return { symbol: [...symbols][0], amount };
+}
 
 /**
  * Tapback voting. iMessage has six reaction types, so the first four map onto

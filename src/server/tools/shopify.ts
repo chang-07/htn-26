@@ -173,3 +173,17 @@ export async function setCart(
     messages: ((c.messages ?? []) as any[]).map((m) => m.content ?? m.message ?? JSON.stringify(m)),
   };
 }
+
+/**
+ * Tells the store a cart is abandoned. Best effort: the cart is already gone
+ * from the group's shopping list, and an un-cancelled cart simply expires, so a
+ * store that refuses must not turn "drop it" into an error.
+ */
+export async function cancelCart(env: Env, shop: string, cartId: string): Promise<boolean> {
+  try {
+    await callUcp(env, shop, "cancel_cart", { id: cartId });
+    return true;
+  } catch {
+    return false;
+  }
+}
