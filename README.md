@@ -55,6 +55,36 @@ open  'http://localhost:5173/w/demo'              # live vote page
 open  'http://localhost:5173/card/demo'           # the card image
 ```
 
+### Logging — "why didn't it reply?"
+
+Every hop logs one line in the same shape, `scope event {fields}`:
+
+```
+linq   webhook.received       {"type":"message.received","chat":"62c58f3a"}
+agent  message.in             {"chat":"62c58f3a","from":"…5178","chars":38,"group":false}
+agent  turn.start             {"chat":"62c58f3a","llm":"dev/gpt-oss:20b","history":4}
+agent  tool                   {"chat":"62c58f3a","tool":"search_places","args":"{...}","ms":2}
+agent  turn.end               {"chat":"62c58f3a","outcome":"silent","ms":4210,"tokens":1873,...}
+```
+
+Each chat's agent also keeps its last 300 events in its own SQLite, because the
+console scrolls away and `wrangler tail` only shows what happens while you watch:
+
+```sh
+curl 'localhost:5173/api/dev/logs?chat=<chat id>'
+```
+
+Reading a turn: `turn.end` carries the `outcome` — `replied`, `silent` (the model
+chose not to answer; expected in group chats), `llm_failed`, or `max_steps` —
+plus `tokens`, so an expensive turn is obvious. No `webhook.received` line at
+all means Linq never reached you: check the tunnel and the subscription URL.
+`webhook.rejected` means the signing secret does not match the subscription.
+Phone numbers are masked and message bodies are logged as lengths only.
+Deployed, the same lines appear in `npx wrangler tail` and in Workers Logs.
+
+Simulator chat ids (anything that is not a UUID) always use the dry Linq
+transport, even with a live `LINQ_API_KEY`, so testing never texts anyone.
+
 ### LLM usage sources
 
 `LLM_PROFILE` picks where tokens are spent:

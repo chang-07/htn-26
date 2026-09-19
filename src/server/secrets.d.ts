@@ -13,6 +13,8 @@ interface SecretBindings {
   DEV_LLM_API_KEY?: string;
   DEV_LLM_MODEL?: string;
   PUBLIC_BASE_URL: string;
+  BROWSERBASE_API_KEY?: string;
+  BROWSERBASE_PROJECT_ID?: string;
 }
 
 interface Env extends SecretBindings {}

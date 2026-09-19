@@ -1,7 +1,9 @@
 import { Agent, callable } from "agents";
 import type OpenAI from "openai";
+import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
+import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { sendCard, sendText, tapbackLegend, updateCard } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { searchPlaces } from "./tools/places";
@@ -15,6 +17,8 @@ on a time, book it, and order anything they need.
 
 - Write like a friend texting: one or two short lines, no markdown, no lists.
 - Do not announce what you are about to do. Do it, then report the result.
+- Never invent a venue, address or price. Every option you propose must come
+  from a search_places or shop_search result in this conversation.
 - Brainstorm in plain text. Once there are 2-4 concrete options, call
   propose_plan; it posts the card and opens voting. Call it again to redraw the
   same card when options change rather than describing changes in text.
@@ -33,6 +37,7 @@ on a time, book it, and order anything they need.
 const MAX_STEPS = 8;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
+const EVENT_HISTORY = 300;
 
 type Row = Record<string, string | number | boolean | null>;
 
@@ -62,16 +67,37 @@ export class PlanAgent extends Agent<Env, PlanState> {
       voter TEXT PRIMARY KEY, option_id TEXT NOT NULL, source TEXT NOT NULL
     )`;
     this.sql`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`;
+    this.sql`CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+      level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
+    )`;
   }
+
+  /**
+   * Logs to the console *and* to this chat's own event history. The console
+   * scrolls away and `wrangler tail` only shows what happens while you watch;
+   * the history answers "what did the agent do with that message an hour ago?"
+   * via GET /api/dev/logs?chat=<id>.
+   */
+  private note = (level: Level, event: string, fields: Fields = {}) => {
+    log(level, "agent", event, { chat: short(this.name), ...fields });
+    this.sql`INSERT INTO events (ts, level, event, fields) VALUES (${Date.now()}, ${level}, ${event}, ${JSON.stringify(fields)})`;
+    this.sql`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ${EVENT_HISTORY}`;
+  };
 
   // ---------------------------------------------------------------- ingress
   // Called over RPC by the webhook Worker. These return quickly: the slow
   // agent turn is handed to the scheduler so Linq gets its 200 immediately.
 
-  async ingestMessage(msg: { linqId: string; from: string; text: string }) {
+  async ingestMessage(msg: { linqId: string; from: string; text: string; isGroup?: boolean }) {
     const seen = this.sql<Row>`SELECT 1 FROM messages WHERE linq_id = ${msg.linqId}`;
-    if (seen.length) return; // Linq retries webhooks
+    if (seen.length) {
+      this.note("info", "message.duplicate", { linqId: short(msg.linqId) }); // Linq retries webhooks
+      return;
+    }
+    this.note("info", "message.in", { from: mask(msg.from), chars: msg.text.length, group: msg.isGroup });
 
+    if (msg.isGroup !== undefined) this.setMeta("is_group", msg.isGroup ? "1" : "0");
     this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${msg.from})`;
     this.sql`INSERT INTO messages (linq_id, direction, author, body, ts)
              VALUES (${msg.linqId}, 'in', ${msg.from}, ${msg.text}, ${Date.now()})`;
@@ -81,9 +107,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   async ingestReaction(r: { messageId: string; from: string; reactionType: string }) {
-    if (r.messageId !== this.getMeta("card_message_id")) return;
+    if (r.messageId !== this.getMeta("card_message_id")) {
+      this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
+      return;
+    }
     const option = this.state.options[REACTION_SLOTS.indexOf(r.reactionType as never)];
-    if (!option) return;
+    if (!option) {
+      this.note("info", "reaction.ignored", { reason: "no option in that slot", type: r.reactionType });
+      return;
+    }
     await this.castVote(option.id, r.from, "reaction");
   }
 
@@ -95,7 +127,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   private async castVote(optionId: string, voter: string, source: string) {
-    if (this.state.status !== "voting") return;
+    if (this.state.status !== "voting") {
+      this.note("info", "vote.ignored", { reason: `plan is ${this.state.status}`, source });
+      return;
+    }
+    this.note("info", "vote.cast", { voter: source === "web" ? "web" : mask(voter), optionId, source });
     this.sql`INSERT INTO votes (voter, option_id, source) VALUES (${voter}, ${optionId}, ${source})
              ON CONFLICT(voter) DO UPDATE SET option_id = excluded.option_id, source = excluded.source`;
     this.publish({});
@@ -150,15 +186,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
   private async syncCard() {
     const messageId = this.getMeta("card_message_id");
     if (!messageId) return;
-    try {
-      await updateCard(this.env, messageId, this.name, this.state, this.participants().length);
-    } catch (err) {
-      console.error("[agent] card update failed", err);
-    }
+    // A failed redraw must not abort the turn that caused it; timed() records it.
+    await timed("agent", "card.update", { version: this.state.version }, () =>
+      updateCard(this.env, messageId, this.name, this.state, this.participants().length),
+      this.note,
+    ).catch(() => {});
   }
 
   private async say(text: string) {
-    await sendText(this.env, this.name, text);
+    await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text), this.note);
     this.sql`INSERT INTO messages (direction, body, ts) VALUES ('out', ${text}, ${Date.now()})`;
   }
 
@@ -180,6 +216,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
         this.turnRequested = false;
         await this.think();
       } while (this.turnRequested);
+    } catch (err) {
+      // Scheduler callbacks have no caller to report to; without this a crash
+      // mid-turn is invisible.
+      this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
     }
@@ -204,15 +244,34 @@ export class PlanAgent extends Agent<Env, PlanState> {
         content: `People in the chat: ${people.map((p) => this.label(p.handle, people)).join(", ")}
 Current plan: ${plan}
 Now: ${new Date().toISOString()}
+${
+  this.getMeta("is_group") === "0"
+    ? "This is a direct one-to-one chat, so every message is addressed to you: always reply, never NOOP."
+    : ""
+}
 
 Transcript (most recent last):
 ${transcript}`,
       },
     ];
 
+    const started = Date.now();
+    let tokens = 0;
+    const toolsUsed: string[] = [];
+    const end = (level: Level, outcome: string, extra: Fields = {}) =>
+      this.note(level, "turn.end", { outcome, ms: Date.now() - started, tokens, tools: toolsUsed, ...extra });
+
+    this.note("info", "turn.start", { llm: `${profile}/${model}`, history: history.length });
     let spoke = false;
     for (let step = 0; step < MAX_STEPS; step++) {
-      const res = await client.chat.completions.create({ model, messages, tools: openAiTools() });
+      let res;
+      try {
+        res = await client.chat.completions.create({ model, messages, tools: openAiTools() });
+      } catch (err) {
+        end("error", "llm_failed", { step, ...errorFields(err) });
+        return;
+      }
+      tokens += res.usage?.total_tokens ?? 0;
       const reply = res.choices[0].message;
       messages.push(reply);
 
@@ -221,22 +280,40 @@ ${transcript}`,
         // Smaller dev models often answer in plain content instead of calling
         // send_message, so treat trailing content as the message.
         const text = reply.content?.trim();
-        if (text && text !== "NOOP" && !spoke) await this.say(text);
+        const silent = !text || text === "NOOP";
+        if (!silent && !spoke) await this.say(text);
+        // "silent" is a decision, not a failure — but it is the first thing to
+        // check when someone asks why the agent did not answer.
+        end("info", spoke || !silent ? "replied" : "silent", { steps: step + 1 });
         return;
       }
 
       for (const call of calls) {
         let output: string;
+        const tool = call.function.name;
+        toolsUsed.push(tool);
         try {
-          output = await this.runTool(call.function.name, call.function.arguments);
-          if (call.function.name === "send_message") spoke = true;
+          output = await timed(
+            "agent",
+            "tool",
+            // Arguments are useful for every tool except the one carrying message text.
+            { tool, args: tool === "send_message" ? "(text)" : call.function.arguments.slice(0, 300) },
+            () => this.runTool(tool, call.function.arguments),
+            this.note,
+          );
+          if (tool === "send_message") spoke = true;
         } catch (err) {
-          output = `Error: ${err instanceof Error ? err.message : String(err)}`;
+          // Already logged by timed(). Bad arguments are the model's to fix; an
+          // infrastructure failure is not, and retrying it only burns tokens.
+          output =
+            err instanceof ZodError
+              ? `Invalid arguments, fix and retry: ${err.message.slice(0, 600)}`
+              : `Failed: ${err instanceof Error ? err.message : String(err)}. This is a system problem, not your arguments. Do not call ${tool} again this turn.`;
         }
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     }
-    console.warn(`[agent] hit MAX_STEPS on ${profile}/${model}`);
+    end("warn", "max_steps");
   }
 
   private async runTool(name: string, rawArgs: string): Promise<string> {
@@ -327,7 +404,8 @@ ${transcript}`,
           partySize: args.partySize,
           isoTime: args.isoTime,
         };
-        await this.runWorkflow("BOOKING_WORKFLOW", params);
+        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+        this.note("info", "booking.started", { workflowId: short(workflowId), option: option.title });
         return "Booking started. The card updates and the chat is told when it finishes — do not announce success yet.";
       }
 
@@ -381,17 +459,25 @@ ${transcript}`,
     };
   }
 
+  /** Most recent events, oldest first. Simulator only. */
+  async events(limit = 100) {
+    return this.sql<{ ts: number; level: string; event: string; fields: string }>`
+      SELECT ts, level, event, fields FROM events ORDER BY id DESC LIMIT ${limit}`.reverse();
+  }
+
   // ------------------------------------------------------ scheduled + workflow
 
   /** Fires a while after voting opens. */
   async nudge() {
     if (this.state.status !== "voting" || this.state.awaiting.length === 0) return;
+    this.note("info", "nudge", { awaiting: this.state.awaiting.length });
     await this.say(`still need a vote from ${this.state.awaiting.join(", ")}`);
   }
 
   /** Called over RPC by BookingWorkflow when it finishes, either way. */
   async bookingFinished(result: BookingResult) {
     const option = this.state.options.find((o) => o.id === this.state.chosenOptionId);
+    this.note(result.ok ? "info" : "warn", "booking.finished", { ok: result.ok, detail: result.detail });
     this.publish({
       status: result.ok ? "booked" : "failed",
       bookingNote: result.ok ? result.confirmation : result.detail,

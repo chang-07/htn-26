@@ -1,6 +1,7 @@
 import puppeteer from "@cloudflare/puppeteer";
 import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "agents/workflows";
 import type { PlanAgent } from "./agent";
+import { log } from "./log";
 
 export type BookingParams = {
   title: string;
@@ -20,6 +21,7 @@ export type BookingResult = { ok: boolean; confirmation?: string; detail?: strin
 export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams> {
   async run(event: AgentWorkflowEvent<BookingParams>, step: AgentWorkflowStep) {
     const params = event.payload;
+    log("info", "book", "workflow.start", { title: params.title, dryRun: this.env.BOOKING_DRY_RUN !== "false" });
 
     const result = await step.do(
       "reserve",
@@ -27,6 +29,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams> {
       () => this.reserve(params),
     );
 
+    log(result.ok ? "info" : "warn", "book", "workflow.result", { ok: result.ok, detail: result.detail });
     await step.do("report", () => this.agent.bookingFinished(result));
     return result;
   }

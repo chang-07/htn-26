@@ -5,7 +5,9 @@ import type {
 } from "@linqapp/sdk/resources/webhooks";
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
+import { openBrowser, readPage } from "./browser";
 import { renderCard } from "./card";
+import { errorFields, log, short } from "./log";
 import type { PlanState } from "../types";
 
 export { PlanAgent } from "./agent";
@@ -56,9 +58,14 @@ async function handleLinqWebhook(request: Request, env: Env): Promise<Response> 
       key: env.LINQ_WEBHOOK_SECRET,
     });
   } catch (err) {
-    console.error("[linq] signature verification failed", err);
+    log("warn", "linq", "webhook.rejected", errorFields(err));
     return new Response("invalid signature", { status: 400 });
   }
+
+  const chatId =
+    (event.data as { chat?: { id?: string }; chat_id?: string }).chat?.id ??
+    (event.data as { chat_id?: string }).chat_id;
+  log("info", "linq", "webhook.received", { type: event.event_type, chat: short(chatId) });
 
   try {
     switch (event.event_type) {
@@ -69,9 +76,17 @@ async function handleLinqWebhook(request: Request, env: Env): Promise<Response> 
           .filter((p) => p.type === "text")
           .map((p) => p.value)
           .join("\n");
-        if (!text) break;
+        if (!text) {
+          log("info", "linq", "webhook.skipped", { reason: "no text part", parts: msg.parts.map((p) => p.type) });
+          break;
+        }
         const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, msg.chat.id);
-        await agent.ingestMessage({ linqId: msg.id, from: msg.sender_handle.handle, text });
+        await agent.ingestMessage({
+          linqId: msg.id,
+          from: msg.sender_handle.handle,
+          text,
+          isGroup: msg.chat.is_group ?? undefined,
+        });
         break;
       }
 
@@ -89,7 +104,7 @@ async function handleLinqWebhook(request: Request, env: Env): Promise<Response> 
     }
   } catch (err) {
     // A handler bug must not put Linq into a retry loop.
-    console.error("[linq] handler error", err);
+    log("error", "linq", "webhook.handler_failed", { type: event.event_type, ...errorFields(err) });
   }
 
   return Response.json({ ok: true });
@@ -101,6 +116,8 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
  *   GET  /api/dev/dump?chat=demo
+ *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
+ *   GET  /api/dev/browse?url=...     open a browser session and read one page
  */
 async function handleDev(request: Request, url: URL, env: Env): Promise<Response> {
   const body = request.method === "POST" ? ((await request.json()) as Record<string, string>) : {};
@@ -117,6 +134,22 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/dump") {
     return Response.json(await agent.dump());
+  }
+  if (url.pathname === "/api/dev/logs") {
+    const rows = await agent.events(Number(url.searchParams.get("limit") ?? 100));
+    const text = rows
+      .map((r) => `${new Date(r.ts).toISOString().slice(11, 23)} ${r.level.padEnd(5)} ${r.event.padEnd(18)} ${r.fields}`)
+      .join("\n");
+    return new Response(text + "\n", { headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (url.pathname === "/api/dev/browse") {
+    const session = await openBrowser(env, { timeoutSeconds: 120 });
+    try {
+      const page = await readPage(session.browser, url.searchParams.get("url") ?? "https://example.com");
+      return Response.json({ provider: session.provider, sessionId: session.sessionId, ...page });
+    } finally {
+      await session.close();
+    }
   }
   return new Response("Not found", { status: 404 });
 }

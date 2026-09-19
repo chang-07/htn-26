@@ -1,5 +1,6 @@
 import LinqAPIV3 from "@linqapp/sdk";
 import { SLOT_EMOJI, type PlanState } from "../types";
+import { log, short } from "./log";
 
 export function linqClient(env: Env) {
   return new LinqAPIV3({ apiKey: env.LINQ_API_KEY });
@@ -74,10 +75,16 @@ export function tapbackLegend(plan: PlanState) {
  * Paired with the localhost-only /api/dev routes, that lets the whole agent
  * loop run on a laptop without a Linq number or a phone.
  */
-const isDry = (env: Env) => !env.LINQ_API_KEY;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Real Linq chat ids are UUIDs. Anything else is a simulator chat ("demo",
+ * "t1"), which must stay dry even when a live API key is configured.
+ */
+const isDry = (env: Env, chatId: string) => !env.LINQ_API_KEY || !UUID.test(chatId);
 
 export async function sendText(env: Env, chatId: string, value: string) {
-  if (isDry(env)) return void console.log(`[linq:dry] → ${chatId}: ${value}`);
+  if (isDry(env, chatId)) return void log("info", "linq", "dry.text", { chat: short(chatId), text: value });
   return linqClient(env).chats.messages.send(chatId, {
     message: { parts: [{ type: "text", value }] },
   });
@@ -95,8 +102,8 @@ export async function sendCard(
   plan: PlanState,
   participantCount: number,
 ): Promise<string | null> {
-  if (isDry(env)) {
-    console.log(`[linq:dry] → ${chatId}: [card] ${cardImageUrl(env, agentName, plan.version)}`);
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.card", { chat: short(chatId), image: cardImageUrl(env, agentName, plan.version) });
     return "dry-card";
   }
   const linq = linqClient(env);
@@ -128,7 +135,7 @@ export async function updateCard(
   plan: PlanState,
   participantCount: number,
 ) {
-  if (isDry(env)) return void console.log(`[linq:dry] ↻ card ${messageId} → v${plan.version}`);
+  if (isDry(env, agentName)) return void log("info", "linq", "dry.card_update", { messageId, version: plan.version });
   const part = appCardPart(env, agentName, plan, participantCount);
   return linqClient(env).messages.updateAppCard(messageId, {
     url: part.url,

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { log } from "./log";
 
 /**
  * Two usage sources behind one interface, switched by LLM_PROFILE:
@@ -26,9 +27,10 @@ export function llmFor(env: Env): { client: OpenAI; model: string; profile: stri
   }
 
   if (wantsDev) {
-    console.warn(
-      "[llm] LLM_PROFILE=dev but DEV_LLM_BASE_URL/DEV_LLM_MODEL are unset — falling back to OpenAI (this spends credits)",
-    );
+    log("warn", "llm", "profile.fallback", {
+      reason: "LLM_PROFILE=dev but DEV_LLM_BASE_URL/DEV_LLM_MODEL are unset",
+      effect: "using OpenAI — this spends credits",
+    });
   }
 
   return {
