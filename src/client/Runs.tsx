@@ -1,3 +1,4 @@
+import { RunDiagnostics } from "./RunDiagnostics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { RunEventRow, RunSummary } from "../server/runs";
@@ -362,6 +363,7 @@ export function Runs() {
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
+                <RunDiagnostics events={nodes} onPick={setPicked} />
                 <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
               </div>
             </>
@@ -515,16 +517,16 @@ const OUTCOME_TITLE: Record<string, string> = {
  * on purpose: research runs in a workflow outside the turn, so a short turn can
  * sit inside a long run.
  */
-function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number; ms: number | null; event: string }[]; onBack?: () => void }) {
+function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number; ms: number | null; event: string; fields: Record<string, unknown> }[]; onBack?: () => void }) {
   const running = run.ended === null;
   const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
-  const slowest = [...nodes].filter((n) => n.ms != null).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
+  const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
   const title = running ? "Running now" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "Run");
   const facts = [
     wall != null ? `${dur(wall)} wall` : null,
     run.ms != null ? `${dur(run.ms)} in turn` : null,
-    `${nodes.length || run.events} step${(nodes.length || run.events) === 1 ? "" : "s"}`,
-    slowest ? `slowest ${slowest.event}` : null,
+    `${nodes.length || run.events} event${(nodes.length || run.events) === 1 ? "" : "s"}`,
+    slowest ? `slowest ${slowest.fields.operation ?? slowest.event}` : null,
   ].filter(Boolean) as string[];
   return (
     <header style={{ flex: "none", padding: "18px 18px 0", borderBottom: "2px dotted var(--rule)" }}>

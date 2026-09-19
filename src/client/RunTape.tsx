@@ -53,6 +53,12 @@ const num = (v: unknown) => (typeof v === "number" ? v : undefined);
 
 function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } {
   const f = e.fields;
+  if (e.event === "trace.start" || e.event === "trace.end") {
+    const op = String(f.op ?? "");
+    return { svc: op.startsWith("gen_ai") ? "model" : op === "browser" || op === "http.client" ? "browser" : "tool", title: String(f.operation ?? "operation"), sub: e.event === "trace.start" ? "started" : String(f.status ?? "completed") };
+  }
+  if (e.event.startsWith("llm.") || e.event.startsWith("pilot.decision")) return { svc: "model", title: e.event.replaceAll(".", " "), sub: String(f.model ?? f.decision ?? "") };
+  if (e.event.startsWith("provider.")) return { svc: "tool", title: "provider response", sub: `${f.provider ?? ""} HTTP ${f.statusCode ?? ""}` };
   if (e.event === "tool") {
     const tool = str(f.tool) ?? "tool";
     return { svc: TOOL_SVC[tool] ?? "tool", title: tool, sub: TOOL_SVC[tool] ? "handed off" : "tool call" };
@@ -104,7 +110,7 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
       return {
         svc: "model",
         title: `step ${num(f.step) ?? "?"}`,
-        sub: calls.length ? `chose ${calls.join(", ")}` : str(f.thinking) ? "reasoning, no tool" : "no tool call",
+        sub: calls.length ? `chose ${calls.join(", ")}` : "no tool call",
       };
     }
     case "turn.end": return { svc: "model", title: str(f.outcome) ?? "turn end", sub: `${num(f.steps) ?? 0} model steps` };
@@ -123,9 +129,7 @@ function describe(n: Node): string {
     case "ticket.out": return "A card went into the thread as a photo, with tapback voting.";
     case "card.update": return "The card was redrawn in place, so the tally updates without a new message.";
     case "turn.start": return "The model woke and read the conversation.";
-    case "turn.step": return str(f.thinking)
-      ? "One round trip to the model. This is what it was thinking before it acted."
-      : "One round trip to the model, which went straight to a tool call without commentary.";
+    case "turn.step": return str(f.decision) ?? "One model round trip and the tool calls it selected.";
     case "turn.end": return f.outcome === "silent"
       ? "The model had nothing useful to add and stayed quiet."
       : "The turn finished and the agent had spoken.";
@@ -180,7 +184,6 @@ function explain(n: Node): string[] {
     case "turn.step":
       out.push("A turn is a loop: the model is called, it either calls tools or stops, and the results go back for another round. This is one pass through that loop.");
       if (Array.isArray(f.calls) && (f.calls as string[]).length) out.push(`It chose to call ${(f.calls as string[]).join(", ")}.`);
-      if (s_("thinking")) out.push("The text below is the model's own prose. It never reaches the group — the chat only ever sees what goes through send_message — so it is reasoning rather than a reply.");
       break;
     case "turn.start":
       out.push(`The model was handed the recent transcript, the current plan, anything research has returned, and the list of tools it may call. It then decides, step by step, what to do${s_("llm") ? ` — this turn ran on ${s_("llm")}` : ""}.`);
@@ -287,7 +290,7 @@ const priceNum = (p: string) => Number(String(p).replace(/[^0-9.]/g, "")) || 0;
 
 export function toNodes(events: TapeEvent[]): Node[] {
   return events.map((e) => ({
-    seq: e.seq, ts: e.ts, level: e.level, event: e.event, fields: e.fields,
+    seq: e.seq, ts: e.ts, level: e.level, event: e.event, fields: Object.fromEntries(Object.entries(e.fields).filter(([k]) => !/^(thinking|reasoning|chain.?of.?thought)$/i.test(k))),
     ms: num(e.fields.ms) ?? null, ...classify(e),
   }));
 }
@@ -440,7 +443,7 @@ function Row({
   const shot = shotFor(node.fields, chat);
   const items = itemsOf(node.fields);
   const text = str(node.fields.text);
-  const thinking = str(node.fields.thinking);
+  const thinking = str(node.fields.decision);
   const stats = [
     node.ms != null && node.ms > 0 ? dur(node.ms) : null,
     num(node.fields.tokens) ? `${num(node.fields.tokens)!.toLocaleString()} tok` : null,
@@ -582,7 +585,7 @@ export function StepDetail({ node, t0, chat, onClose }: { node: Node; t0: number
     }
   }
 
-  const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId", "thinking"]);
+  const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId", "thinking", "decision"]);
   const raw = Object.fromEntries(Object.entries(f).filter(([k]) => !skip.has(k)));
   const paras = explain(node);
 
@@ -616,9 +619,9 @@ export function StepDetail({ node, t0, chat, onClose }: { node: Node; t0: number
             ))}
           </div>
         )}
-        {str(f.thinking) && (
-          <Section label="What the model was thinking">
-            <p className="rv-quote is-thinking">{str(f.thinking)}</p>
+        {str(f.decision) && (
+          <Section label="Decision summary">
+            <p className="rv-quote is-thinking">{str(f.decision)}</p>
           </Section>
         )}
         {str(f.text) && (

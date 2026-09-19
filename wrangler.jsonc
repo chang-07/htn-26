@@ -72,8 +72,8 @@
     "OPENAI_MODEL": "gpt-5.6-luna",
     "BOOKING_DRY_RUN": "true",
     "IMESSAGE_APP_NAME": "Plan",
-    // "true" records message text and the model's reasoning into run history,
-    // so /runs can show the conversation and what the agent was thinking.
+    // "true" records message text into run history,
+    // so /runs can show the conversation. Decisions use structured summaries.
     // Run history is served over HTTP: turning this on means it holds what
     // real people wrote. Handles stay masked either way.
     "LOG_BODIES": "true"

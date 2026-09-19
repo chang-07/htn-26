@@ -1,3 +1,4 @@
+import { Sentry, sentryOptions } from "./sentry";
 import { UCP_CAPABILITIES, UCP_VERSION } from "./tools/shopify";
 import { getAgentByName, routeAgentRequest } from "agents";
 import type {
@@ -17,14 +18,24 @@ import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
 import { invoiceFor } from "../invoice";
 
-export { PlanAgent } from "./agent";
-export { BookingWorkflow } from "./booking";
-export { ResearchWorkflow } from "./research";
-export { RunHub } from "./runs";
-export { People } from "./people";
+import { PlanAgent as PlanAgentBase } from "./agent";
+export type PlanAgent = PlanAgentBase;
+export const PlanAgent: typeof PlanAgentBase = Sentry.instrumentAgentWithSentry(sentryOptions, PlanAgentBase);
+import { BookingWorkflow as BookingWorkflowBase } from "./booking";
+export type BookingWorkflow = BookingWorkflowBase;
+export const BookingWorkflow: typeof BookingWorkflowBase = Sentry.instrumentWorkflowWithSentry(sentryOptions, BookingWorkflowBase);
+import { ResearchWorkflow as ResearchWorkflowBase } from "./research";
+export type ResearchWorkflow = ResearchWorkflowBase;
+export const ResearchWorkflow: typeof ResearchWorkflowBase = Sentry.instrumentWorkflowWithSentry(sentryOptions, ResearchWorkflowBase);
+import { RunHub as RunHubBase } from "./runs";
+export type RunHub = RunHubBase;
+export const RunHub: typeof RunHubBase = Sentry.instrumentAgentWithSentry(sentryOptions, RunHubBase);
+import { People as PeopleBase } from "./people";
+export type People = PeopleBase;
+export const People: typeof PeopleBase = Sentry.instrumentDurableObjectWithSentry(sentryOptions, PeopleBase);
 import { handleProfile } from "./profile";
 
-export default {
+export default Sentry.withSentry(sentryOptions, {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
@@ -95,7 +106,7 @@ export default {
       })) ?? new Response("Not found", { status: 404 })
     );
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env>);
 
 /**
  * Verify, hand the event to the chat's agent, return 200. The agent defers the
@@ -425,7 +436,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
           dryRun: true,
           maxSteps: Number(url.searchParams.get("steps") ?? 14),
         },
-        (n, line) => log("info", "pilot", "step", { n, line }),
+        (n, line) => void log("info", "pilot", "step", { n, line }),
       );
       return Response.json({ provider: session.provider, sessionId: session.sessionId, liveUrl: session.liveUrl, ...result });
     } finally {

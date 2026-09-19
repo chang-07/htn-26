@@ -1,9 +1,10 @@
+import { tracedFetch } from "./telemetry";
 import LinqAPIV3 from "@linqapp/sdk";
 import { SLOT_EMOJI, cartsOf, shopKey, type PlanState } from "../types";
 import { errorFields, log, short } from "./log";
 
 export function linqClient(env: Env) {
-  return new LinqAPIV3({ apiKey: env.LINQ_API_KEY });
+  return new LinqAPIV3({ fetch: tracedFetch, apiKey: env.LINQ_API_KEY });
 }
 
 export function cardImageUrl(env: Env, agentName: string, version: number) {

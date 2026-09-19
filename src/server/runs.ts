@@ -106,6 +106,7 @@ const RANK_SQL = (expr: string) => `(CASE ${expr} WHEN 'error' THEN 2 WHEN 'warn
 export class RunRecorder {
   private runId: string | null = null;
   private seq = 0;
+  private activeLevel: Level = "info";
   private orphans: { ts: number; level: Level; event: string; fields: Fields }[] = [];
   /** The most recent run, kept so that what follows from it can be appended to it. */
   private last: { runId: string; seq: number; started: number; endedAt: number; outcome: string; level: Level; tokens: number; steps: number; tools: string[] } | null = null;
@@ -195,12 +196,14 @@ export class RunRecorder {
     const last = this.last!;
     this.runId = last.runId;
     this.seq = last.seq;
+    this.activeLevel = last.level;
     this.carry = { started: last.started, tokens: last.tokens, steps: last.steps, tools: last.tools };
   }
 
   private open(fields: Fields) {
     this.runId = crypto.randomUUID();
     this.seq = 0;
+    this.activeLevel = "info";
     this.carry = { started: Date.now(), tokens: 0, steps: 0, tools: [] };
     const trigger =
       typeof fields.trigger === "string" ? fields.trigger : (this.orphans[0]?.event ?? RUN_START);
@@ -212,7 +215,6 @@ export class RunRecorder {
 
   private close(level: Level = "info", fields: Fields = {}) {
     if (!this.runId) return;
-    const rank: Record<Level, number> = { info: 0, warn: 1, error: 2 };
     const ended = Date.now();
     // A continued run reports the whole interaction: every turn's tokens and
     // tools, and the time from the first event to this one.
@@ -220,7 +222,7 @@ export class RunRecorder {
     const summary = {
       // "background" describes a tail of progress events, not the interaction: keep what the turns said.
       outcome: outcome === "background" && this.last?.runId === this.runId ? this.last.outcome : outcome,
-      level: this.last?.runId === this.runId && rank[this.last.level] > rank[level] ? this.last.level : level,
+      level: worst(this.activeLevel, level),
       tokens: this.carry.tokens + (num(fields.tokens) ?? 0),
       steps: this.carry.steps + (num(fields.steps) ?? 0),
       tools: [...this.carry.tools, ...(Array.isArray(fields.tools) ? (fields.tools as string[]) : [])],
@@ -238,21 +240,23 @@ export class RunRecorder {
 
   private emit(items: { ts: number; level: Level; event: string; fields: Fields }[]) {
     const runId = this.runId!;
+    this.activeLevel = items.reduce((level, item) => worst(level, item.level), this.activeLevel);
     const rows: RunEventRow[] = items.map((i) => ({ ...i, runId, chat: this.chat, seq: this.seq++ }));
     this.send({ kind: "events", events: rows });
   }
 
+  private writes: Promise<unknown> = Promise.resolve();
+
   private send(msg: HubMessage) {
-    this.background(
-      (async () => {
+    this.writes = this.writes.then(async () => {
         const hub = await getAgentByName<Env, RunHub>(this.env.RunHub, HUB_NAME);
         await hub.ingest(msg);
-      })().catch((err) => {
+      }).catch((err) => {
         // Losing run history must never take down a turn, so this is logged and
         // dropped. If the hub is broken the chat still works.
         log("warn", "runs", "hub.ingest_failed", { chat: this.chat, ...errorFields(err) });
-      }),
-    );
+      });
+    this.background(this.writes);
   }
 }
 
@@ -291,10 +295,10 @@ export class RunHub extends Agent<Env, Record<string, never>> {
         const r = msg.run;
         await db
           .prepare(
-            `UPDATE runs SET ended = ?, outcome = ?, level = ?, ms = ?, tokens = ?, steps = ?, tools = ?
+            `UPDATE runs SET ended = ?, outcome = ?, level = CASE WHEN ${RANK_SQL("?")} > ${RANK_SQL("level")} THEN ? ELSE level END, ms = ?, tokens = ?, steps = ?, tools = ?
              WHERE run_id = ?`,
           )
-          .bind(r.ended, r.outcome, r.level, r.ms, r.tokens, r.steps, JSON.stringify(r.tools), r.runId)
+          .bind(r.ended, r.outcome, r.level, r.level, r.ms, r.tokens, r.steps, JSON.stringify(r.tools), r.runId)
           .run();
       } else if (msg.events.length) {
         const inserts = msg.events.map((e) =>

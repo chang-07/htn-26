@@ -1,3 +1,4 @@
+import { traceOperation } from "./telemetry";
 import type { Frame, Page } from "@cloudflare/puppeteer";
 import { z } from "zod";
 import { askJson } from "./llm";
@@ -425,7 +426,7 @@ export async function runPilot(
   const visits = new Map<string, number>();
   let lastUrl = "";
   for (let n = 1; n <= maxSteps; n++) {
-    const seen = await observe(page);
+    const seen = await traceOperation("pilot.observe", "browser", { step: n }, () => observe(page));
 
     // Enforced here, not requested in the prompt: the pilot never pays.
     if (seen.hasPayment && goal.mode === "book") {
@@ -455,6 +456,8 @@ ${steps.join("\n") || "(none)"}`;
       return finish("gave_up", "The browsing model stopped responding mid-booking.");
     }
 
+    log("info", "pilot", "decision", { step: n, action: action.action, elementId: action.id, decision: `Selected ${action.action}`, mode: goal.mode });
+
     if (action.action === "done") {
       if (goal.mode === "availability") return finish("found", action.summary ?? "", { slots: action.slots ?? [] });
       // "done" without ever submitting means the model thinks there is nothing to submit.
@@ -467,6 +470,7 @@ ${steps.join("\n") || "(none)"}`;
     const fingerprint = `${action.action}|${action.id ?? ""}|${action.text ?? ""}|${seen.url}`;
     repeats = fingerprint === lastFingerprint ? repeats + 1 : 0;
     lastFingerprint = fingerprint;
+    if (repeats >= 2) log("warn", "pilot", "loop_detected", { step: n, repeats, action: action.action });
     if (repeats >= 2) return finish("gave_up", `Got stuck repeating "${action.action}" on ${new URL(seen.url).host} without progress.`);
     // Cycling between pages is the slower version of the same thing. Counted
     // per ARRIVAL, not per step: a single-page booking flow legitimately spends
@@ -490,7 +494,7 @@ ${steps.join("\n") || "(none)"}`;
 
     let line: string;
     try {
-      line = `${n}. ${await perform(page, action)} — ${action.thought.slice(0, 110)}`;
+      line = `${n}. ${await traceOperation("pilot.action", "browser", { step: n, tool: action.action }, () => perform(page, action))} — ${action.thought.slice(0, 110)}`;
     } catch (err) {
       line = `${n}. ${action.action} ${action.id ?? ""} FAILED: ${err instanceof Error ? err.message : String(err)}`;
     }

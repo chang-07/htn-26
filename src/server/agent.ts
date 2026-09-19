@@ -1,3 +1,4 @@
+import { telemetryScope, traceOperation, traceFields, safeFields } from "./telemetry";
 import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
@@ -221,7 +222,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /**
-   * Message bodies and model reasoning for the run viewer, when LOG_BODIES is
+   * Message bodies for the run viewer, when LOG_BODIES is
    * on. Run history is served over HTTP, so switching this on means it holds
    * what real people wrote in their group chat, not just how long it was.
    * Handles stay masked either way.
@@ -238,7 +239,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * via GET /api/dev/logs?chat=<id>, and feeds the run viewer at /runs.
    */
   private note = (level: Level, event: string, fields: Fields = {}) => {
-    log(level, "agent", event, { chat: short(this.name), ...fields });
+    const { telemetryExported, ...values } = fields;
+    fields = safeFields({ ...traceFields(), ...values });
+    fields = log(level, "agent", event, { chat: short(this.name), ...fields }, false, telemetryExported !== true);
     this.recorder().record(level, event, fields);
     this.sql`INSERT INTO events (ts, level, event, fields) VALUES (${Date.now()}, ${level}, ${event}, ${JSON.stringify(fields)})`;
     this.sql`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ${EVENT_HISTORY}`;
@@ -1197,7 +1200,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     try {
       do {
         this.turnRequested = false;
-        await this.think();
+        await telemetryScope(this.note, () => traceOperation("agent.turn", "agent", {}, () => this.think()));
       } while (this.turnRequested);
     } catch (err) {
       // Scheduler callbacks have no caller to report to; without this a crash
@@ -1283,7 +1286,7 @@ ${transcript}`,
       let res;
       if (!spoke) await this.typing();
       try {
-        res = await client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never);
+        res = await traceOperation("agent.model", "gen_ai.chat", { model, profile, step: step + 1, promptChars: JSON.stringify(messages).length }, () => client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never));
       } catch (err) {
         end("error", "llm_failed", { step, ...errorFields(err) });
         return;
@@ -1293,15 +1296,17 @@ ${transcript}`,
       messages.push(reply);
 
       const calls = (reply.tool_calls ?? []).filter((c) => c.type === "function");
-      // What the model decided on this round trip. Its prose is reasoning, not
-      // anything the group sees — text reaches the chat only through
-      // send_message — so it is the closest thing to a record of its thinking.
       this.note("info", "turn.step", {
         step: step + 1,
         calls: calls.map((c) => c.function.name),
-        ...(reply.content?.trim() && reply.content.trim() !== "NOOP"
-          ? this.body(reply.content.trim(), "thinking")
-          : {}),
+        decision: calls.length ? `Selected ${calls.map((c) => c.function.name).join(", ")}` : "Returned no tool calls",
+        responseChars: reply.content?.length ?? 0,
+        tokens: res.usage?.total_tokens ?? 0,
+        inputTokens: res.usage?.prompt_tokens ?? 0,
+        outputTokens: res.usage?.completion_tokens ?? 0,
+        cachedTokens: res.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        reasoningTokens: res.usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+        finishReason: res.choices[0].finish_reason,
       });
       if (calls.length === 0) {
         // Text reaches the chat only through send_message, never from raw
@@ -1330,7 +1335,7 @@ ${transcript}`,
           "agent",
           "tool",
           // Arguments are useful for every tool except the one carrying message text.
-          { tool: call.function.name, args: call.function.name === "send_message" ? "(text)" : call.function.arguments.slice(0, 300) },
+          { tool: call.function.name, step: step + 1, callId: call.id, argsChars: call.function.arguments.length },
           () => this.runTool(call.function.name, call.function.arguments),
           this.note,
         );
@@ -2032,6 +2037,10 @@ this.rememberCardId(id);
     return this.takeLocation({ handle, locality, region });
   }
 
+  async telemetryProgress(level: Level, event: string, fields: Fields) {
+    this.note(level, event, fields);
+  }
+
   async researchProgress(stage: string, fields: Fields = {}) {
     this.setMeta("research_progress_at", String(Date.now()));
     if (stage === "browser" && typeof fields.liveUrl === "string") {
@@ -2138,8 +2147,10 @@ this.rememberCardId(id);
    * Deterministic and free, which makes it the way to iterate on cards.
    */
   async devRunTool(tool: string, args: unknown) {
-    this.note("info", "dev.tool", { tool });
-    return this.runTool(tool, JSON.stringify(args ?? {}));
+    return telemetryScope(this.note, async () => {
+      this.note("info", "dev.tool", { tool });
+      return traceOperation("agent.tool", "function", { tool }, () => this.runTool(tool, JSON.stringify(args ?? {})));
+    });
   }
 
   /** Simulator only: id of the agent's most recent text, to simulate replying to it. */
