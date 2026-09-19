@@ -6,6 +6,8 @@
 interface SecretBindings {
   LINQ_API_KEY: string;
   LINQ_WEBHOOK_SECRET: string;
+  /** The line new chats are opened from. Optional: defaults to the key's first number. */
+  LINQ_FROM_NUMBER?: string;
   IMESSAGE_TEAM_ID: string;
   IMESSAGE_BUNDLE_ID: string;
   OPENAI_API_KEY: string;

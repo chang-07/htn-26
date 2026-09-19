@@ -117,6 +117,38 @@ node scripts/linq-contact-card.mjs show
 The agent then offers the card to each chat the first time it is woken there.
 All of this is best-effort and iMessage-only; failures are logged, never thrown.
 
+### Pairing — "find me someone to climb with"
+
+In a direct chat, someone in the match pool can ask to be paired up
+(`src/server/intros.ts` has the flow). Nobody's name or number reaches the other
+person until both have said yes:
+
+```
+A's DM  find_matches  -> candidates as ref + blurb, no names   (Vectorize; shared-word scan if it is down)
+        request_intro -> B is asked privately in B's DM         (one open ask per person)
+B's DM  answer_intro  -> no:  A hears "no luck", never who
+                         yes: a new group chat with both, and the match ticket
+```
+
+Without the model, in the simulator (both people need a saved profile with
+`matchOptIn`, which needs one message from each first):
+
+```sh
+tool() { curl -s -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' -d "$1"; }
+tool '{"chat":"a","tool":"find_matches","args":{"who":"Ana","lookingFor":"someone to climb with"}}'
+tool '{"chat":"a","tool":"request_intro","args":{"candidate":"c1","common":[{"text":"climbing"}]}}'
+tool '{"chat":"b","tool":"answer_intro","args":{"answer":"yes"}}'
+```
+
+An ask nobody answers lapses after 48 hours and the asker is told. Each person
+has one ask out, and is asked about one, at a time; a pair is never offered twice.
+
+Vectorize has no local emulation, so its binding is `remote`: `npm run dev`
+searches the real index (dev and prod share one pool — "forget me" removes test
+people). It takes a minute or two to index a new profile, so every search also
+runs an instant shared-word scan of the People store and merges the two; that
+scan alone is what runs without a Cloudflare login.
+
 ### Logging — "why didn't it reply?"
 
 Every hop logs one line in the same shape, `scope event {fields}`:

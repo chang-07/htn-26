@@ -3,6 +3,8 @@
 # --- Linq ---
 LINQ_API_KEY=
 LINQ_WEBHOOK_SECRET=whsec_...
+# The line introductions open their group chat from. Only needed when the key has several numbers.
+LINQ_FROM_NUMBER=
 
 # --- iMessage app card identity ---
 # Must match an installed Messages extension, or the card silently renders as

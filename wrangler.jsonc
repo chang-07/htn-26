@@ -56,7 +56,9 @@
 
   "browser": { "binding": "BROWSER" },
   "ai": { "binding": "AI" },
-  "vectorize": [{ "binding": "PEOPLE_INDEX", "index_name": "htn-people" }],
+  // Vectorize has no local emulation: in `npm run dev` this talks to the real
+  // index on the account (needs `wrangler login`), so dev and prod share a pool.
+  "vectorize": [{ "binding": "PEOPLE_INDEX", "index_name": "htn-people", "remote": true }],
   // R2 caches rendered card PNGs. It is off because R2 must first be enabled on
   // the account (dashboard -> R2, needs a payment method). To turn it on:
   //   npx wrangler r2 bucket create htn-cards   then uncomment, `npm run types`, deploy.
