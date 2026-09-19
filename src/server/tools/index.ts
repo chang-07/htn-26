@@ -111,6 +111,20 @@ export const toolSchemas = {
     who: z.string().describe("Name of the person who said they paid"),
     shop: z.string().describe("Which store's order they paid for, as listed under Shopping list"),
   }),
+  add_expense: z.object({
+    who: z.string().describe("The speaker label of the person who paid, exactly as shown in the transcript"),
+    amount: z.string().describe("The amount exactly as they said it, with the currency sign if they gave one: '$86.40', '20'"),
+    what: z.string().describe("What it was for, in a few words: 'dinner at Kinton', 'the deposit', 'cab home'"),
+    for: z
+      .array(z.string())
+      .max(12)
+      .optional()
+      .describe("Speaker labels or names this is split across. Omit for everyone going. ONE name when they paid that person back."),
+  }),
+  drop_expense: z.object({
+    id: z.string().describe("The expense id as listed under Invoice"),
+  }),
+  show_invoice: z.object({}),
   show_venue: z.object({
     name: z.string().describe("Venue name as it appears in the research findings or the plan options"),
   }),
@@ -190,6 +204,11 @@ const descriptions: Record<ToolName, string> = {
     "Post one ticket covering every store's order: what is being bought where, the combined total, the per-person split, and what is still unpaid. Use once the shopping is settled or when someone asks what it all comes to. Not after every cart change.",
   mark_paid:
     "Someone said they paid for one store's order. Posts that store's green PAID ticket. Only when a person in the chat says so, and only for the store they named or clearly meant.",
+  add_expense:
+    "Log money a person paid that did not go through a cart: the bill, a deposit, the cab, or paying someone back. Only when that person, or someone in the chat, says so with an amount; never a guess. Paying someone back is an expense with `for` set to that one person. It joins the invoice at once.",
+  drop_expense: "Remove one logged expense from the invoice, by its id, when it was wrong or the person takes it back.",
+  show_invoice:
+    "Post the invoice ticket: who paid what and who owes whom, worked out from every cart and logged expense across everyone going. Use when someone asks what they owe or how to split it. It posts itself once every cart is paid, so not after every change.",
   show_venue:
     "Post a ticket with one venue's details (what it is, price, address, caveats). Use when someone asks about a specific place. One venue per turn.",
   ask_rsvp:

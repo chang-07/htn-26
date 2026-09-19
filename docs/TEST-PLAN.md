@@ -22,6 +22,7 @@ cheapest tests that can change the design run first.
 | Profiles, DM onboarding, `/p/<token>` form | yes (parallel session) | simulator; see that session's notes |
 | Presence: read receipts, typing, contact card | yes (parallel session) | unknown on a real phone |
 | RSVP / headcount tickets | yes (parallel session) | simulator |
+| Invoice: who owes whom (ticket, live page section, `add_expense`) | yes | `npm test` for the math; simulator for the auto-post and tools; page eyeballed in headless Chrome |
 | Matchmaking (`join_match_pool`, `find_matches`, `introduce_match`) | tools + card exist | **never run** — Vectorize has no local mode |
 | Run viewer `/runs` | yes | local + production API; page not checked in a browser since the fix |
 | Production on `gpt-5-mini` | deployed, current | **one turn ever** (the loop bug); nothing since |

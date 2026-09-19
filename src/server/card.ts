@@ -1,5 +1,6 @@
 import { ImageResponse, loadGoogleFont } from "workers-og";
 import { SLOT_EMOJI, cartsTotal, type CartSummary, type PlanState } from "../types";
+import { fmtMoney, type Invoice } from "../invoice";
 
 /**
  * Every card the agent posts is the same object: the ticket stub from
@@ -236,6 +237,44 @@ export function shoppingListTicket(carts: CartSummary[], people = 0): Ticket {
       ...(each ? [{ text: `Split ${people} ways`, tail: each }] : []),
     ],
     stub: allPaid ? { big: "PAID", label: sum ? short : "All stores" } : { big: short, label: sum ? "Total" : "Stores" },
+  };
+}
+
+/**
+ * Who owes whom, one row a person. Cream while a store is still waiting to be
+ * paid, green once everything is bought and all that is left is squaring up
+ * between friends. Balances are the whole point, so they take the row: the
+ * store-by-store breakdown is the shopping list's job.
+ */
+export function invoiceTicket(inv: Invoice): Ticket {
+  if (!inv.ok) {
+    return {
+      tone: "open",
+      metaLeft: "Running tab",
+      title: inv.reason === "mixed" ? "Two currencies" : "Nothing yet",
+      rows: [{ text: inv.reason === "mixed" ? "Can't add these up" : "No carts, no expenses" }],
+      stub: { big: "?", label: "Total" },
+    };
+  }
+  const money = (cents: number) => fmtMoney(inv.symbol, cents);
+  const square = inv.lines.every((l) => l.net === 0);
+  const withStake = inv.lines.filter((l) => l.paid || l.share);
+  const shown = withStake.slice(0, 4);
+  const hidden = withStake.length - shown.length;
+  // The stub has room for about five characters, so drop the cents there.
+  const short = `${inv.symbol.slice(-1)}${Math.round(inv.total / 100)}`;
+
+  return {
+    tone: inv.settled ? "done" : "open",
+    metaLeft: inv.settled ? "Settle up" : "Running tab",
+    metaRight: inv.settled ? `${inv.people.length || inv.lines.length} people` : `${inv.unpaid.length} left to pay`,
+    title: inv.settled ? (square ? "All square" : "Who owes what") : "Tab so far",
+    rows: shown.map((l, i) => ({
+      text: (l.paid ? `${l.name} paid ${money(l.paid)}` : l.name) + (i === shown.length - 1 && hidden > 0 ? ` +${hidden}` : ""),
+      tail: l.net > 0 ? `gets ${money(l.net)}` : l.net < 0 ? `owes ${money(-l.net)}` : "even",
+      dim: l.net === 0 && !square,
+    })),
+    stub: square && inv.settled ? { big: "PAID", label: short } : { big: short, label: "Total" },
   };
 }
 
