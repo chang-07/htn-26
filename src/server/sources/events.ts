@@ -11,6 +11,18 @@ export type EventQuery = { city: string; query?: string; country?: string };
 const tld = (country?: string) => ((country ?? "CA").toUpperCase() === "CA" ? "ca" : "com");
 
 /**
+ * A comparable city key: fold accents (NFD, strip combining marks) before
+ * dropping everything but a-z, so "Québec" and "Quebec" match, and Luma's
+ * slug for a French-named city is still plain ASCII.
+ */
+export const cityKey = (s: string): string =>
+  s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+
+/**
  * Ticketmaster's search page embeds its suggestion query in `__NEXT_DATA__`
  * under a key like `topSuggestions({"keyword":"Toronto Raptors"})`; the
  * attraction's numeric id is the tail of its URL.
@@ -46,28 +58,30 @@ export function parseTicketmasterSearch(html: string, query: string): { id: stri
   return { id: /\/artist\/(\d+)/.exec(best.url)![1], title: best.title };
 }
 
-const TmEvents = z.object({
-  events: z.array(
-    z.object({
-      title: z.string(),
-      url: z.string().optional(),
-      dates: z.object({ startDate: z.string().optional(), onsaleDate: z.string().optional() }).optional(),
-      venue: z.object({ name: z.string().optional(), city: z.string().optional(), state: z.string().optional() }).nullish(),
-      soldOut: z.boolean().optional(),
-      limitedAvailability: z.boolean().optional(),
-      cancelled: z.boolean().optional(),
-    }),
-  ),
+const TmEvent = z.object({
+  title: z.string(),
+  url: z.string().optional(),
+  dates: z.object({ startDate: z.string().optional(), onsaleDate: z.string().optional() }).optional(),
+  venue: z.object({ name: z.string().optional(), city: z.string().optional(), state: z.string().optional() }).nullish(),
+  soldOut: z.boolean().optional(),
+  limitedAvailability: z.boolean().optional(),
+  cancelled: z.boolean().optional(),
 });
+const TmEnvelope = z.object({ events: z.array(z.unknown()) });
 
 export function parseTicketmasterEvents(json: string): Event[] {
-  let parsed: z.infer<typeof TmEvents>;
+  let envelope: z.infer<typeof TmEnvelope>;
   try {
-    parsed = TmEvents.parse(JSON.parse(json));
+    envelope = TmEnvelope.parse(JSON.parse(json));
   } catch {
     return [];
   }
-  return parsed.events
+  const events: z.infer<typeof TmEvent>[] = [];
+  for (const raw of envelope.events) {
+    const item = TmEvent.safeParse(raw);
+    if (item.success) events.push(item.data); // one malformed event must not zero the whole batch
+  }
+  return events
     .filter((e) => e.dates?.startDate && e.url && !e.cancelled)
     .map((e) => ({
       title: e.title,
@@ -82,34 +96,38 @@ export function parseTicketmasterEvents(json: string): Event[] {
     }));
 }
 
-const Luma = z.object({
-  entries: z.array(
-    z.object({
-      event: z.object({
-        name: z.string(),
-        start_at: z.string(),
-        url: z.string(),
-        geo_address_info: z.object({ address: z.string().nullish(), city_state: z.string().nullish() }).nullish(),
-      }),
-    }),
-  ),
+const LumaEntry = z.object({
+  event: z.object({
+    name: z.string(),
+    start_at: z.string(),
+    url: z.string(),
+    geo_address_info: z.object({ address: z.string().nullish(), city_state: z.string().nullish() }).nullish(),
+  }),
 });
+const LumaEnvelope = z.object({ entries: z.array(z.unknown()) });
 
 export function parseLuma(json: string): Event[] {
-  let parsed: z.infer<typeof Luma>;
+  let envelope: z.infer<typeof LumaEnvelope>;
   try {
-    parsed = Luma.parse(JSON.parse(json));
+    envelope = LumaEnvelope.parse(JSON.parse(json));
   } catch {
     return [];
   }
-  return parsed.entries.map(({ event }) => ({
-    title: event.name,
-    when: event.start_at,
-    ...(event.geo_address_info?.address ? { venue: event.geo_address_info.address } : {}),
-    ...(event.geo_address_info?.city_state ? { city: event.geo_address_info.city_state } : {}),
-    url: `https://luma.com/${event.url}`,
-    source: "luma" as const,
-  }));
+  const events: Event[] = [];
+  for (const raw of envelope.entries) {
+    const entry = LumaEntry.safeParse(raw);
+    if (!entry.success) continue; // one malformed entry must not zero the whole batch
+    const { event } = entry.data;
+    events.push({
+      title: event.name,
+      when: event.start_at,
+      ...(event.geo_address_info?.address ? { venue: event.geo_address_info.address } : {}),
+      ...(event.geo_address_info?.city_state ? { city: event.geo_address_info.city_state } : {}),
+      url: `https://luma.com/${event.url}`,
+      source: "luma" as const,
+    });
+  }
+  return events;
 }
 
 /**
@@ -118,8 +136,8 @@ export function parseLuma(json: string): Event[] {
  */
 export async function findEvents(env: SourceEnv, q: EventQuery, now = new Date()): Promise<Event[]> {
   const horizon = new Date(now.getTime() + DAYS_AHEAD * 86_400_000).toISOString();
-  const cityKey = q.city.toLowerCase().replace(/[^a-z]/g, "");
-  const inCity = (e: Event) => (e.city ?? "").toLowerCase().replace(/[^a-z]/g, "").startsWith(cityKey);
+  const citySlug = cityKey(q.city);
+  const inCity = (e: Event) => cityKey(e.city ?? "").startsWith(citySlug);
   let events: Event[];
   if (q.query) {
     const host = `https://www.ticketmaster.${tld(q.country)}`;
@@ -134,9 +152,9 @@ export async function findEvents(env: SourceEnv, q: EventQuery, now = new Date()
     events = parseTicketmasterEvents(list.content).filter((e) => e.when >= now.toISOString());
     if (!events.length) log("warn", "source", "empty", { source: "ticketmaster-events", status: list.status, artist: artist.id });
   } else {
-    const page = await proxiedFetch(env, `https://api.luma.com/discover/get-paginated-events?slug=${cityKey}&pagination_limit=20`, { proxies: false });
+    const page = await proxiedFetch(env, `https://api.luma.com/discover/get-paginated-events?slug=${citySlug}&pagination_limit=20`, { proxies: false });
     events = parseLuma(page.content).filter((e) => e.when >= now.toISOString() && e.when <= horizon);
-    if (!events.length) log("warn", "source", "empty", { source: "luma", status: page.status, city: cityKey });
+    if (!events.length) log("warn", "source", "empty", { source: "luma", status: page.status, city: citySlug });
   }
   // Within each group (city first), soonest first.
   const stable = events.map((e, i) => ({ e, i }));

@@ -178,7 +178,7 @@ test("stayOption is one ballot line", () => {
   assert.equal(stayOption({ name: "Inn", nightly: "$99", url: "https://g" }).subtitle, "$99/night");
 });
 
-import { parseTicketmasterSearch, parseTicketmasterEvents, parseLuma, findEvents, eventOption } from "../src/server/sources/events.ts";
+import { parseTicketmasterSearch, parseTicketmasterEvents, parseLuma, findEvents, eventOption, cityKey } from "../src/server/sources/events.ts";
 
 test("parseTicketmasterSearch resolves a team to its artist id", () => {
   assert.deepEqual(parseTicketmasterSearch(fixture("ticketmaster-search.html"), "Toronto Raptors"), { id: "806034", title: "Toronto Raptors" });
@@ -256,4 +256,43 @@ test("eventOption is one ballot line", () => {
   assert.equal(eventOption({ ...e, soldOut: true, limited: false }, "America/Toronto").subtitle, `${when} · Scotiabank Arena · sold out`);
   assert.equal(eventOption({ ...e, onsale: "2026-12-01T16:00:00Z", limited: false }, "America/Toronto", new Date("2026-11-01T00:00:00Z")).subtitle, `${when} · Scotiabank Arena · on sale Dec 1`);
   assert.equal(eventOption({ ...e, onsale: undefined, limited: false, source: "luma" }, "America/Toronto").subtitle, `${when} · Scotiabank Arena · free to RSVP`);
+});
+
+test("cityKey folds accents and drops punctuation", () => {
+  assert.equal(cityKey("Montréal"), "montreal");
+  assert.equal(cityKey("St. John's"), "stjohns");
+});
+
+test("findEvents requests an accent-folded Luma slug for a French city name", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(url);
+    return new Response(JSON.stringify({ entries: [] }));
+  });
+  await findEvents(env, { city: "Québec" }, new Date("2026-09-19T00:00:00Z"));
+  assert.equal(calls[0], "https://api.luma.com/discover/get-paginated-events?slug=quebec&pagination_limit=20");
+});
+
+test("parseTicketmasterEvents skips a malformed event instead of dropping the whole batch", () => {
+  const json = JSON.stringify({
+    events: [
+      { title: "Good Show", url: "https://www.ticketmaster.ca/good/event/1", dates: { startDate: "2026-10-01T00:00:00Z" } },
+      { url: "https://www.ticketmaster.ca/bad/event/2", dates: { startDate: "2026-10-02T00:00:00Z" } }, // missing title
+    ],
+  });
+  const events = parseTicketmasterEvents(json);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].title, "Good Show");
+});
+
+test("parseLuma skips a malformed entry instead of dropping the whole batch", () => {
+  const json = JSON.stringify({
+    entries: [
+      { event: { name: "Good Meetup", start_at: "2026-10-01T00:00:00.000Z", url: "good-slug" } },
+      { event: { start_at: "2026-10-02T00:00:00.000Z", url: "bad-slug" } }, // missing name
+    ],
+  });
+  const events = parseLuma(json);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].title, "Good Meetup");
 });
