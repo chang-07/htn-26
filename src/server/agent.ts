@@ -1948,6 +1948,11 @@ this.rememberCardId(id);
   }
 
   /** Simulator only: the open Who's in ticket's message id. */
+  /** This chat's id, which is this agent's name. Lets a workflow find the agent again after a deploy. */
+  async chatId() {
+    return this.name;
+  }
+
   /** Dev only: a cart that exists nowhere but here, so the pay guards can be tested offline. */
   async devSeedCart(shop: string, total: string) {
     const key = shopKey(shop);

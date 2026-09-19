@@ -1,3 +1,4 @@
+import { liveAgent } from "./live-agent";
 import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "agents/workflows";
 import { z } from "zod";
 import type { PlanAgent } from "./agent";
@@ -58,6 +59,12 @@ export type ResearchReport = {
 const STEP = { retries: { limit: 1, delay: "5 seconds" as const }, timeout: "4 minutes" as const };
 
 export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
+  private _live?: DurableObjectStub<PlanAgent>;
+  /** The chat's agent, looked up afresh on every call so a deploy mid-run cannot strand the result. */
+  private get live() {
+    return (this._live ??= liveAgent(this.env, this.agent));
+  }
+
   async run(event: AgentWorkflowEvent<ResearchParams>, step: AgentWorkflowStep) {
     const p = event.payload;
     const budget = DEPTH[p.depth] ?? DEPTH.quick;
@@ -67,7 +74,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
     const sessions: string[] = [];
     const progress = (stage: string, fields: Record<string, unknown> = {}) =>
       // Progress is for the log only; losing a line must never fail the run.
-      this.agent.researchProgress(stage, fields).catch((err) => log("warn", "research", "progress.failed", { stage, ...errorFields(err) }));
+      this.live.researchProgress(stage, fields).catch((err) => log("warn", "research", "progress.failed", { stage, ...errorFields(err) }));
 
     try {
       // 1. What to search for.
@@ -143,7 +150,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
               used += r.tokens;
               // Kept on the chat agent and served from /shot, so the run viewer
               // can show what the browser actually landed on.
-              const shotId = page.shot ? await this.agent.saveShot(page.shot).catch(() => undefined) : undefined;
+              const shotId = page.shot ? await this.live.saveShot(page.shot).catch(() => undefined) : undefined;
               await progress("read", { host: new URL(url).host, candidates: r.value.candidates.length, shotId, url: page.url });
               return { url: page.url, candidates: r.value.candidates };
             } catch (err) {
@@ -204,7 +211,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
         stats: { queries: plan.queries.length, hits: found.hits.length, pagesRead: read.pages.length, pagesFailed: read.failed, tokens, ms: Date.now() - started },
         sessions,
       };
-      await step.do("report", () => this.agent.researchFinished(report));
+      await step.do("report", () => this.live.researchFinished(report));
       return report;
     } catch (err) {
       const report: ResearchReport = {
@@ -216,7 +223,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
         sessions,
         detail: err instanceof Error ? err.message : String(err),
       };
-      await step.do("report-failure", () => this.agent.researchFinished(report));
+      await step.do("report-failure", () => this.live.researchFinished(report));
       return report;
     }
   }

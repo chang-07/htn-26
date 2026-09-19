@@ -1,3 +1,4 @@
+import { liveAgent } from "./live-agent";
 import { fillCheckout, hasCardForm, payCheckout, type ShipTo } from "./checkout";
 import { cancelPayment, paymentCard, paymentSucceeded, requestPayment } from "./linq";
 import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "agents/workflows";
@@ -76,6 +77,12 @@ export type BookingResult = {
  * Only the report back to the agent, which is idempotent, is retried.
  */
 export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | AvailabilityParams | PayParams> {
+  private _live?: DurableObjectStub<PlanAgent>;
+  /** The chat's agent, looked up afresh on every call so a deploy mid-run cannot strand the result. */
+  private get live() {
+    return (this._live ??= liveAgent(this.env, this.agent));
+  }
+
   async run(event: AgentWorkflowEvent<BookingParams | AvailabilityParams | PayParams>, step: AgentWorkflowStep) {
     if ("pay" in event.payload) {
       const pay = event.payload;
@@ -83,7 +90,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       // inside it, because whatever a step returns is written to storage.
       const result = await step.do("pay", { retries: { limit: 0, delay: "1 second" }, timeout: "10 minutes" }, () => this.pay(pay));
       log(result.status === "paid" ? "info" : "warn", "pay", "workflow.result", { shop: result.shop, status: result.status, total: result.total });
-      await step.do("report", () => this.agent.payFinished(result));
+      await step.do("report", () => this.live.payFinished(result));
       return result;
     }
     if ("mode" in event.payload) {
@@ -93,7 +100,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       const results = await step.do("availability", { retries: { limit: 0, delay: "1 second" }, timeout: "12 minutes" }, () =>
         this.checkAll(checks),
       );
-      await step.do("report", () => this.agent.availabilityFinished(results));
+      await step.do("report", () => this.live.availabilityFinished(results));
       return results;
     }
     const params = event.payload;
@@ -105,7 +112,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
     );
 
     log(result.ok ? "info" : "warn", "book", "workflow.result", { status: result.status, steps: result.steps, tokens: result.tokens });
-    await step.do("report", () => this.agent.bookingFinished(result));
+    await step.do("report", () => this.live.bookingFinished(result));
     return result;
   }
 
@@ -125,12 +132,12 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
     const shoot = async () =>
       (shotId = await page
         .screenshot({ type: "jpeg", quality: 60, encoding: "base64" })
-        .then((b64) => this.agent.saveShot(String(b64)))
+        .then((b64) => this.live.saveShot(String(b64)))
         .catch(() => undefined));
     try {
-      await this.agent.payProgress("browser", { shop: params.shop, liveUrl: session.liveUrl });
-      const priced = await fillCheckout(page, params.checkoutUrl, params.shipTo, (line) => void this.agent.payProgress("step", { line }));
-      await this.agent.payProgress("priced", { shop: params.shop, total: priced.line });
+      await this.live.payProgress("browser", { shop: params.shop, liveUrl: session.liveUrl });
+      const priced = await fillCheckout(page, params.checkoutUrl, params.shipTo, (line) => void this.live.payProgress("step", { line }));
+      await this.live.payProgress("priced", { shop: params.shop, total: priced.line });
 
       if (priced.totalCents > params.capCents) return { ...base, status: "over_cap", total: priced.line, shotId: await shoot() };
       if (!(await hasCardForm(page))) return { ...base, status: "no_card_form", total: priced.line, shotId: await shoot() };
@@ -159,14 +166,14 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         if (now.status === "failed") return { ...base, status: "failed", total: priced.line, detail: `the payment was ${now.why}` };
         if (told !== now.status) {
           told = now.status;
-          await this.agent.payNeedsAction(params.payer, now.status, now.url, priced.line, params.shop);
+          await this.live.payNeedsAction(params.payer, now.status, now.url, priced.line, params.shop);
         }
         if (Date.now() > deadline) return { ...base, status: "not_approved", total: priced.line };
         await new Promise((r) => setTimeout(r, 4000));
       }
       if (paymentId.startsWith("dry-")) return { ...base, status: "dry_run", total: priced.line, shotId: await shoot() };
 
-      await this.agent.payProgress("paying", { shop: params.shop });
+      await this.live.payProgress("paying", { shop: params.shop });
       const done = await payCheckout(page, await paymentCard(this.env, paymentId), params.shipTo.name, priced.totalCents);
       paymentId = undefined; // spent: nothing to cancel
       return { ...base, status: "paid", total: priced.line, confirmation: done.confirmation, shotId: await shoot() };
@@ -222,13 +229,13 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
               maxSteps: 12,
               task: `Find which start times are available at "${check.title}" for ${params.partySize} people on ${day}${around}. Today is ${new Date().toISOString().slice(0, 10)}.`,
             },
-            (n, line) => this.agent.bookingProgress("availability_step", { option: check.title.slice(0, 40), n, line: line.slice(0, 160) }),
+            (n, line) => this.live.bookingProgress("availability_step", { option: check.title.slice(0, 40), n, line: line.slice(0, 160) }),
           );
           return { optionId: check.optionId, title: check.title, ok: found.status === "found", slots: found.slots ?? [], summary: found.summary };
         } catch (err) {
           log("warn", "book", "availability.failed", { option: check.title, ...errorFields(err) });
           // Into the chat's own event log too: the console is gone by the time anyone asks why.
-          await this.agent.bookingProgress("availability_failed", { option: check.title.slice(0, 40), ...errorFields(err) }).catch(() => {});
+          await this.live.bookingProgress("availability_failed", { option: check.title.slice(0, 40), ...errorFields(err) }).catch(() => {});
           return failed(check);
         } finally {
           await page?.close().catch(() => {});
@@ -253,7 +260,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
     const replayUrl = session.sessionId ? `https://browserbase.com/sessions/${session.sessionId}` : undefined;
     try {
       // Lets the group watch the browser being driven while it happens.
-      await this.agent.bookingProgress("browser", { provider: session.provider, liveUrl: session.liveUrl });
+      await this.live.bookingProgress("browser", { provider: session.provider, liveUrl: session.liveUrl });
 
       const page = await session.browser.newPage();
       const when = new Date(params.isoTime);
@@ -272,13 +279,13 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
           maxSteps: 24,
           task: `Book "${params.title}" for ${params.partySize} people on ${whenText}, or the closest available time that day. Contact details — first name: ${first}, last name: ${rest.join(" ") || first}, email: ${params.contact.email}${params.contact.phone ? `, phone: ${params.contact.phone}` : " (no phone number was provided)"}. Today is ${new Date().toISOString().slice(0, 10)}.`,
         },
-        (n, line) => this.agent.bookingProgress("step", { n, line: line.slice(0, 200) }),
+        (n, line) => this.live.bookingProgress("step", { n, line: line.slice(0, 200) }),
       );
 
       // The last thing the pilot saw: proof of how far it got, whatever the outcome.
       const shotId = await page
         .screenshot({ type: "jpeg", quality: 60, encoding: "base64" })
-        .then((b64) => this.agent.saveShot(String(b64)))
+        .then((b64) => this.live.saveShot(String(b64)))
         .catch(() => undefined);
 
       const detail: Record<PilotStatus, string> = {
