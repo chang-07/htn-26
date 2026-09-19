@@ -12,10 +12,10 @@ import { cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, rs
 import { SourceError } from "./sources/fetch";
 import { flightOption, searchFlights } from "./sources/flights";
 import { searchStays, stayOption } from "./sources/stays";
-import { eventOption, findEvents } from "./sources/events";
+import { cityTz, eventOption, findEvents } from "./sources/events";
 import { describeFlight, flightStatus } from "./sources/flight-status";
 import { orderStatus } from "./sources/order-status";
-import { diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "./sources/watch";
+import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "./sources/watch";
 import type { FlightStatus, OrderStatus } from "./sources/types";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
 import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
@@ -79,10 +79,12 @@ on a time, book it, and order anything they need.
   prices: put 2-4 on propose_plan and quote the prices exactly. Their links
   open the site's own checkout, so you never book those yourself: once a vote
   settles, call add_to_itinerary, which posts the link, then move to the next
-  segment. When someone says they booked it, call confirm_item (with what they
-  paid and who paid, so the split is right); when they give a flight number,
-  call watch_flight. Never say a flight, room or ticket is booked until a
-  person says so. The Itinerary below is the trip so far.
+  segment. Flights, stays and events need nobody's name or email and never go
+  through book_option: the moment the vote settles, call add_to_itinerary and
+  hand the group the link. When someone says they booked it, call confirm_item
+  (with what they paid and who paid, so the split is right); when they give a
+  flight number, call watch_flight. Never say a flight, room or ticket is
+  booked until a person says so. The Itinerary below is the trip so far.
 - When someone comes back to a plan after a while, call propose_plan again
   with the options that still apply: that puts the card back in front of them
   instead of pointing at one far up the thread.
@@ -94,10 +96,11 @@ on a time, book it, and order anything they need.
   individual votes.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
-- book_option drives a real browser through the venue's booking page. Call it
-  at most once per plan. It needs the full name and email the reservation goes
-  under: if nobody has given them, ask who is booking and for their email, and
-  never make either up.
+- book_option drives a real browser through a restaurant or venue's booking
+  page — never a flight, a hotel room or a ticket, which go to
+  add_to_itinerary. Call it at most once per plan. It needs the full name and
+  email the reservation goes under: if nobody has given them, ask who is
+  booking and for their email, and never make either up.
 - Payment setup is not yours to run. If someone wants you to be able to pay for
   things, tell them to text you "set up payments" in a direct chat; "remove my
   payments" undoes it. Never ask for or accept card details in the chat. You
@@ -1218,8 +1221,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
   private async scheduleWatches() {
     if (!this.activeWatches().length) return;
     if (this.getMeta("watch_timer") === "1") return;
-    this.setMeta("watch_timer", "1");
+    // Set the flag only once schedule() has actually resolved: if it throws,
+    // the flag must not be left set with no timer behind it.
     await this.schedule(PlanAgent.WATCH_SECONDS, "checkWatches");
+    this.setMeta("watch_timer", "1");
   }
 
   private activeWatches(): { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] {
@@ -1264,10 +1269,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
           if ("flight" in watch) {
             const next = await flightStatus(this.env, watch.flight.ident);
             if (!next) throw new Error("no status");
-            await this.applyWatch(item, next, diffFlight(prev, next));
+            await this.applyWatch(item, next, diffFlight(prev, next), prev);
           } else {
             const next = await orderStatus(this.env, watch.order.url);
-            await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop));
+            await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop), prev);
           }
         } catch (err) {
           const failures = row.failures + 1;
@@ -1281,13 +1286,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
     }
   }
 
-  /** Post the lines, then persist the snapshot and settle the item once it is over: an unsent line survives to the next tick. */
-  private async applyWatch(item: ItineraryItem, next: FlightStatus | OrderStatus, lines: string[]) {
+  /**
+   * Post the lines, then persist the snapshot and settle the item once it is
+   * over: an unsent line survives to the next tick. For a flight, the
+   * persisted delay holds at the last-announced value (`baselineFor`) so a
+   * creeping delay is not lost between the 15-minute steps that get posted.
+   */
+  private async applyWatch(item: ItineraryItem, next: FlightStatus | OrderStatus, lines: string[], prev?: FlightStatus | OrderStatus) {
     for (const line of lines) {
       await this.say(line);
       this.note("info", "watch.posted", { id: item.id, line: line.slice(0, 80) });
     }
-    this.sql`UPDATE watches SET snapshot = ${JSON.stringify(next)}, failures = 0, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+    const snapshot = item.watch && "flight" in item.watch ? baselineFor(prev as FlightStatus | undefined, next as FlightStatus, lines) : next;
+    this.sql`UPDATE watches SET snapshot = ${JSON.stringify(snapshot)}, failures = 0, checked = ${Date.now()} WHERE item_id = ${item.id}`;
     const over = "delivered" in next ? next.delivered : next.status === "landed" || next.status === "cancelled";
     if (lines.length || over) {
       const last = lines.at(-1);
@@ -1302,7 +1313,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (!item || !item.watch || !("order" in item.watch)) return { error: `no order item ${itemId}` };
     const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
     const prev = row?.snapshot ? (JSON.parse(row.snapshot) as OrderStatus) : undefined;
-    await this.applyWatch(item, snap, diffOrder(prev, snap, item.watch.order.shop));
+    await this.applyWatch(item, snap, diffOrder(prev, snap, item.watch.order.shop), prev);
     return { ok: true };
   }
 
@@ -1312,7 +1323,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (!item || !item.watch || !("flight" in item.watch)) return { error: `no flight item ${itemId}` };
     const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
     const prev = row?.snapshot ? (JSON.parse(row.snapshot) as FlightStatus) : undefined;
-    await this.applyWatch(item, snap, diffFlight(prev, snap));
+    await this.applyWatch(item, snap, diffFlight(prev, snap), prev);
     return { ok: true };
   }
 
@@ -1545,8 +1556,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const direct = this.getMeta("is_group") === "0";
     const about = await this.aboutPeople(people, direct);
 
-    // Carts get their own "Shopping list" line below, whatever the plan's status.
-    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined });
+    // Carts get their own "Shopping list" line below, and the itinerary its own
+    // "Itinerary" line, whatever the plan's status.
+    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined, itinerary: undefined });
     const research = this.researchContext();
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -1968,7 +1980,7 @@ this.rememberCardId(id);
           const events = await findEvents(this.env, args);
           this.note("info", "source.events", { city: args.city, query: args.query ?? "", found: events.length });
           if (!events.length) return args.query ? `Ticketmaster has no upcoming ${args.query} dates in ${args.city}.` : `Luma lists nothing in ${args.city} for the next month.`;
-          return JSON.stringify({ options: events.map((e) => eventOption(e)) });
+          return JSON.stringify({ options: events.map((e) => eventOption(e, cityTz(args.city))) });
         } catch (err) {
           return this.sourceFailure(err, args.query ? "Ticketmaster" : "Luma");
         }
@@ -2004,12 +2016,27 @@ this.rememberCardId(id);
         const args = parseToolArgs("watch_flight", rawArgs);
         let item = args.itemId ? this.itinerary().find((i) => i.id === args.itemId) : undefined;
         if (args.itemId && !item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        if (!item && !args.itemId) {
+          // No itemId given: attach to the one itinerary item this is clearly
+          // about, rather than adding a duplicate flight stop.
+          const unwatched = this.itinerary().filter((i) => i.kind === "flight" && !i.watch);
+          if (unwatched.length === 1) item = unwatched[0];
+        }
+        const wasNew = !item;
+        const previous = item ? { ...item } : undefined;
         if (!item) item = await this.addItineraryItem({ kind: "flight", title: args.ident.toUpperCase(), status: "watching", watch: { flight: { ident: args.ident, date: args.date } } });
         else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, status: "watching", note: args.ident.toUpperCase(), watch: { flight: { ident: args.ident, date: args.date } } } : i)));
         this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
         try {
           const status = await flightStatus(this.env, args.ident);
-          if (!status) return `FlightAware has no ${args.ident.toUpperCase()}. Check the flight number with them.`;
+          if (!status) {
+            // A bad ident must not leave a permanent watch: undo exactly what
+            // this call did, whether that was a new item or an existing one.
+            this.sql`DELETE FROM watches WHERE item_id = ${item.id}`;
+            if (wasNew) this.saveItinerary(this.itinerary().filter((i) => i.id !== item!.id));
+            else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...previous! } : i)));
+            return `FlightAware has no ${args.ident.toUpperCase()}. Check the flight number with them.`;
+          }
           this.sql`UPDATE watches SET snapshot = ${JSON.stringify(status)}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
           const line = describeFlight(status);
           this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, lastUpdate: line.replace(/^\S+ /, "") } : i)));

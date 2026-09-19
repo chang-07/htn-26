@@ -22,6 +22,38 @@ export const cityKey = (s: string): string =>
     .toLowerCase()
     .replace(/[^a-z]/g, "");
 
+/** City key → IANA zone, for the cities a Canadian demo meets. Defaults to America/Toronto. */
+const CITY_TZ: Record<string, string> = {
+  toronto: "America/Toronto",
+  ottawa: "America/Toronto",
+  montreal: "America/Toronto",
+  quebec: "America/Toronto",
+  hamilton: "America/Toronto",
+  london: "America/Toronto",
+  vancouver: "America/Vancouver",
+  victoria: "America/Vancouver",
+  calgary: "America/Edmonton",
+  edmonton: "America/Edmonton",
+  banff: "America/Edmonton",
+  winnipeg: "America/Winnipeg",
+  halifax: "America/Halifax",
+  regina: "America/Regina",
+  saskatoon: "America/Regina",
+  newyork: "America/New_York",
+  boston: "America/New_York",
+  washington: "America/New_York",
+  philadelphia: "America/New_York",
+  miami: "America/New_York",
+  chicago: "America/Chicago",
+  losangeles: "America/Los_Angeles",
+  sanfrancisco: "America/Los_Angeles",
+  seattle: "America/Los_Angeles",
+  denver: "America/Denver",
+};
+
+/** The searched city's zone, for formatting an event's time; unknown cities default to America/Toronto. */
+export const cityTz = (city: string): string => CITY_TZ[cityKey(city)] ?? "America/Toronto";
+
 /**
  * Ticketmaster's search page embeds its suggestion query in `__NEXT_DATA__`
  * under a key like `topSuggestions({"keyword":"Toronto Raptors"})`; the

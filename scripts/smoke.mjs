@@ -338,6 +338,20 @@ await check("add_to_itinerary takes the winner, posts one ticket, clears the bal
   expect(/ticket\.out.*"kind":"itinerary"/.test(text), "no itinerary ticket posted");
   expect(/Finish it here: https:\/\/www\.google\.com/.test(text), "the deep link was not said");
 });
+if (env.BROWSERBASE_API_KEY) {
+  await check("watch_flight with no itemId attaches to the lone unwatched flight item, and a bad ident reverts it", async () => {
+    const before = await dump(it);
+    const flightId = before.state.itinerary.find((i) => i.kind === "flight").id;
+    const out = await tool(it, "watch_flight", { ident: "ZZ9999" });
+    expect(/FlightAware has no ZZ9999/.test(out), `unexpected reply: ${out}`);
+    const { state } = await dump(it);
+    const flights = state.itinerary.filter((i) => i.kind === "flight");
+    expect(flights.length === 1 && flights[0].id === flightId && flights[0].status === "handoff", JSON.stringify(flights));
+    expect(!state.itinerary.some((i) => i.title === "ZZ9999"), "a ZZ9999 item was left behind");
+  });
+} else {
+  console.log("  PASS  watch_flight bad-ident revert check  (skipped: no BROWSERBASE_API_KEY in .env)");
+}
 await check("confirm_item marks it booked and logs the expense", async () => {
   const { state } = await dump(it);
   const out = await tool(it, "confirm_item", { itemId: state.itinerary[0].id, note: "F8 227", price: "CA$254", paidBy: "+15550001111" });

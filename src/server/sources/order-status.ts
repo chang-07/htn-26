@@ -16,7 +16,10 @@ export function parseOrderStatus(html: string): OrderStatus {
     .replace(/&amp;/g, "&")
     .replace(/\s+/g, " ");
   const delivered = /\bdelivered\b/i.test(text) && !/not (yet )?delivered|will be delivered/i.test(text);
-  const fulfilled = delivered || /\b(fulfilled|shipped|on its way|out for delivery|in transit)\b/i.test(text);
+  const fulfilled =
+    delivered ||
+    (/\b(fulfilled|shipped|on its way|out for delivery|in transit)\b/i.test(text) &&
+      !/not (yet )?(fulfilled|shipped)|hasn't shipped|has not shipped|will (be )?ship/i.test(text));
   const out: OrderStatus = { fulfilled, delivered };
   if (!fulfilled) return out;
   const carrier = CARRIERS.find((c) => new RegExp(`\\b${c}\\b`, "i").test(text));

@@ -44,6 +44,21 @@ export function diffOrder(prev: OrderStatus | undefined, next: OrderStatus, shop
   return [];
 }
 
+/**
+ * What to persist as the flight snapshot: `next`, except that when this tick
+ * posted no delay line ("is delayed" / "is back on time"), the delay holds at
+ * `prev`'s. Without this, a creeping delay (20 → 34 → 48) drifts the stored
+ * baseline every tick and never crosses the 15-minute step again, so only the
+ * first move is ever announced.
+ */
+export function baselineFor(prev: FlightStatus | undefined, next: FlightStatus, posted: string[]): FlightStatus {
+  const announcedDelay = posted.some((line) => line.includes("is delayed") || line.includes("is back on time"));
+  if (!announcedDelay && prev && next.status === "scheduled") {
+    return { ...next, delayMinutes: prev.delayMinutes, estimatedDeparture: prev.estimatedDeparture };
+  }
+  return next;
+}
+
 /** Worth checking: from 36 hours before departure until landed, cancelled, or 6 hours past scheduled arrival. */
 export function flightWatchActive(s: FlightStatus | undefined, nowMs: number): boolean {
   if (!s) return true; // never read yet: find out

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "../src/server/sources/watch.ts";
+import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "../src/server/sources/watch.ts";
 import { fmtLocal } from "../src/server/sources/flight-status.ts";
 
 const T0 = 1789857000;
@@ -41,6 +41,34 @@ test("diffOrder: shipped once, delivered once", () => {
   assert.deepEqual(diffOrder(shipped, shipped, "partycity.com"), []);
   assert.deepEqual(diffOrder(none, { fulfilled: true, delivered: false }, "partycity.com"), ["partycity.com shipped"]);
   assert.deepEqual(diffOrder(shipped, { ...shipped, delivered: true }, "partycity.com"), ["partycity.com delivered"]);
+});
+
+test("baselineFor holds the delay at the last announced value, so a creeping delay is not lost", () => {
+  const step20 = { ...base, delayMinutes: 20, estimatedDeparture: T0 + 1200 };
+  const step34 = { ...base, delayMinutes: 34, estimatedDeparture: T0 + 2040 };
+  const step48 = { ...base, delayMinutes: 48, estimatedDeparture: T0 + 2880 };
+
+  let snapshot = base;
+  const posted = [];
+
+  let lines = diffFlight(snapshot, step20);
+  posted.push(...lines);
+  snapshot = baselineFor(snapshot, step20, lines);
+  assert.equal(snapshot.delayMinutes, 20);
+
+  lines = diffFlight(snapshot, step34);
+  posted.push(...lines);
+  snapshot = baselineFor(snapshot, step34, lines);
+  assert.equal(snapshot.delayMinutes, 20, "the baseline must not drift to 34 when nothing was posted");
+
+  lines = diffFlight(snapshot, step48);
+  posted.push(...lines);
+  snapshot = baselineFor(snapshot, step48, lines);
+
+  const delayLines = posted.filter((l) => /is delayed|is back on time/.test(l));
+  assert.equal(delayLines.length, 2, JSON.stringify(posted));
+  assert.match(delayLines[0], /is delayed 20 min/);
+  assert.match(delayLines[1], /is delayed 48 min/);
 });
 
 test("watches are active in a window", () => {

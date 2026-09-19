@@ -180,7 +180,7 @@ test("stayOption is one ballot line", () => {
   assert.equal(stayOption({ name: "Inn", nightly: "$99", url: "https://g" }).subtitle, "$99/night");
 });
 
-import { parseTicketmasterSearch, parseTicketmasterEvents, parseLuma, findEvents, eventOption, cityKey } from "../src/server/sources/events.ts";
+import { parseTicketmasterSearch, parseTicketmasterEvents, parseLuma, findEvents, eventOption, cityKey, cityTz } from "../src/server/sources/events.ts";
 
 test("parseTicketmasterSearch resolves a team to its artist id", () => {
   assert.deepEqual(parseTicketmasterSearch(fixture("ticketmaster-search.html"), "Toronto Raptors"), { id: "806034", title: "Toronto Raptors" });
@@ -263,6 +263,12 @@ test("eventOption is one ballot line", () => {
 test("cityKey folds accents and drops punctuation", () => {
   assert.equal(cityKey("Montréal"), "montreal");
   assert.equal(cityKey("St. John's"), "stjohns");
+});
+
+test("cityTz maps a known city to its zone and defaults elsewhere", () => {
+  assert.equal(cityTz("Vancouver"), "America/Vancouver");
+  assert.equal(cityTz("Québec"), "America/Toronto");
+  assert.equal(cityTz("Nowhere"), "America/Toronto");
 });
 
 test("findEvents requests an accent-folded Luma slug for a French city name", async (t) => {
@@ -352,4 +358,5 @@ test("parseOrderStatus reads a Shopify order page's text", () => {
     <p>Canada Post · Estimated delivery: Tuesday, September 22</p></body></html>`);
   assert.deepEqual(shipped, { fulfilled: true, delivered: false, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor=7023210000000001", eta: "Tuesday, September 22" });
   assert.equal(parseOrderStatus("<html><body><h2>Delivered</h2><p>Your package was delivered.</p></body></html>").delivered, true);
+  assert.equal(parseOrderStatus("<html><body><p>Your order hasn't shipped yet</p></body></html>").fulfilled, false);
 });
