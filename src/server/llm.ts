@@ -13,6 +13,17 @@ import { log } from "./log";
  * Both speak the Chat Completions tool-calling protocol, so the agent loop does
  * not know or care which one it is talking to.
  */
+/**
+ * Per-model request extras. Luna rejects tool calls on chat completions unless
+ * reasoning is switched off, so the chat loop (tools) runs with none; the
+ * tool-less JSON questions (research, the browser pilot) keep a little, since
+ * that is where thinking pays.
+ */
+export function modelExtras(model: string, use: "tools" | "json"): { reasoning_effort?: "none" | "low" } {
+  if (!/luna/i.test(model)) return {};
+  return { reasoning_effort: use === "tools" ? "none" : "low" };
+}
+
 export function llmFor(env: Env): { client: OpenAI; model: string; profile: string } {
   const wantsDev = env.LLM_PROFILE !== "demo";
 
@@ -62,7 +73,7 @@ export async function askJson<T>(
   let tokens = 0;
   let lastError = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await client.chat.completions.create({ model, messages, response_format: { type: "json_object" } });
+    const res = await client.chat.completions.create({ model, messages, response_format: { type: "json_object" }, ...modelExtras(model, "json") } as never);
     tokens += res.usage?.total_tokens ?? 0;
     const raw = res.choices[0].message.content ?? "";
     try {
