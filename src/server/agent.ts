@@ -7,7 +7,7 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, sendPhoto, sendPhotos, sizedImage, updateMusicCard, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendMusicCard, sendPhoto, sendTicketCard, sendPhotos, sizedImage, updateMusicCard, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
@@ -483,7 +483,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO tickets (id, kind, json, ts) VALUES (${id}, ${kind}, ${JSON.stringify(ticket)}, ${Date.now()})`;
     this.sql`DELETE FROM tickets WHERE ts < ${Date.now() - 7 * 24 * 3600 * 1000}`;
     const url = `${this.env.PUBLIC_BASE_URL}/card/${encodeURIComponent(this.name)}?t=${id}`;
-    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id }, () => sendPhoto(this.env, this.name, url), this.note).catch(
+    // With our extension configured the ticket ships as a native app card;
+    // without it, the rendered PNG photo as before.
+    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id, native: hasAppIdentity(this.env) }, () =>
+      hasAppIdentity(this.env)
+        ? sendTicketCard(this.env, this.name, this.name, id, { title: ticket.title, metaLeft: ticket.metaLeft, stubBig: ticket.stub.big, stubLabel: ticket.stub.label })
+        : sendPhoto(this.env, this.name, url),
+      this.note,
+    ).catch(
       () => undefined,
     );
     if (messageId) this.sql`UPDATE tickets SET message_id = ${messageId} WHERE id = ${id}`;
