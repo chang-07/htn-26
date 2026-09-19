@@ -381,8 +381,9 @@ export function Runs() {
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
-                <RunDiagnostics events={nodes} onPick={setPicked} />
                 <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
+                {/* Analytics sit under the tape: the run reads first, the numbers after. */}
+                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} run={detail} />
               </div>
             </>
           ) : (
