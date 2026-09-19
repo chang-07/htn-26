@@ -385,10 +385,15 @@ export async function listChats(env: Env) {
 /**
  * The viewer is on the public Worker and run history names tools, briefs and
  * masked handles. If RUNS_TOKEN is set as a secret, every /api/runs request
- * must carry it; if it is unset the viewer is open, which is fine locally and
- * a deliberate choice anywhere else.
+ * must carry it; if it is unset the viewer is open, which is a deliberate
+ * choice. Localhost is exempt either way.
  */
 export function requireRunsAuth(request: Request, url: URL, env: Env): Response | null {
+  // Localhost is already trusted here — /api/dev/* is wide open on the same
+  // origin — and a token on the dev server only means hunting through .env
+  // every time the page is opened.
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return null;
+
   const expected = (env as { RUNS_TOKEN?: string }).RUNS_TOKEN;
   if (!expected) return null;
   const given = url.searchParams.get("token") ?? request.headers.get("authorization")?.replace(/^Bearer /, "");

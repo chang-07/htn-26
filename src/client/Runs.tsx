@@ -14,6 +14,8 @@ import { FONT_LINK, FieldList, MONO, SERVICES, THEME_CSS, UI_FONT, btn, clock, d
 
 type TimelineEvent = { seq: number; ts: number; level: string; event: string; fields: Record<string, unknown> };
 
+const TOKEN_KEY = "runs.token";
+
 /** /runs/<runId> — so a run found here can be pasted to someone else. */
 const runIdFromPath = () => window.location.pathname.match(/^\/runs\/(.+)$/)?.[1] ?? null;
 
@@ -27,12 +29,27 @@ export function Runs() {
   const [problem, setProblem] = useState<string | null>(null);
   const [mode, setMode] = useState<"graph" | "list">("graph");
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [showBackground, setShowBackground] = useState(false);
   // A run linked to directly is often older than the page the list holds. It is
   // kept apart because both the list fetch and the socket's hello replace `runs`
   // wholesale, which would drop it again.
   const [linked, setLinked] = useState<RunSummary | null>(null);
-  // /runs?token=… — the API and the live socket both need it when RUNS_TOKEN is set.
-  const token = useMemo(() => new URLSearchParams(window.location.search).get("token") ?? "", []);
+  /**
+   * /runs?token=… — the API and the live socket both need it when RUNS_TOKEN is
+   * set. Once a working token has been seen it is remembered, so a bare /runs
+   * keeps working and the link only has to carry it the first time. Per-viewer
+   * convenience only: it never leaves this browser, and a 401 clears it.
+   */
+  const token = useMemo(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("token");
+    try {
+      if (fromUrl) localStorage.setItem(TOKEN_KEY, fromUrl);
+      return fromUrl ?? localStorage.getItem(TOKEN_KEY) ?? "";
+    } catch {
+      // Private window, or site data blocked. The URL token still works.
+      return fromUrl ?? "";
+    }
+  }, []);
   const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
   // `follow` is read inside the socket callback, which is created once.
   const followRef = useRef(follow);
@@ -107,7 +124,15 @@ export function Runs() {
     const url = `/api/runs?limit=100${chat ? `&chat=${encodeURIComponent(chat)}` : ""}${tokenParam}`;
     fetch(url)
       .then(async (r) => {
-        if (r.status === 401) throw new Error("locked");
+        if (r.status === 401) {
+          // A remembered token that no longer works would wedge the page.
+          try {
+            localStorage.removeItem(TOKEN_KEY);
+          } catch {
+            /* nothing stored */
+          }
+          throw new Error("locked");
+        }
         if (!r.ok) throw new Error(`the server answered ${r.status}`);
         return r.json() as Promise<{ runs: RunSummary[] }>;
       })
@@ -139,7 +164,15 @@ export function Runs() {
 
   const chats = useMemo(() => [...new Set(runs.map((r) => r.chat))], [runs]);
   const shown = chat ? runs.filter((r) => r.chat === chat) : runs;
-  const sessions = useMemo(() => groupIntoSessions(shown), [shown]);
+  const sessions = useMemo(
+    () =>
+      groupIntoSessions(shown)
+        .map((sess) => ({ ...sess, visible: showBackground ? sess.runs : sess.runs.filter((r) => !isBackground(r)) }))
+        // A session of nothing but background work — an e2e script, a dev tool
+        // call — has no turn to look at, so it stays out of the way.
+        .filter((sess) => sess.visible.length),
+    [shown, showBackground],
+  );
 
   // A session opens when it holds the selected run, or when anything in it is
   // still going — the two cases where its turns are worth seeing.
@@ -148,6 +181,13 @@ export function Runs() {
     collapsed[sess.id] === undefined
       ? sess.runs.some((r) => r.runId === selected || r.ended === null)
       : !collapsed[sess.id];
+
+  // Selecting a hidden run — from a link, or from following a live one — has to
+  // reveal it rather than leave the rail looking like it does not exist.
+  useEffect(() => {
+    if (!showBackground && detail && isBackground(detail)) setShowBackground(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the selection changes
+  }, [selected]);
   const detail = selected
     ? (runs.find((r) => r.runId === selected) ?? (linked?.runId === selected ? linked : undefined))
     : undefined;
@@ -162,7 +202,9 @@ export function Runs() {
             <h1 style={{ fontSize: 16, margin: 0, flex: 1 }}>Agent runs</h1>
             {problem ? (
               <span style={{ fontSize: 12, color: "var(--error)" }}>
-                {problem === "locked" ? "Locked — open /runs?token=<RUNS_TOKEN>" : `Couldn't load: ${problem}`}
+                {problem === "locked"
+                  ? "Locked. Open this page once as /runs?token=<RUNS_TOKEN> and it will be remembered."
+                  : `Couldn't load: ${problem}`}
               </span>
             ) : null}
             <span title={live ? "connected" : "disconnected"} style={{ width: 8, height: 8, borderRadius: 8, background: live ? "var(--good)" : "var(--muted)" }} />
@@ -180,6 +222,13 @@ export function Runs() {
               <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
               follow
             </label>
+            <button
+              onClick={() => setShowBackground((b) => !b)}
+              style={{ ...btn, cursor: "pointer", ...(showBackground ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}) }}
+              title="Work that happened outside a model turn: workflow callbacks, browser steps, form submissions, dev tool calls."
+            >
+              background
+            </button>
             <button
               onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
               style={{ ...btn, cursor: "pointer" }}
@@ -203,7 +252,7 @@ export function Runs() {
               onToggle={() => setCollapsed((c) => ({ ...c, [sess.id]: isOpen(sess) }))}
             />
             {isOpen(sess) &&
-              sess.runs.map((r) => (
+              sess.visible.map((r) => (
                 <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
               ))}
           </div>
@@ -228,6 +277,16 @@ export function Runs() {
 }
 
 type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
+type ShownSession = Session & { visible: RunSummary[] };
+
+/**
+ * A run with no model turn behind it: a research callback landing between
+ * turns, a booking workflow's browser steps, a profile form submission, a dev
+ * tool call. Real work — the booking is genuinely happening — but it is part of
+ * a session's story rather than a turn of its own, and it costs no tokens. On a
+ * busy chat these outnumber the turns, so the rail hides them by default.
+ */
+const isBackground = (r: RunSummary) => r.outcome === "background";
 
 /**
  * A turn on its own is rarely the thing you want to look at — one conversation
@@ -269,10 +328,12 @@ function groupIntoSessions(runs: RunSummary[]): Session[] {
   return out.sort((a, b) => b.to - a.to);
 }
 
-function SessionHeader({ session, open, onToggle }: { session: Session; open: boolean; onToggle: () => void }) {
+function SessionHeader({ session, open, onToggle }: { session: ShownSession; open: boolean; onToggle: () => void }) {
   const live = session.runs.filter((r) => r.ended === null).length;
   const bad = session.runs.filter((r) => r.level === "error").length;
   const tokens = session.runs.reduce((n, r) => n + (r.tokens ?? 0), 0);
+  const turns = session.runs.filter((r) => !isBackground(r)).length;
+  const background = session.runs.length - turns;
   return (
     <button
       onClick={onToggle}
@@ -289,7 +350,8 @@ function SessionHeader({ session, open, onToggle }: { session: Session; open: bo
           {session.chat}
         </span>
         <span style={{ display: "block", fontFamily: MONO, fontSize: 9.5, color: "var(--faint)", marginTop: 2 }}>
-          {session.runs.length} turn{session.runs.length === 1 ? "" : "s"}
+          {turns} turn{turns === 1 ? "" : "s"}
+          {background ? ` · ${background} background` : ""}
           {tokens ? ` · ${tokens.toLocaleString()} tok` : ""}
           {bad ? ` · ${bad} failed` : ""}
           {` · ${clock(session.to)}`}
