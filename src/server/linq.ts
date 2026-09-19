@@ -114,6 +114,17 @@ export async function sendText(env: Env, chatId: string, value: string) {
   });
 }
 
+/**
+ * The ticket as an ordinary photo. Agent Apps draws the card bubble itself and
+ * shows none of our image, so the photo is how the design reaches the thread.
+ * A photo cannot be redrawn, so it is sent at moments, not on every change.
+ */
+export async function sendTicket(env: Env, chatId: string, agentName: string, plan: PlanState) {
+  const url = cardImageUrl(env, agentName, plan.version);
+  if (isDry(env, chatId)) return void log("info", "linq", "dry.ticket", { chat: short(chatId), image: url });
+  return linqClient(env).chats.messages.send(chatId, { message: { parts: [{ type: "media", url }] } } as never);
+}
+
 type CardPart = ReturnType<typeof appCardPart>;
 
 /**

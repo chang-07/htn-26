@@ -4,7 +4,7 @@ import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { sendCard, sendText, tapbackLegend, updateCard } from "./linq";
+import { sendCard, sendText, sendTicket, tapbackLegend, updateCard } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { searchPlaces } from "./tools/places";
 import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
@@ -17,6 +17,8 @@ group brainstorm a hangout and then actually make it happen: pick a place, agree
 on a time, book it, and order anything they need.
 
 - Write like a friend texting: one or two short lines, no markdown, no lists.
+- Send at most one message per turn. After send_message you are done talking:
+  reply NOOP unless you still have a non-message tool to call.
 - Do not announce what you are about to do. Do it, then report the result.
 - Never invent a venue, address or price. Every option you propose must come
   from a search_places or shop_search result in this conversation.
@@ -228,6 +230,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (newId) this.rememberCardId(newId);
   }
 
+  /** Posts the ticket photo. Never worth failing a turn over. */
+  private async ticket() {
+    return; // disabled: was spamming the chat
+    await timed("agent", "ticket.out", { version: this.state.version }, () =>
+      sendTicket(this.env, this.name, this.name, this.state),
+      this.note,
+    ).catch(() => {});
+  }
+
   private async say(text: string) {
     await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text), this.note);
     this.sql`INSERT INTO messages (direction, body, ts) VALUES ('out', ${text}, ${Date.now()})`;
@@ -289,7 +300,7 @@ ${
   votesIn
     ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
     : this.getMeta("is_group") === "0"
-      ? "This is a direct one-to-one chat, so every message is addressed to you: always reply, never NOOP."
+      ? "This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop."
       : ""
 }
 
@@ -307,6 +318,7 @@ ${transcript}`,
     this.note("info", "turn.start", { llm: `${profile}/${model}`, history: history.length });
     let spoke = false;
     let reminded = false;
+    let askedQuestion = false;
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
@@ -333,7 +345,7 @@ ${transcript}`,
           messages.push({
             role: "user",
             content:
-              "Nothing has been sent to the chat. To say something, call send_message with exactly the words to send (one or two short lines, no reasoning). Otherwise reply NOOP.",
+              "That reply was NOT delivered: nobody in the chat saw it, because only send_message reaches them. If you meant it for the chat, call send_message now with exactly the words to send (one or two short lines, no reasoning). Reply NOOP only if you truly have nothing to say.",
           });
           continue;
         }
@@ -350,6 +362,13 @@ ${transcript}`,
 
         // A model that loses track can send the same line twice in one turn;
         // in a group chat that reads as a glitch, so the repeat is swallowed.
+        // One text per turn. A model that keeps rephrasing its reply sent eight
+        // messages in twenty seconds; a second attempt ends the turn instead.
+        if (tool === "send_message" && spoke) {
+          end("warn", "replied", { steps: step + 1, extraSendBlocked: true });
+          if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
+          return;
+        }
         if (tool === "send_message") {
           const key = call.function.arguments.toLowerCase().replace(/[^a-z0-9]+/g, "");
           if (sentThisTurn.has(key)) {
@@ -369,7 +388,13 @@ ${transcript}`,
             () => this.runTool(tool, call.function.arguments),
             this.note,
           );
-          if (tool === "send_message") spoke = true;
+          if (tool === "send_message") {
+            spoke = true;
+            // A question hands the conversation to the humans. There is nothing
+            // left to do until they answer, so don't ask the model again — that
+            // is exactly where it started rephrasing itself.
+            if (/\?\s*$/.test(parseToolArgs("send_message", call.function.arguments).text)) askedQuestion = true;
+          }
         } catch (err) {
           // Already logged by timed(). Bad arguments are the model's to fix; an
           // infrastructure failure is not, and retrying it only burns tokens.
@@ -379,6 +404,12 @@ ${transcript}`,
               : `Failed: ${err instanceof Error ? err.message : String(err)}. This is a system problem, not your arguments. Do not call ${tool} again this turn.`;
         }
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
+      }
+
+      if (askedQuestion) {
+        end("info", "replied", { steps: step + 1, awaitingAnswer: true });
+        if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
+        return;
       }
     }
     end("warn", "max_steps");
@@ -430,6 +461,8 @@ ${transcript}`,
           bookingNote: undefined,
         });
 
+        // A new set of options is a moment worth a photo; votes are not.
+        await this.ticket();
         if (this.getMeta("card_message_id")) {
           await this.syncCard();
         } else {
@@ -652,6 +685,7 @@ ${transcript}`,
       bookingNote: result.ok ? result.confirmation : result.detail,
     });
     await this.syncCard();
+    if (result.ok) await this.ticket();
     await this.say(
       result.ok
         ? `booked ${option?.title ?? "it"}${result.confirmation ? ` — ${result.confirmation}` : ""}`

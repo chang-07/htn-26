@@ -92,7 +92,7 @@ if (process.argv[2] === "--mcp") {
 
 const TOOL_NOTE = `
 
-You act only through the provided ${MCP_NAME} tools; they are all available and working. When a tool can do or find something, call it rather than describing it. When there is nothing to call, reply with plain text.`;
+You act only through the provided ${MCP_NAME} tools; they are all available and working. When a tool can do or find something, call it rather than describing it. Your plain-text output is read by the calling program, never by a person: if there is a tool for communicating with people, that tool is the only way to reach them.`;
 
 /** The conversation after the system message, as a plain transcript. */
 function transcript(messages) {

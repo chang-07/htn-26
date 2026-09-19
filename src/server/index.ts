@@ -118,13 +118,47 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
+ *   GET  /api/dev/card?status=voting|booking|booked|failed&title=..&o=A&o=B&votes=2,1&kind=cart   card preview from sample data
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
  *   POST /api/dev/research {"chat":"demo","brief":"...","near":"...","depth":"quick"}   start a run without the model
  *   GET  /api/dev/browse?url=...|q=...   open a browser session; read one page or run one search
  */
+/** Sample plans for /api/dev/card, so the design can be judged without a chat. */
+function samplePlan(url: URL): PlanState {
+  const q = url.searchParams;
+  const titles = q.getAll("o").length ? q.getAll("o") : ["Death Valley's Little Brother", "Graffiti Market", "Beertown Public House"];
+  const options = titles.map((title, i) => ({ id: String(i), title, subtitle: i === 0 ? "Fri Sept 25 · 8:00 PM" : undefined }));
+  const status = (q.get("status") ?? "voting") as PlanState["status"];
+  const votes = (q.get("votes") ?? "2,1,0").split(",").map(Number);
+  return {
+    title: q.get("title") ?? "Friday dinner",
+    status,
+    options,
+    counts: Object.fromEntries(options.map((o, i) => [o.id, votes[i] ?? 0])),
+    chosenOptionId: status === "booked" || status === "booking" ? "0" : undefined,
+    awaiting: [],
+    bookingNote: status === "booked" ? (q.get("note") ?? "Table for 6 · conf #R7K2") : undefined,
+    cart: {
+      shop: "levainbakery.com",
+      checkoutUrl: "https://example.com",
+      total: "$128.00",
+      lines: [
+        { title: "Chocolate Chip Walnut - 4 PK", quantity: 3, price: "$32.00" },
+        { title: "Signature Cookie Assortment - 4 PK", quantity: 1, price: "$32.00" },
+      ],
+    },
+    version: 0,
+  };
+}
+
 async function handleDev(request: Request, url: URL, env: Env): Promise<Response> {
+  if (url.pathname === "/api/dev/card") {
+    const plan = samplePlan(url);
+    const img = await (url.searchParams.get("kind") === "cart" ? renderCartCard(plan.cart!) : renderCard(plan));
+    return new Response(await img.arrayBuffer(), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+  }
   const body = request.method === "POST" ? ((await request.json()) as Record<string, string>) : {};
   const chat = body.chat ?? url.searchParams.get("chat") ?? "demo";
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
@@ -189,7 +223,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   const cached = await bucket?.get(key);
   if (cached) return new Response(cached.body, { headers: pngHeaders });
 
-  const png = await (cart ? renderCartCard(cart) : renderCard(plan)).arrayBuffer();
+  const png = await (await (cart ? renderCartCard(cart) : renderCard(plan))).arrayBuffer();
   if (bucket) ctx.waitUntil(bucket.put(key, png));
   return new Response(png, { headers: pngHeaders });
 }
