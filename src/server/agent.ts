@@ -21,6 +21,9 @@ on a time, book it, and order anything they need.
 - Send at most one message per turn. After send_message you are done talking:
   reply NOOP unless you still have a non-message tool to call.
 - Do not announce what you are about to do. Do it, then report the result.
+- "In the area" and "nearby" mean the group's own area, shown below. When
+  someone states where they are, call remember_area; pass that area as the
+  research "near" unless they name somewhere else for this outing.
 - Never invent a venue, address or price. Every option you propose must come
   from the Research findings below or a shop_search result in this conversation.
 - A vote needs at least two real options. If research found only one good
@@ -435,6 +438,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       {
         role: "user",
         content: `People in the chat: ${people.map((p) => this.label(p.handle, people)).join(", ")}
+Where the group is based: ${this.getMeta("area") ?? "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
@@ -570,6 +574,12 @@ ${transcript}`,
         return "sent";
       }
 
+      case "remember_area": {
+        const { area } = parseToolArgs("remember_area", rawArgs);
+        this.setMeta("area", area.slice(0, 120));
+        return "remembered";
+      }
+
       case "remember_name": {
         const { who, name: goesBy } = parseToolArgs("remember_name", rawArgs);
         const person = this.participants().find((p) => this.label(p.handle) === who);
@@ -618,7 +628,12 @@ ${transcript}`,
           await this.say(`react to vote:\n${tapbackLegend(this.state)}`);
         }
 
-        await this.schedule(NUDGE_AFTER_SECONDS, "nudge");
+        // The nudge is tied to this ballot. Without that, the timer from an
+        // earlier vote fires onto whatever ballot is open when it goes off —
+        // it once nagged for votes four seconds after a new card appeared.
+        const ballot = String(Date.now());
+        this.setMeta("ballot_id", ballot);
+        await this.schedule(NUDGE_AFTER_SECONDS, "nudge", { ballot });
         return JSON.stringify({ options });
       }
 
@@ -905,6 +920,11 @@ ${transcript}`,
       SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
   }
 
+  /** Simulator only: the open ballot's id, so its nudge can be fired on demand. */
+  async currentBallot() {
+    return this.getMeta("ballot_id");
+  }
+
   /** Simulator only: the plan card's current message id. */
   async currentCardId() {
     return this.getMeta("card_message_id");
@@ -919,10 +939,19 @@ ${transcript}`,
   // ------------------------------------------------------ scheduled + workflow
 
   /** Fires a while after voting opens. */
-  async nudge() {
+  async nudge(payload?: { ballot?: string }) {
+    if (payload?.ballot !== this.getMeta("ballot_id")) return; // an older ballot's timer
+    if (this.getMeta("is_group") !== "1") return; // nobody to chase in a one-to-one chat
     if (this.state.status !== "voting" || this.state.awaiting.length === 0) return;
     this.note("info", "nudge", { awaiting: this.state.awaiting.length });
-    await this.say(`still need a vote from ${this.state.awaiting.join(", ")}`);
+    // Only name people whose names are known; "…5178" is not how friends talk.
+    const waiting = this.state.awaiting;
+    const named = waiting.every((w) => !w.startsWith("…"));
+    await this.say(
+      named
+        ? `still need a vote from ${waiting.join(", ")}`
+        : `still waiting on ${waiting.length} ${waiting.length === 1 ? "vote" : "votes"}`,
+    );
   }
 
   /** Called over RPC by BookingWorkflow when it finishes, either way. */

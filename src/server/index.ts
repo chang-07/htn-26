@@ -223,7 +223,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/fire") {
     // Run a scheduled callback now instead of waiting for its timer.
-    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: () => agent.nudge(), runTurn: () => agent.runTurn() };
+    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn() };
     const run = callbacks[body.callback as keyof typeof callbacks];
     if (!run) return Response.json({ error: `callback must be one of ${Object.keys(callbacks).join(", ")}` }, { status: 400 });
     await run();
