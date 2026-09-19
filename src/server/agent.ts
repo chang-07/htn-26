@@ -3,6 +3,7 @@ import type OpenAI from "openai";
 import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
+import { people as peopleStore, profileLines, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { sendCard, sendPhoto, sendText, tapbackLegend, updateCard } from "./linq";
@@ -52,6 +53,12 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   place, ask_rsvp once a time and place are fixed, mark_paid when a person says
   they paid, introduce_match for a pair from the pool. A ticket speaks for
   itself, so never restate one in text.
+- "About the people" below is what each person told you about themselves. Use
+  it quietly: skip the steakhouse for the vegetarian, stay inside budgets, pick
+  near where people live. Never recite someone's profile back to the group.
+- When someone states a lasting fact about themselves, call remember_fact
+  FIRST, before send_message: sending ends your turn, so anything after it is
+  lost. In a group, anyone can text you directly and say "profile" to set theirs up.
 - Only add someone to the match pool when they themselves asked to join.
 - In a group you sleep while people talk among themselves, and are woken only
   when someone @mentions you, replies to one of your messages, or answers a
@@ -180,6 +187,16 @@ export class PlanAgent extends Agent<Env, PlanState> {
       ...(wake ? { wake } : {}),
     });
     if (!wake) return;
+
+    // The profile link is private, so it only ever goes to a direct chat: on
+    // request, or once on its own a little after the first reply.
+    if (msg.isGroup === false) {
+      if (/^\s*(my\s+)?profile\b/i.test(msg.text)) await this.sendProfileLink();
+      else if (this.getMeta("profile_link_sent") !== "1" && this.getMeta("profile_offer_queued") !== "1") {
+        this.setMeta("profile_offer_queued", "1");
+        await this.schedule(20, "offerProfile");
+      }
+    }
 
     // A short delay batches a burst of texts into a single turn.
     await this.schedule(2, "runTurn");
@@ -355,6 +372,55 @@ export class PlanAgent extends Agent<Env, PlanState> {
     await this.postTicket("plan", planTicket(this.state));
   }
 
+  /**
+   * The harness sends the link, not the model: a turn ends at its first sent
+   * message, so a link that depends on the model remembering never goes out.
+   */
+  private async sendProfileLink(intro = ""): Promise<boolean> {
+    const person = this.participants()[0];
+    if (!person) return false;
+    const token = await peopleStore(this.env).tokenFor(person.handle);
+    await this.say(`${intro}${this.env.PUBLIC_BASE_URL}/p/${token}`);
+    this.setMeta("profile_link_sent", "1");
+    return true;
+  }
+
+  /** Scheduler callback: once per direct chat, shortly after the first reply. */
+  async offerProfile() {
+    if (this.getMeta("is_group") !== "0" || this.getMeta("profile_link_sent") === "1") return;
+    const person = this.participants()[0];
+    if (!person) return;
+    // Someone who already filled it in from another chat does not need asking again.
+    const known = await peopleStore(this.env).getMany([person.handle]).catch(() => ({}) as Record<string, Profile>);
+    // Facts picked up in chat do not count: only the form's own fields do.
+    const p = known[person.handle];
+    if (p && (p.area || p.diet || p.interests || p.about)) return void this.setMeta("profile_link_sent", "1");
+    await this.sendProfileLink("30 seconds so plans actually fit you (food rules, budget, where you live):\n");
+  }
+
+  /** What each person has told us about themselves, for the turn's context. */
+  private async aboutPeople(people: { handle: string; name: string | null }[], direct: boolean): Promise<string> {
+    const profiles = await peopleStore(this.env)
+      .getMany(people.map((p) => p.handle))
+      .catch((err) => {
+        this.note("warn", "people.unavailable", errorFields(err));
+        return {} as Awaited<ReturnType<ReturnType<typeof peopleStore>["getMany"]>>;
+      });
+    // A name given on the profile page counts as being told it.
+    for (const p of people) {
+      const name = profiles[p.handle]?.name;
+      if (name && !p.name) {
+        this.sql`UPDATE participants SET name = ${name} WHERE handle = ${p.handle}`;
+        p.name = name;
+      }
+    }
+    const lines = people
+      .map((p) => [this.label(p.handle, people), profiles[p.handle] ? profileLines(profiles[p.handle]) : ""] as const)
+      .filter(([, line]) => line)
+      .map(([who, line]) => `\n- ${who}: ${line}`);
+    return lines.join("") || "nothing yet";
+  }
+
   private rsvps(): Rsvps {
     const people = this.participants();
     const answers = new Map(this.sql<{ handle: string; answer: string }>`SELECT handle, answer FROM rsvps`.map((r) => [r.handle, r.answer]));
@@ -430,6 +496,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
       .map((m) => `${m.direction === "in" ? this.label(m.author, people) : "you"}: ${m.body ?? ""}`)
       .join("\n");
 
+    const direct = this.getMeta("is_group") === "0";
+    const about = await this.aboutPeople(people, direct);
+
     const plan = this.state.status === "idle" ? "none yet" : JSON.stringify(this.state);
     const research = this.researchContext();
 
@@ -438,6 +507,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       {
         role: "user",
         content: `People in the chat: ${people.map((p) => this.label(p.handle, people)).join(", ")}
+About the people: ${about}
 Where the group is based: ${this.getMeta("area") ?? "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
 Research: ${research.text}
@@ -586,6 +656,29 @@ ${transcript}`,
         if (!person) return `No participant labelled ${who}`;
         this.sql`UPDATE participants SET name = ${goesBy} WHERE handle = ${person.handle}`;
         return "remembered";
+      }
+
+      case "remember_fact": {
+        const { who, fact } = parseToolArgs("remember_fact", rawArgs);
+        const person = this.participants().find((p) => this.label(p.handle) === who);
+        if (!person) return `No participant labelled ${who}`;
+        await peopleStore(this.env).addFact(person.handle, fact);
+        return "remembered";
+      }
+
+      case "send_profile_link": {
+        if (this.getMeta("is_group") !== "0") {
+          return "Not in a group: the link is private. Tell them to text you directly and say 'profile'.";
+        }
+        return (await this.sendProfileLink()) ? "Link sent as its own message. Do not paste it again." : "Nobody to send it to yet.";
+      }
+
+      case "forget_person": {
+        const { who } = parseToolArgs("forget_person", rawArgs);
+        const person = this.participants().find((p) => this.label(p.handle) === who);
+        if (!person) return `No participant labelled ${who}`;
+        await peopleStore(this.env).forget(person.handle);
+        return "Deleted their profile and everything remembered about them.";
       }
 
       case "research": {

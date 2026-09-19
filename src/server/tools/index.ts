@@ -60,6 +60,14 @@ export const toolSchemas = {
       .min(1)
       .describe("The whole cart, not just what changed"),
   }),
+  remember_fact: z.object({
+    who: z.string().describe("The speaker label exactly as shown in the transcript"),
+    fact: z.string().describe("One short durable fact in plain words: 'vegetarian', 'can't do Thursdays', 'lives in Kensington'"),
+  }),
+  send_profile_link: z.object({}),
+  forget_person: z.object({
+    who: z.string().describe("The speaker label of the person asking to be forgotten"),
+  }),
   mark_paid: z.object({
     who: z.string().describe("Name of the person who said they paid"),
   }),
@@ -112,6 +120,11 @@ const descriptions: Record<ToolName, string> = {
     "Search a Shopify store's catalog for things to order (decor, snacks, gifts). Prices come back ready to quote.",
   shop_build_cart:
     "Set the cart's full contents and post the cart card with its checkout link for someone to pay. Calling it again for the same shop replaces the contents of the same cart and redraws the card, so use it for every change. You never pay yourself.",
+  remember_fact:
+    "Save something lasting a person said about THEMSELVES (diet, budget, where they live, what they like, when they are free). It follows them into every chat. Never save what someone says about another person, and never save one-off plans.",
+  send_profile_link:
+    "Send this person their private profile link. Only works in a direct one-to-one chat, because the link is theirs alone.",
+  forget_person: "Delete everything saved about a person. Only when that person themselves asks ('forget me').",
   mark_paid: "Someone said they paid for the cart. Posts the green PAID ticket. Only when a person in the chat says so.",
   show_venue:
     "Post a ticket with one venue's details (what it is, price, address, caveats). Use when someone asks about a specific place. One venue per turn.",

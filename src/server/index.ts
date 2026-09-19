@@ -16,6 +16,8 @@ export { PlanAgent } from "./agent";
 export { BookingWorkflow } from "./booking";
 export { ResearchWorkflow } from "./research";
 export { RunHub } from "./runs";
+export { People } from "./people";
+import { handleProfile } from "./profile";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -34,6 +36,10 @@ export default {
     // Worker: the runs worth looking at are the ones driven by real texts.
     if (url.pathname === "/api/runs" || url.pathname.startsWith("/api/runs/")) {
       return requireRunsAuth(request, url, env) ?? handleRuns(url, env);
+    }
+
+    if (url.pathname.startsWith("/p/")) {
+      return handleProfile(request, url, env);
     }
 
     if (url.pathname.startsWith("/card/")) {

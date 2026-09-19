@@ -320,6 +320,14 @@ localhost-only and return 404 on the deployed Worker.
   on every demo phone. (Setting your own identity instead requires your own
   Messages extension on each phone; a *wrong* identity renders as plain text
   with no error.)
+- **People have profiles that follow them between chats.** `People` is one
+  Durable Object keyed by phone handle (`src/server/people.ts`). It fills two
+  ways, both first-hand: the agent's `remember_fact` tool, for things someone
+  says about themselves, and a form at `/p/<token>` that the harness texts to a
+  person once in a direct chat (or whenever they text "profile"). The link is
+  the credential, so it is never posted to a group. Each turn gets an "About
+  the people" block; ticking "count me in for matching" on the form is what
+  adds someone to the match pool; "forget me" deletes the lot.
 - **Designed cards are photos ("tickets").** Agent Apps draws the card bubble
   itself and shows none of our image, so every designed card — plan, venue,
   who's in, order, match intro — is one ticket renderer (`src/server/card.ts`)
