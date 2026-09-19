@@ -10,7 +10,8 @@ import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
 import { parseLinks, readInstagram, readLinks } from "./social";
-import { renderAvatar, cartTicket, invoiceTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { planEmoji } from "../dressing";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
@@ -183,7 +184,9 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
  *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
  *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
+ *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
+ *   POST /api/dev/booked   {"chat":"demo","optionId"?:"…","confirmation"?:"…"}   land a confirmed booking without a browser
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
@@ -240,6 +243,11 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   if (url.pathname === "/api/dev/card") {
     const plan = samplePlan(url);
     const done = plan.status === "booked" || url.searchParams.get("state") === "done";
+    // kind=icon is the group icon, not a ticket: ?emoji=🎳&venue=… to try one.
+    if (url.searchParams.get("kind") === "icon") {
+      const img = await renderPlanIcon(planEmoji({ emoji: url.searchParams.get("emoji") ?? "🍜" }), url.searchParams.get("venue") ?? "Kinton Ramen");
+      return new Response(await img.arrayBuffer(), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+    }
     const people = ["Maya", "Jordan", "Sam"];
     const tickets: Record<string, Ticket> = {
       plan: planTicket(plan),
@@ -320,6 +328,10 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   if (url.pathname === "/api/dev/tool") {
     const { tool, args } = body as unknown as { tool: string; args?: unknown };
     return Response.json({ result: await agent.devRunTool(tool, args) });
+  }
+  if (url.pathname === "/api/dev/booked") {
+    // Land a confirmed booking without a browser: {"chat":"demo","optionId"?:…,"confirmation"?:…}
+    return Response.json(await agent.devBooked(body.optionId || undefined, body.confirmation || undefined));
   }
   if (url.pathname === "/api/dev/fire") {
     // Run a scheduled callback now instead of waiting for its timer.
@@ -495,12 +507,25 @@ async function handleRuns(request: Request, url: URL, env: Env): Promise<Respons
 
 /** Card PNGs are rendered once per plan version and then served from R2. */
 async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const name = decodeURIComponent(url.pathname.slice("/card/".length));
+  const path = url.pathname.slice("/card/".length);
+  // /card/<chat>/icon.png is the group icon once the plan is booked.
+  const icon = path.endsWith("/icon.png");
+  const name = decodeURIComponent(icon ? path.slice(0, -"/icon.png".length) : path);
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
   const plan = (await agent.state) as PlanState;
 
   // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
   const bucket = (env as { CARDS?: R2Bucket }).CARDS;
+
+  if (icon) {
+    const key = `${name}/icon-${plan.version}.png`;
+    const hit = await bucket?.get(key);
+    if (hit) return new Response(hit.body, { headers: pngHeaders });
+    const venue = plan.options.find((o) => o.id === plan.chosenOptionId)?.title ?? plan.title;
+    const image = await (await renderPlanIcon(planEmoji(plan), venue)).arrayBuffer();
+    if (bucket) ctx.waitUntil(bucket.put(key, image));
+    return new Response(image, { headers: pngHeaders });
+  }
 
   const ticketId = url.searchParams.get("t");
   if (ticketId) {

@@ -21,6 +21,11 @@ export function widgetUrl(env: Env, agentName: string) {
   return `${env.PUBLIC_BASE_URL}/w/${encodeURIComponent(agentName)}`;
 }
 
+/** The square stamp that becomes the group icon once the plan is booked. Linq fetches and re-hosts it. */
+export function planIconUrl(env: Env, agentName: string, version: number) {
+  return `${env.PUBLIC_BASE_URL}/card/${encodeURIComponent(agentName)}/icon.png?v=${version}`;
+}
+
 /** True when a Messages extension identity is configured. */
 export function hasAppIdentity(env: Env) {
   return Boolean(env.IMESSAGE_TEAM_ID && env.IMESSAGE_BUNDLE_ID);
@@ -197,6 +202,28 @@ export const stopTyping = (env: Env, chatId: string) => quietly(env, chatId, "ty
  */
 export const shareContactCard = (env: Env, chatId: string) =>
   quietly(env, chatId, "contact_card", (l) => l.chats.shareContactCard(chatId));
+
+// ------------------------------------------------------------------ dressing
+// The chat itself, once the plan is booked: a name, an icon, a background.
+// Same footing as presence — Linq answers before the phones have changed, and
+// a name or an icon is a group-chat thing — so each is its own quiet call
+// and none can fail the booking that earned it.
+
+/** iOS's animated background; `{ type: "color", variant: "custom", shades: ["#1f5f4f", "#efe7d6"] }` is the ticket's own colours. */
+const BOOKED_BACKGROUND = { type: "dynamic", style: "aurora" } as const;
+
+export type Dressing = { name: string; iconUrl: string };
+
+/** Applies all three and reports each outcome ("ok", "dry", or the error) for the caller's log. */
+export async function dressChat(env: Env, chatId: string, d: Dressing): Promise<{ name: string; icon: string; background: string }> {
+  // Name and icon are separate updates: an icon Linq cannot fetch must not cost the name.
+  const [name, icon, background] = await Promise.all([
+    quietly(env, chatId, "chat_name", (l) => l.chats.update(chatId, { display_name: d.name })),
+    quietly(env, chatId, "chat_icon", (l) => l.chats.update(chatId, { group_chat_icon: d.iconUrl })),
+    quietly(env, chatId, "chat_background", (l) => l.chats.background.set(chatId, BOOKED_BACKGROUND)),
+  ]);
+  return { name, icon, background };
+}
 
 export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
 

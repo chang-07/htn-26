@@ -28,6 +28,7 @@ export const toolSchemas = {
   }),
   propose_plan: z.object({
     title: z.string().describe("Short, e.g. 'Friday dinner'"),
+    emoji: z.string().optional().describe("ONE emoji for the outing: 🍜 ramen, 🎳 bowling, 🧗 climbing. It badges the group chat once the plan is booked."),
     options: z
       .array(
         z.object({

@@ -133,6 +133,29 @@ export async function renderAvatar(initial = "P"): Promise<Response> {
   return new ImageResponse(html, { width: S, height: S, fonts: await loadFonts() });
 }
 
+/**
+ * The group icon once the plan is booked: the outing's emoji over the venue,
+ * in the "done" colours, because a booked plan is a settled one. Like the
+ * avatar it is cropped to a circle, so everything sits inside the middle 70%.
+ */
+export async function renderPlanIcon(emoji: string, venue: string): Promise<Response> {
+  const S = 1024;
+  // A long name is cut at a word when one falls in the back half ("The Ballroom
+  // Bowl Toronto" → "THE BALLROOM"), else mid-word with an ellipsis.
+  const MAX = 16;
+  const cut = venue.length > MAX ? venue.lastIndexOf(" ", MAX) : -1;
+  const label = (cut >= MAX / 2 ? venue.slice(0, cut) : clip(venue, MAX)).toUpperCase();
+  // Shorter names get bigger type; the longest still fits the circle.
+  const size = label.length <= 8 ? 96 : label.length <= 12 ? 78 : 62;
+  const html = `
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:#1f5f4f;color:#f0ece2;">
+    <div style="display:flex;font-size:360px;line-height:1;margin-top:-30px;">${emoji}</div>
+    <div style="display:flex;margin-top:54px;font-family:'Archivo';font-weight:800;font-size:${size}px;line-height:1;letter-spacing:-2px;text-align:center;">${esc(label)}</div>
+    <div style="display:flex;margin-top:30px;font-family:'IBM Plex Mono';font-size:34px;letter-spacing:8px;opacity:0.6;">· BOOKED ·</div>
+  </div>`;
+  return new ImageResponse(html, { width: S, height: S, emoji: "twemoji", fonts: await loadFonts() });
+}
+
 // ------------------------------------------------------------------ builders
 
 const STATUS_META: Record<PlanState["status"], string> = {

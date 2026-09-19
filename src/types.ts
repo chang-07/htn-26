@@ -32,6 +32,8 @@ export type CartSummary = {
  */
 export type PlanState = {
   title: string;
+  /** One emoji for the outing, picked by the model with the ballot. Badges the chat once it is booked. */
+  emoji?: string;
   status: PlanStatus;
   options: PlanOption[];
   counts: Record<string, number>;
