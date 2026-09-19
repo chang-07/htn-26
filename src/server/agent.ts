@@ -8,7 +8,7 @@ import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMat
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
@@ -45,6 +45,10 @@ on a time, book it, and order anything they need.
 - In a one-to-one chat where the area is unknown, offer a choice: they can type
   where they are, or share their location and you will take just the city.
   Call request_location only after they say yes to sharing. Never in a group.
+- When someone says they shared their location, or asks anything that depends on
+  where people are (how far apart, what is between us), call read_locations —
+  it works in groups. Never say a location is set, saved or known unless a tool
+  result in this turn said so.
 - Never invent a venue, address or price. Every option you propose must come
   from the Research findings below or a shop_search result in this conversation.
 - A vote needs at least two real options. If research found only one good
@@ -1447,6 +1451,33 @@ ${transcript}`,
         return "Request sent: their phone is showing the prompt. Say so in one short line, then stop — when they accept, the city is saved and confirmed to them on its own.";
       }
 
+      case "read_locations": {
+        const { people: shared, pairs } = await readPlaces(this.env, this.name);
+        // Counts only: which cities and how far apart is theirs to hear, not the log's to keep.
+        this.note("info", "location.read", { sharing: shared.length, pairs: pairs.length });
+        if (!shared.length) {
+          return "Nobody in this chat is sharing their location with you, so you know nothing about where they are. To share: open this conversation's details in Messages and tap Share My Location. Do not claim to have anyone's location.";
+        }
+        const everyone = this.participants();
+        const who = (handle: string) => this.label(handle, everyone);
+        const ago = (iso?: string) => {
+          if (!iso) return "";
+          const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+          return mins < 2 ? " (just now)" : mins < 90 ? ` (${mins} min ago)` : ` (${Math.round(mins / 60)} h ago — may be stale)`;
+        };
+        for (const pl of shared) {
+          if (pl.locality) await peopleStore(this.env).save(pl.handle, { area: [pl.locality, pl.region].filter(Boolean).join(", ").slice(0, 120) });
+        }
+        // Everyone in one place is the chat's area too, so research has somewhere to look.
+        const cities = [...new Set(shared.map((pl) => pl.locality).filter(Boolean))];
+        if (cities.length === 1 && !this.getMeta("area")) this.setMeta("area", [cities[0], shared[0].region].filter(Boolean).join(", ").slice(0, 120));
+        return [
+          ...shared.map((pl) => `${who(pl.handle)}: ${pl.locality ?? "somewhere Apple gave no city for"}${ago(pl.updatedAt)}`),
+          ...pairs.map((pr) => `${who(pr.a)} and ${who(pr.b)} are ${pr.km < 1 ? "under 1 km" : `about ${pr.km} km`} apart`),
+          "Cities and distances only — you do not have addresses or coordinates, so do not guess at them.",
+        ].join("\n");
+      }
+
       case "remember_name": {
         const { who, name: goesBy } = parseToolArgs("remember_name", rawArgs);
         const person = this.participants().find((p) => this.label(p.handle) === who);
@@ -1997,18 +2028,36 @@ this.rememberCardId(id);
   }
 
   /**
-   * Reads the share, keeps the city, ends the share. Returns the area it saved.
-   * Only acts on a share the agent asked for: someone sharing with the number
-   * unprompted has not agreed to anything, and ending their share for them
-   * would be as wrong as reading it.
+   * Reads the share and keeps the city. Returns the area it saved.
+   *
+   * Two cases, told apart by whether the agent asked:
+   *  - It asked (onboarding): the city was all it wanted, so it ends the share
+   *    and says so.
+   *  - The person shared on their own, from the conversation: that is consent
+   *    to be read, but the share is theirs — it is left running, which is also
+   *    what lets a group ask how far apart everyone is. The first version
+   *    ignored these shares entirely, which left a person who had said "here's
+   *    my location" talking to an agent that acted as if they had not.
    */
   private async takeLocation(simulated?: { handle: string; locality: string; region?: string }): Promise<string | null> {
     const askedAt = Number(this.getMeta("location_asked_at") || 0);
-    if (!askedAt || Date.now() - askedAt > PlanAgent.LOCATION_WINDOW_MS) return null;
+    const asked = Boolean(askedAt) && Date.now() - askedAt <= PlanAgent.LOCATION_WINDOW_MS;
 
     const places = simulated ? [simulated] : await readLocation(this.env, this.name);
     const place = places.find((pl) => pl.locality);
     if (!place?.locality) return null;
+
+    if (!asked) {
+      const area = [place.locality, place.region].filter(Boolean).join(", ").slice(0, 120);
+      // A re-share, or the webhook and a poll both landing, should not repeat the message.
+      if (this.getMeta(`location_seen:${place.handle}`) === area) return area;
+      this.setMeta(`location_seen:${place.handle}`, area);
+      if (!this.getMeta("area")) this.setMeta("area", area);
+      await peopleStore(this.env).save(place.handle, { area });
+      this.note("info", "location.taken", { who: mask(place.handle), area, shareEnded: false, proactive: true });
+      await this.say(`got your location, using ${place.locality} as your area. i only look when someone asks something that needs it, like how far apart you are. stop sharing anytime from the chat details`);
+      return area;
+    }
 
     // Claimed before anything slow, so the webhook and a poll cannot both act.
     this.setMeta("location_asked_at", "");

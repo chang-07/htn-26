@@ -151,7 +151,7 @@ a sleeping message is `message.stored`; a waking one is `message.in` with a
 `wake` reason. Test the gate in the simulator with `"group": true` plus
 `"mention": true` or `"replyTo": "last"` on `/api/dev/message`.
 
-### Location — a city, once, and then the share is ended
+### Location — cities and distances, never coordinates
 
 In a one-to-one chat where the agent doesn't know where someone is, it offers a
 choice: type it, or share location. Only after they say yes does it call
@@ -163,8 +163,16 @@ from its side so it has no way to look again. Coordinates and street addresses
 are never stored or logged — `readLocation` in `linq.ts` drops them before
 anything else sees them.
 
-- **Only a share the agent asked for is read.** Someone sharing with the number
-  unprompted has agreed to nothing, so it is ignored, and their share is left alone.
+- **A share they start themselves is read too, and left running.** Sharing from
+  the conversation is consent to be read — but the share is theirs, so the agent
+  keeps the city and does not end it. (The first version ignored these, which
+  left someone who had said "here's my location" with an agent acting as if
+  they hadn't.) Only a share the agent *asked for* is ended after one read.
+- **"How far apart are we" works in a group.** Reading works anywhere; only
+  *asking* is one-to-one. `read_locations` gives the model a city per person and
+  a rounded distance per pair. The distance is computed inside `linq.ts`, so
+  coordinates never reach the model, the log or storage — `location.read` in
+  run history carries counts only.
 - **1:1 iMessage only** — an Apple limit. The tool refuses in a group before
   anything is sent.
 - **Two ways it hears back.** The `location.sharing.started` webhook is the fast

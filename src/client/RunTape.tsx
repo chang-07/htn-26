@@ -84,8 +84,11 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
     const st = e.event.slice("location.".length);
     return {
       svc: "chat",
-      title: st === "requested" ? "location asked" : st === "taken" ? "city saved" : "sharing started",
-      sub: st === "taken" ? (str(f.area) ?? "") : st === "requested" ? (str(f.result) ?? "") : `from ${str(f.who) ?? "?"}`,
+      title: st === "requested" ? "location asked" : st === "taken" ? "city saved" : st === "read" ? "locations read" : "sharing started",
+      sub:
+        st === "taken" ? (str(f.area) ?? "") :
+        st === "requested" ? (str(f.result) ?? "") :
+        st === "read" ? `${num(f.sharing) ?? 0} sharing` : `from ${str(f.who) ?? "?"}`,
     };
   }
   if (e.event.startsWith("cart.")) {
@@ -142,7 +145,10 @@ function describe(n: Node): string {
     case "booking.finished": return f.ok ? "The reservation went through." : "The booking failed, and the agent has to take that back to the group.";
     case "location.requested": return "The agent asked this person's phone to share its location, after they agreed to.";
     case "location.sharing_started": return "The person accepted, and Linq reported that sharing began.";
-    case "location.taken": return "The agent read the share once, kept only the city, and ended the share.";
+    case "location.taken": return f.proactive
+      ? "Someone shared their location on their own. The agent kept the city and left their share running."
+      : "The agent read the share once, kept only the city, and ended the share.";
+    case "location.read": return "The agent read where the people in this chat are, to answer something that depended on it.";
     case "cart.updated": return "A cart was built at the store and posted to the chat. The agent cannot pay — a person finishes checkout.";
     case "cart.edited": return "The cart's quantities were changed from this page, and the card in the thread was redrawn.";
     case "tool": return ({
@@ -245,9 +251,13 @@ function explain(n: Node): string[] {
     case "location.sharing_started":
       out.push("This event carries no coordinates, only that sharing began. If it never arrives — an older webhook subscription will not send it — the agent checks on a timer instead.");
       break;
+    case "location.read":
+      out.push("Reading works in group chats — only asking someone to share is one-to-one. The model gets a city per person and a rounded distance per pair, and nothing else: the distance is worked out inside linq.ts so coordinates never reach the model, the log, or storage.");
+      out.push("This step shows counts only on purpose. Which cities and how far apart is for the chat to hear, not for run history to keep.");
+      break;
     case "location.taken":
       out.push("Only the city and region were kept, as the person's area, so searches are about the right place. Coordinates and the street address were never stored or logged.");
-      out.push(f.shareEnded ? "The share was then ended from the agent's side, so it has no way to look again." : "Ending the share failed, so the person was told how to stop it themselves.");
+      out.push(f.proactive ? "They started this share themselves, so it was left running — it is theirs to end, and it is what lets the group ask how far apart everyone is." : f.shareEnded ? "The share was then ended from the agent's side, so it has no way to look again." : "Ending the share failed, so the person was told how to stop it themselves.");
       break;
     case "cart.updated":
       out.push("The cart was created at the store and a checkout link came back. The agent cannot pay — the card in the chat carries the link so a person finishes it.");

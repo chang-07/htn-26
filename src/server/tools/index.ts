@@ -13,6 +13,7 @@ export const toolSchemas = {
     area: z.string().describe("Where this group is based, as specifically as they said it, e.g. 'uptown Waterloo, Ontario'"),
   }),
   request_location: z.object({}),
+  read_locations: z.object({}),
   remember_name: z.object({
     who: z.string().describe("The speaker label exactly as shown in the transcript, e.g. …4821"),
     name: z.string().describe("What they go by"),
@@ -182,6 +183,8 @@ const descriptions: Record<ToolName, string> = {
     "Remember where this group is based, as soon as anyone says it. Every later search uses it, so nobody has to repeat it.",
   request_location:
     "One-to-one chats only, and only after the person has said yes to sharing. Sends their phone a prompt to share location; when they accept, the city is remembered as their area on its own and the share is ended straight away — nothing is tracked. After calling it, say one line and stop. If it is refused, ask them to type where they are instead.",
+  read_locations:
+    "Read where the people in this chat are, for anyone sharing their location with you. Works in groups and one-to-one. Returns each person's city and how far apart they are. Call it whenever someone says they shared their location, or asks anything that depends on where people are: how far apart they are, what is between them, what is near them.",
   remember_name: "Remember what a participant goes by, once they or someone else says it.",
   research:
     "Research real options on the live web: reads guides, lists and venue sites, then returns ranked places with sources. Runs in the background for a few minutes and the results arrive on their own — say you're looking into it, then stop. Use it once the group has given you something to go on (what, where, roughly when).",
