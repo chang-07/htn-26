@@ -107,11 +107,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 const isDry = (env: Env, chatId: string) => !env.LINQ_API_KEY || !UUID.test(chatId);
 
-export async function sendText(env: Env, chatId: string, value: string) {
-  if (isDry(env, chatId)) return void log("info", "linq", "dry.text", { chat: short(chatId), text: value });
-  return linqClient(env).chats.messages.send(chatId, {
+export async function sendText(env: Env, chatId: string, value: string): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.text", { chat: short(chatId), text: value });
+    return `dry-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
     message: { parts: [{ type: "text", value }] },
   });
+  return res.message.id;
 }
 
 /**

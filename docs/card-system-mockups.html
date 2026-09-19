@@ -1,0 +1,287 @@
+<title>Ticket Card System</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+  :root{
+    --desk:#dde2dd; --panel:#e9ece8; --text:#1b211d; --muted:#57615a; --line:#c2cac3; --tag:#1f5f4f; --tag-ink:#f0ece2;
+    --warn:#8a4b12;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --desk:#141819; --panel:#1b2021; --text:#e5e9e3; --muted:#98a39b; --line:#2d3635; --tag:#2b7a66; --tag-ink:#f0ece2;
+      --warn:#e0a566;
+    }
+  }
+  :root[data-theme="dark"]{
+    --desk:#141819; --panel:#1b2021; --text:#e5e9e3; --muted:#98a39b; --line:#2d3635; --tag:#2b7a66; --tag-ink:#f0ece2;
+    --warn:#e0a566;
+  }
+
+  body{background:var(--desk);color:var(--text);font-family:"IBM Plex Sans",system-ui,sans-serif;
+    font-size:15px;line-height:1.55;padding-inline:20px;padding-block:40px 72px;}
+  .wrap{max-width:900px;margin-inline:auto;display:flex;flex-direction:column;gap:52px;}
+  h1,h2{font-family:"Archivo",system-ui,sans-serif;font-weight:800;letter-spacing:-.02em;margin:0;text-wrap:balance;}
+  h1{font-size:38px;line-height:1.02;}
+  h2{font-size:24px;line-height:1.1;}
+  p{margin:0;max-width:64ch;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted);}
+  header{display:flex;flex-direction:column;gap:14px;}
+  .rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1px;background:var(--line);
+    border:1px solid var(--line);margin-top:6px;}
+  .rules div{background:var(--panel);padding:14px 16px;display:flex;flex-direction:column;gap:4px;font-size:14px;}
+  .rules b{font-family:"Archivo",sans-serif;font-weight:600;font-size:15px;}
+
+  section{display:flex;flex-direction:column;gap:16px;}
+  .head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;}
+  .built{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    background:var(--tag);color:var(--tag-ink);padding:3px 8px;border-radius:3px;}
+  .new{background:transparent;color:var(--muted);box-shadow:inset 0 0 0 1px var(--line);}
+  .pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px;}
+  .slot{display:flex;flex-direction:column;gap:8px;min-width:0;}
+  .notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px 28px;font-size:14px;
+    border-top:1px solid var(--line);padding-top:12px;}
+  .notes div{display:flex;flex-direction:column;gap:2px;}
+  .gap{color:var(--warn);}
+
+  /* ---------- the ticket: 360x240 design, scaled by container width ---------- */
+  .tk{--u:calc(100cqw / 360);container-type:inline-size;width:100%;max-width:440px;}
+  .tk-in{aspect-ratio:3/2;position:relative;display:flex;overflow:hidden;border-radius:calc(14 * var(--u));
+    background:#efe7d6;color:#241f17;font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:500;
+    box-shadow:0 1px 2px rgba(0,0,0,.18),0 10px 24px -12px rgba(0,0,0,.35);}
+  .tk.ok .tk-in{background:#1f5f4f;color:#f0ece2;}
+  .tk-main{flex:1;min-width:0;display:flex;flex-direction:column;padding:calc(15 * var(--u)) calc(12 * var(--u)) calc(16 * var(--u)) calc(16 * var(--u));}
+  .tk-top{display:flex;justify-content:space-between;gap:calc(8 * var(--u));font-size:calc(9.3 * var(--u));
+    letter-spacing:.13em;text-transform:uppercase;opacity:.62;white-space:nowrap;}
+  .tk-ttl{font-family:"Archivo",sans-serif;font-weight:800;font-size:calc(23 * var(--u));line-height:1;
+    letter-spacing:-.02em;margin-top:calc(5 * var(--u));}
+  .tk-sub{font-size:calc(10 * var(--u));opacity:.7;margin-top:calc(5 * var(--u));}
+  .tk-fill{flex:1;}
+  .tk-rows{display:flex;flex-direction:column;gap:calc(4 * var(--u));}
+  .tk-row{display:flex;align-items:baseline;gap:calc(7 * var(--u));font-size:calc(11.2 * var(--u));white-space:nowrap;}
+  .tk-row i{font-style:normal;width:calc(16 * var(--u));flex:none;text-align:center;}
+  .tk-row s{text-decoration:none;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;}
+  .tk-row u{text-decoration:none;opacity:.62;flex:none;}
+  .tk-row.dim{opacity:.5;}
+  .tk-row.rule{border-top:calc(1 * var(--u)) dashed currentColor;padding-top:calc(5 * var(--u));margin-top:calc(2 * var(--u));}
+  .tk-perf{width:calc(2 * var(--u));flex:none;opacity:.32;
+    background-image:radial-gradient(circle,currentColor calc(1.1 * var(--u)),transparent calc(1.2 * var(--u)));
+    background-size:calc(2 * var(--u)) calc(9 * var(--u));}
+  .tk-stub{width:calc(58 * var(--u));flex:none;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:calc(5 * var(--u));text-align:center;}
+  .tk-stub b{font-family:"Archivo",sans-serif;font-weight:800;font-size:calc(20 * var(--u));line-height:1;}
+  .tk-stub b.sm{font-size:calc(15 * var(--u));}
+  .tk-stub span{font-size:calc(8.3 * var(--u));letter-spacing:.1em;text-transform:uppercase;opacity:.6;line-height:1.25;}
+  /* venue photo: a real image in production; hatched stand-in here */
+  .tk-photo{width:calc(96 * var(--u));flex:none;display:flex;align-items:flex-end;padding:calc(7 * var(--u));
+    font-size:calc(7.5 * var(--u));letter-spacing:.1em;text-transform:uppercase;color:#efe7d6;
+    background:repeating-linear-gradient(135deg,#6b5a44 0 calc(6 * var(--u)),#5d4e3b calc(6 * var(--u)) calc(12 * var(--u)));}
+  .tk.ok .tk-photo{background:repeating-linear-gradient(135deg,#2f7a66 0 calc(6 * var(--u)),#286b59 calc(6 * var(--u)) calc(12 * var(--u)));}
+  .faces{display:flex;gap:calc(6 * var(--u));margin-top:calc(8 * var(--u));}
+  .face{width:calc(30 * var(--u));height:calc(30 * var(--u));border-radius:50%;display:flex;align-items:center;
+    justify-content:center;font-family:"Archivo",sans-serif;font-weight:800;font-size:calc(13 * var(--u));
+    background:currentColor;}
+  .face em{font-style:normal;color:#efe7d6;}
+  .tk.ok .face em{color:#1f5f4f;}
+  footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direction:column;gap:8px;font-size:14px;color:var(--muted);}
+  footer b{color:var(--text);font-weight:500;}
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="mono">HTN planner · card mockups, round two</span>
+    <h1>One ticket, six jobs</h1>
+    <p>The plan card settled on a ticket stub. These mockups stretch that one object over everything else the agent
+    posts, so the chat reads as one product. Each card is shown open and resolved, at the 3:2 size the renderer already produces.</p>
+    <div class="rules">
+      <div><b>Ground colour is the state</b>Cream means it still needs someone. Green means it is settled. No third colour.</div>
+      <div><b>The stub counts one thing</b>Votes, people in, dollars, things in common. Always the number the group cares about next.</div>
+      <div><b>Body is rows, never prose</b>Four rows at most, each one fact. Anything longer belongs on the page behind the button.</div>
+    </div>
+  </header>
+
+  <section>
+    <div class="head"><h2>Plan vote</h2><span class="built">Built</span></div>
+    <p>The reference card, already rendering. Everything below inherits its paper, faces, perforation and stub.</p>
+    <div class="pair">
+      <div class="slot"><span class="mono">Voting</span>
+        <div class="tk"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>React to vote</span><span>3 options</span></div>
+          <div class="tk-ttl">Friday dinner</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>❤️</i><s>Death Valley's Little Brother</s><u>x2</u></div>
+            <div class="tk-row"><i>👍</i><s>Graffiti Market</s><u>x1</u></div>
+            <div class="tk-row"><i>😂</i><s>Beertown Public House</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>3</b><span>Votes</span></div></div></div>
+      </div>
+      <div class="slot"><span class="mono">Booked</span>
+        <div class="tk ok"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>Confirmed</span><span>See you there</span></div>
+          <div class="tk-ttl">Death Valley's Little Brother</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><s>Fri Sept 25 · 8:00 PM</s></div>
+            <div class="tk-row"><s>Table for 6 · conf #R7K2</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>GO</b><span>Booked</span></div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Match intro</h2><span class="built new">New</span></div>
+    <p>The stage moment. Posted into a fresh chat with the two people the matcher paired, then redrawn once they agree on a date.</p>
+    <div class="pair">
+      <div class="slot"><span class="mono">Introduced</span>
+        <div class="tk"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>You two should meet</span><span>Both opted in</span></div>
+          <div class="faces"><div class="face"><em>M</em></div><div class="face"><em>J</em></div></div>
+          <div class="tk-ttl">Maya &amp; Jordan</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>🧗</i><s>Bouldering, both V4-ish</s></div>
+            <div class="tk-row"><i>🍜</i><s>Will travel for ramen</s></div>
+            <div class="tk-row"><i>🎞</i><s>Shoot film cameras</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>3</b><span>In<br>common</span></div></div></div>
+      </div>
+      <div class="slot"><span class="mono">Date set</span>
+        <div class="tk ok"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>It's a date</span><span>Sat Sept 26</span></div>
+          <div class="faces"><div class="face"><em>M</em></div><div class="face"><em>J</em></div></div>
+          <div class="tk-ttl">Climb, then ramen</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>🧗</i><s>5:30 · Basecamp Climbing</s></div>
+            <div class="tk-row"><i>🍜</i><s>7:30 · Kinton Ramen, table for 2</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>GO</b><span>Sat<br>5:30</span></div></div></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div><span class="mono">Have</span>Names, each person's interest blurb, the match from the people index.</div>
+      <div><span class="mono gap">Missing</span>The three "in common" lines. The model has to distil them from two blurbs, so they need a one-line-each limit.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Venue</h2><span class="built new">New</span></div>
+    <p>One card per place the research run finds, sent before the vote so people see what they are choosing between.
+    The stub carries that venue's tapback, so the card teaches the voting convention by itself.</p>
+    <div class="pair">
+      <div class="slot"><span class="mono">Candidate</span>
+        <div class="tk"><div class="tk-in"><div class="tk-photo">Venue photo</div><div class="tk-main">
+          <div class="tk-top"><span>Ramen · $$</span><span>0.4 km</span></div>
+          <div class="tk-ttl">Kinton Ramen</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><s>Open till 11 PM</s></div>
+            <div class="tk-row"><s>Tables 7:30 · 8:00 · 8:45</s></div>
+            <div class="tk-row"><s>Pork-free broth option</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>❤️</b><span>To pick<br>2 so far</span></div></div></div>
+      </div>
+      <div class="slot"><span class="mono">Picked</span>
+        <div class="tk ok"><div class="tk-in"><div class="tk-photo">Venue photo</div><div class="tk-main">
+          <div class="tk-top"><span>The group picked</span><span>4 of 6</span></div>
+          <div class="tk-ttl">Kinton Ramen</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><s>Fri · 8:00 PM</s></div>
+            <div class="tk-row"><s>51 Baldwin St</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b class="sm">WON</b><span>4 votes</span></div></div></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div><span class="mono">Have</span>Name, category and booking link from research; vote counts.</div>
+      <div><span class="mono gap">Missing</span>A photo, price band, distance and open tables. Research returns page text, not these fields, so it needs a structured extract step. Without a photo the card falls back to the plain layout.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Who's in</h2><span class="built new">New</span></div>
+    <p>Sent once a plan is booked or a time is fixed. People answer with a tapback, the same way they vote.</p>
+    <div class="pair">
+      <div class="slot"><span class="mono">Collecting</span>
+        <div class="tk"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>👍 in · 👎 out</span><span>Fri 8:00 PM</span></div>
+          <div class="tk-ttl">Who's in?</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>👍</i><s>Maya, Jordan, Sam</s></div>
+            <div class="tk-row"><i>👎</i><s>Priya</s></div>
+            <div class="tk-row dim"><i>…</i><s>Alex, Dev</s><u>no reply</u></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>3/6</b><span>In</span></div></div></div>
+      </div>
+      <div class="slot"><span class="mono">Locked</span>
+        <div class="tk ok"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>Headcount locked</span><span>Fri 8:00 PM</span></div>
+          <div class="tk-ttl">Table for five</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>👍</i><s>Maya, Jordan, Sam, Alex, Dev</s></div>
+            <div class="tk-row dim"><i>👎</i><s>Priya</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>5</b><span>Going</span></div></div></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div><span class="mono">Have</span>Participant names and the list of people who have not answered.</div>
+      <div><span class="mono gap">Missing</span>An RSVP store and a second tapback mapping. Votes and RSVPs would both use 👍, so each card has to own its own reactions.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Order</h2><span class="built">Built, old style</span></div>
+    <p>The Shopify cart, restyled from its current dark card. The split row is the new idea: the agent knows the headcount, so it can do the division.</p>
+    <div class="pair">
+      <div class="slot"><span class="mono">Needs a payer</span>
+        <div class="tk"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>levainbakery.com</span><span>4 boxes</span></div>
+          <div class="tk-ttl">Cookies for Sam</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>3×</i><s>Chocolate Chip Walnut, 4 pk</s><u>$96</u></div>
+            <div class="tk-row"><i>1×</i><s>Signature Assortment, 4 pk</s><u>$32</u></div>
+            <div class="tk-row rule"><s>Split 4 ways</s><u>$32 each</u></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b class="sm">$128</b><span>Tap to<br>pay</span></div></div></div>
+      </div>
+      <div class="slot"><span class="mono">Paid</span>
+        <div class="tk ok"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>Ordered</span><span>levainbakery.com</span></div>
+          <div class="tk-ttl">Cookies for Sam</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><s>Maya paid · $128.00</s></div>
+            <div class="tk-row"><s>Jordan, Sam, Dev owe $32 each</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b class="sm">PAID</b><span>$128</span></div></div></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div><span class="mono">Have</span>Shop, line items, prices, total and product photos, all live from the store.</div>
+      <div><span class="mono gap">Missing</span>Any signal that someone paid. The store never tells us, so "Paid" only happens when a person says so in the chat. The order title is also invented here; today we only know the shop.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Looking into it</h2><span class="built new">New</span></div>
+    <p>Research takes minutes. This fills the silence with something that visibly moves, then hands over to the venue cards.</p>
+    <div class="pair">
+      <div class="slot"><span class="mono">Working</span>
+        <div class="tk"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>On it</span><span>About 3 min</span></div>
+          <div class="tk-ttl">Ramen near Kensington</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><i>✓</i><s>Searched 3 sources</s></div>
+            <div class="tk-row"><i>✓</i><s>Read 7 menus</s></div>
+            <div class="tk-row dim"><i>…</i><s>Checking Friday tables</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>7</b><span>Places<br>read</span></div></div></div>
+      </div>
+      <div class="slot"><span class="mono">Done</span>
+        <div class="tk ok"><div class="tk-in"><div class="tk-main">
+          <div class="tk-top"><span>Found</span><span>3 min 12 s</span></div>
+          <div class="tk-ttl">Three worth a look</div><div class="tk-fill"></div>
+          <div class="tk-rows">
+            <div class="tk-row"><s>Kinton · Crafty · Ken Sushi House</s></div>
+            <div class="tk-row"><s>All have Friday tables for 6</s></div>
+          </div></div><div class="tk-perf"></div><div class="tk-stub"><b>3</b><span>Picks</span></div></div></div>
+      </div>
+    </div>
+    <div class="notes">
+      <div><span class="mono">Have</span>The research workflow already runs in named steps and reports back.</div>
+      <div><span class="mono gap">Missing</span>Progress events between steps. It also only makes sense as a bubble that redraws in place; as a photo it would need a resend per step, which is the spam problem again.</div>
+    </div>
+  </section>
+
+  <footer>
+    <span class="mono">Before any of this is built</span>
+    <p><b>Where these appear.</b> Agent Apps draws the bubble on phones that have it, so every card here reaches the thread as a photo, or lives on the page behind the button. Photos cannot redraw, which is why each card has exactly two states: one photo when it opens, one when it resolves.</p>
+    <p><b>What ports cleanly.</b> Everything is flex rows and columns. The perforation is a gradient here and a column of dots in the renderer, as on the plan card. The venue photo is the only remote image, and the cart card already proves those load.</p>
+    <p><b>Suggested order.</b> Match intro, venue, who's in, then the order restyle. Looking-into-it last, and only if in-place redraw turns out to work for phones without the app.</p>
+  </footer>
+</div>

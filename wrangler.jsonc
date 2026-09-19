@@ -14,10 +14,29 @@
 
   // One PlanAgent per iMessage group chat. Each is a Durable Object with its
   // own SQLite database, WebSockets and scheduler.
+  // RunHub is a singleton: the only writer to the run-history D1 tables, and
+  // the socket every open run viewer holds.
   "durable_objects": {
-    "bindings": [{ "name": "PlanAgent", "class_name": "PlanAgent" }]
+    "bindings": [
+      { "name": "PlanAgent", "class_name": "PlanAgent" },
+      { "name": "RunHub", "class_name": "RunHub" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PlanAgent"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PlanAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["RunHub"] }
+  ],
+
+  // Run history: every agent turn, its events, tokens and timings.
+  //   npx wrangler d1 execute htn-runs --local  --file migrations/0001_runs.sql
+  //   npx wrangler d1 execute htn-runs --remote --file migrations/0001_runs.sql
+  "d1_databases": [
+    {
+      "binding": "RUNS_DB",
+      "database_name": "htn-runs",
+      "database_id": "39a6971f-8c14-4c6d-ac41-165efcf6eb38"
+    }
+  ],
 
   "workflows": [
     {

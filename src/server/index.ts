@@ -9,11 +9,13 @@ import type { PlanAgent as PlanAgentClass } from "./agent";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { renderCard, renderCartCard } from "./card";
 import { errorFields, log, short } from "./log";
+import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
 import type { PlanState } from "../types";
 
 export { PlanAgent } from "./agent";
 export { BookingWorkflow } from "./booking";
 export { ResearchWorkflow } from "./research";
+export { RunHub } from "./runs";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -26,6 +28,12 @@ export default {
     // Simulator: drive an agent without Linq. Never reachable once deployed.
     if (url.pathname.startsWith("/api/dev/") && isLocal(url)) {
       return handleDev(request, url, env);
+    }
+
+    // Run history. Unlike /api/dev/*, this is reachable from the deployed
+    // Worker: the runs worth looking at are the ones driven by real texts.
+    if (url.pathname === "/api/runs" || url.pathname.startsWith("/api/runs/")) {
+      return requireRunsAuth(request, url, env) ?? handleRuns(url, env);
     }
 
     if (url.pathname.startsWith("/card/")) {
@@ -89,6 +97,8 @@ async function handleLinqWebhook(request: Request, env: Env): Promise<Response> 
           from: msg.sender_handle.handle,
           text,
           isGroup: msg.chat.is_group ?? undefined,
+          mentionsMe: msg.parts.some((p) => p.type === "text" && (p.mentions ?? []).some((m) => m.is_me)),
+          replyToId: msg.reply_to?.message_id,
         });
         break;
       }
@@ -117,9 +127,11 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
+ *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
  *   GET  /api/dev/card?status=voting|booking|booked|failed&title=..&o=A&o=B&votes=2,1&kind=cart   card preview from sample data
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
+ *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
  *   POST /api/dev/research {"chat":"demo","brief":"...","near":"...","depth":"quick"}   start a run without the model
@@ -164,7 +176,17 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
 
   if (url.pathname === "/api/dev/message") {
-    await agent.ingestMessage({ linqId: crypto.randomUUID(), from: body.from, text: body.text });
+    // Defaults to a direct chat (always answered). Pass "group": true to test the
+    // wake gate, with "mention": true or "replyTo": "last" | "<message id>".
+    const opts = body as unknown as { group?: boolean; mention?: boolean; replyTo?: string };
+    await agent.ingestMessage({
+      linqId: crypto.randomUUID(),
+      from: body.from,
+      text: body.text,
+      isGroup: opts.group === true,
+      mentionsMe: opts.mention === true,
+      replyToId: opts.replyTo === "last" ? await agent.lastOwnMessageId() : opts.replyTo,
+    });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/react") {
@@ -176,6 +198,14 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   if (url.pathname === "/api/dev/tool") {
     const { tool, args } = body as unknown as { tool: string; args?: unknown };
     return Response.json({ result: await agent.devRunTool(tool, args) });
+  }
+  if (url.pathname === "/api/dev/fire") {
+    // Run a scheduled callback now instead of waiting for its timer.
+    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: () => agent.nudge(), runTurn: () => agent.runTurn() };
+    const run = callbacks[body.callback as keyof typeof callbacks];
+    if (!run) return Response.json({ error: `callback must be one of ${Object.keys(callbacks).join(", ")}` }, { status: 400 });
+    await run();
+    return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/dump") {
     return Response.json(await agent.dump());
@@ -208,6 +238,35 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     }
   }
   return new Response("Not found", { status: 404 });
+}
+
+/**
+ *   GET /api/runs?chat=&outcome=&level=&before=&limit=   newest runs first
+ *   GET /api/runs/chats                                  chats that have runs
+ *   GET /api/runs/<runId>                                one run and its events
+ *
+ * Live updates arrive separately, over the RunHub WebSocket that
+ * routeAgentRequest serves at /agents/run-hub/global.
+ */
+async function handleRuns(url: URL, env: Env): Promise<Response> {
+  const rest = url.pathname.slice("/api/runs".length).replace(/^\//, "");
+  const q = url.searchParams;
+
+  if (!rest) {
+    const runs = await listRuns(env, {
+      chat: q.get("chat") ?? undefined,
+      outcome: q.get("outcome") ?? undefined,
+      level: q.get("level") ?? undefined,
+      before: q.get("before") ? Number(q.get("before")) : undefined,
+      limit: q.get("limit") ? Number(q.get("limit")) : undefined,
+    });
+    // Cursor for the next page: the viewer passes it back as ?before=.
+    return Response.json({ runs, before: runs.at(-1)?.started ?? null });
+  }
+  if (rest === "chats") return Response.json({ chats: await listChats(env) });
+
+  const detail = await getRun(env, rest);
+  return detail ? Response.json(detail) : new Response("no such run", { status: 404 });
 }
 
 /** Card PNGs are rendered once per plan version and then served from R2. */

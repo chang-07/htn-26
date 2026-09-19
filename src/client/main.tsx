@@ -1,10 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Widget } from "./Widget";
+import { Runs } from "./Runs";
 
 function App() {
   // /w/<agent name> — the agent name is the Linq chat id, which doubles as an
   // unguessable capability for the vote page.
+  // /runs — the agent-run viewer. Full-bleed, so it skips Shell.
+  if (window.location.pathname.startsWith("/runs")) return <Runs />;
+
   const match = window.location.pathname.match(/^\/w\/(.+)$/);
   if (!match) {
     return (

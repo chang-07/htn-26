@@ -9,6 +9,7 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { searchPlaces } from "./tools/places";
 import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
+import { RunRecorder } from "./runs";
 import type { BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
@@ -42,15 +43,31 @@ on a time, book it, and order anything they need.
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
 - Only add someone to the match pool when they themselves asked to join.
-- Most messages in a group chat are not for you. If you have nothing useful to
-  add, reply with exactly NOOP and nothing else.`;
+- In a group you sleep while people talk among themselves, and are woken only
+  when someone @mentions you, replies to one of your messages, or answers a
+  question you asked. You have still read everything said while you slept — use
+  it, and do not ask for anything the group already said. When woken with a
+  request, start by confirming what you understood in one line.
+- If, despite being woken, there is truly nothing for you to do, reply with
+  exactly NOOP and nothing else.`;
 
 const MAX_STEPS = 8;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
 const EVENT_HISTORY = 300;
 /** A run that has not reported back by now is treated as lost, so the chat is not stuck. */
+/**
+ * After asking the group something, un-addressed messages wake the agent for a
+ * while, since people answer a question without @mentioning. The window closes
+ * when the agent next speaks. It is capped because side chatter lands in it too,
+ * and each of those wakes is a model call that ends in silence.
+ */
+const ANSWER_WINDOW_MS = 3 * 60 * 1000;
+const ANSWER_WINDOW_MAX_WAKES = 3;
 const RESEARCH_STALE_MS = 15 * 60 * 1000;
+/** A healthy run reports a stage every few seconds to a couple of minutes. */
+const RESEARCH_SILENCE_LIMIT_MS = 3 * 60 * 1000;
+const RESEARCH_WATCHDOG_SECONDS = 60;
 
 type Row = Record<string, string | number | boolean | null>;
 
@@ -65,6 +82,16 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   private turnRunning = false;
   private turnRequested = false;
+
+  /**
+   * Mirrors this chat's events into the cross-chat run history, grouped into
+   * turns. Lazy because it needs `this.name`, which is not set at field-init
+   * time. Writes go out through waitUntil, so a turn never waits on them.
+   */
+  private runs?: RunRecorder;
+  private recorder() {
+    return (this.runs ??= new RunRecorder(this.env, this.name, (promise) => this.ctx.waitUntil(promise)));
+  }
 
   async onStart() {
     this.sql`CREATE TABLE IF NOT EXISTS messages (
@@ -94,10 +121,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * Logs to the console *and* to this chat's own event history. The console
    * scrolls away and `wrangler tail` only shows what happens while you watch;
    * the history answers "what did the agent do with that message an hour ago?"
-   * via GET /api/dev/logs?chat=<id>.
+   * via GET /api/dev/logs?chat=<id>, and feeds the run viewer at /runs.
    */
   private note = (level: Level, event: string, fields: Fields = {}) => {
     log(level, "agent", event, { chat: short(this.name), ...fields });
+    this.recorder().record(level, event, fields);
     this.sql`INSERT INTO events (ts, level, event, fields) VALUES (${Date.now()}, ${level}, ${event}, ${JSON.stringify(fields)})`;
     this.sql`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ${EVENT_HISTORY}`;
   };
@@ -106,21 +134,61 @@ export class PlanAgent extends Agent<Env, PlanState> {
   // Called over RPC by the webhook Worker. These return quickly: the slow
   // agent turn is handed to the scheduler so Linq gets its 200 immediately.
 
-  async ingestMessage(msg: { linqId: string; from: string; text: string; isGroup?: boolean }) {
+  async ingestMessage(msg: {
+    linqId: string;
+    from: string;
+    text: string;
+    isGroup?: boolean;
+    /** Linq marks each @mention with is_me, so no name or wake word is involved. */
+    mentionsMe?: boolean;
+    /** Id of the message this one replies to, if it is an inline reply. */
+    replyToId?: string;
+  }) {
     const seen = this.sql<Row>`SELECT 1 FROM messages WHERE linq_id = ${msg.linqId}`;
     if (seen.length) {
       this.note("info", "message.duplicate", { linqId: short(msg.linqId) }); // Linq retries webhooks
       return;
     }
-    this.note("info", "message.in", { from: mask(msg.from), chars: msg.text.length, group: msg.isGroup });
 
     if (msg.isGroup !== undefined) this.setMeta("is_group", msg.isGroup ? "1" : "0");
     this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${msg.from})`;
     this.sql`INSERT INTO messages (linq_id, direction, author, body, ts)
              VALUES (${msg.linqId}, 'in', ${msg.from}, ${msg.text}, ${Date.now()})`;
 
+    // Every message is remembered, but only one addressed to the agent wakes the
+    // model. Group chatter costs no tokens and draws no interjections; when the
+    // agent is finally called on, the whole conversation is already in its memory.
+    const wake = this.wakeReason(msg);
+    this.note("info", wake ? "message.in" : "message.stored", {
+      from: mask(msg.from),
+      chars: msg.text.length,
+      group: msg.isGroup,
+      ...(wake ? { wake } : {}),
+    });
+    if (!wake) return;
+
     // A short delay batches a burst of texts into a single turn.
     await this.schedule(2, "runTurn");
+  }
+
+  /** Why this message should wake the model, or null to stay asleep. */
+  private wakeReason(msg: { isGroup?: boolean; mentionsMe?: boolean; replyToId?: string }): string | null {
+    if (this.getMeta("is_group") !== "1") return "direct chat";
+    if (msg.mentionsMe) return "mention";
+    if (msg.replyToId && this.isOwnMessage(msg.replyToId)) return "reply";
+    if (Date.now() < Number(this.getMeta("awaiting_answer_until") ?? 0)) {
+      const wakes = Number(this.getMeta("awaiting_answer_wakes") ?? 0) + 1;
+      this.setMeta("awaiting_answer_wakes", String(wakes));
+      if (wakes >= ANSWER_WINDOW_MAX_WAKES) this.setMeta("awaiting_answer_until", "0");
+      return "answer";
+    }
+    return null;
+  }
+
+  /** True for anything the agent posted: texts, and every id a card has had. */
+  private isOwnMessage(id: string) {
+    if (this.cardIds().includes(id) || id === this.getMeta("cart_message_id")) return true;
+    return this.sql<Row>`SELECT 1 FROM messages WHERE linq_id = ${id} AND direction = 'out'`.length > 0;
   }
 
   async ingestReaction(r: { messageId: string; from: string; reactionType: string }) {
@@ -240,8 +308,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   private async say(text: string) {
-    await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text), this.note);
-    this.sql`INSERT INTO messages (direction, body, ts) VALUES ('out', ${text}, ${Date.now()})`;
+    this.setMeta("awaiting_answer_until", "0");
+    const id = await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text), this.note);
+    this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${text}, ${Date.now()})`;
   }
 
   // ------------------------------------------------------------- agent turn
@@ -407,6 +476,8 @@ ${transcript}`,
       }
 
       if (askedQuestion) {
+        this.setMeta("awaiting_answer_until", String(Date.now() + ANSWER_WINDOW_MS));
+        this.setMeta("awaiting_answer_wakes", "0");
         end("info", "replied", { steps: step + 1, awaitingAnswer: true });
         if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
         return;
@@ -577,6 +648,9 @@ ${transcript}`,
       return "Research is already running. Wait for it to finish.";
     }
     this.setMeta("research_started", String(Date.now()));
+    this.setMeta("research_progress_at", String(Date.now()));
+    this.setMeta("research_brief", params.brief.slice(0, 200));
+    await this.schedule(RESEARCH_WATCHDOG_SECONDS, "researchWatchdog");
     const workflowId = await this.runWorkflow("RESEARCH_WORKFLOW", params);
     this.note("info", "research.started", { workflowId: short(workflowId), depth: params.depth, brief: params.brief.slice(0, 120), near: params.near });
     return "Research started; it takes a few minutes. Tell the group you're looking into it in one short line, then stop. The findings will arrive on their own.";
@@ -584,7 +658,36 @@ ${transcript}`,
 
   /** Called over RPC by ResearchWorkflow as it moves through its stages. */
   async researchProgress(stage: string, fields: Fields = {}) {
+    this.setMeta("research_progress_at", String(Date.now()));
     this.note("info", `research.${stage}`, fields);
+  }
+
+  /**
+   * Scheduler callback. A run whose workflow dies (runtime restart, Browserbase
+   * outage, an exception outside a step) never calls researchFinished, and the
+   * agent — having told the group it is "looking into it" — would wait in
+   * silence forever. A run that has reported nothing for a while is declared
+   * dead and sent down the normal failure path, which tells the group. If the
+   * run was merely slow, its real result still arrives later and is shared.
+   */
+  async researchWatchdog() {
+    const since = Number(this.getMeta("research_started") ?? 0);
+    if (!since) return; // finished normally
+    const silentFor = Date.now() - Number(this.getMeta("research_progress_at") ?? since);
+    if (silentFor < RESEARCH_SILENCE_LIMIT_MS) {
+      await this.schedule(RESEARCH_WATCHDOG_SECONDS, "researchWatchdog");
+      return;
+    }
+    this.note("warn", "research.abandoned", { silentForS: Math.round(silentFor / 1000) });
+    await this.researchFinished({
+      ok: false,
+      brief: this.getMeta("research_brief") ?? "",
+      summary: "",
+      candidates: [],
+      stats: { queries: 0, hits: 0, pagesRead: 0, pagesFailed: 0, tokens: 0, ms: Date.now() - since },
+      sessions: [],
+      detail: "the search stopped responding partway through (a system problem, not a lack of results); offer to try again",
+    });
   }
 
   /** Called over RPC by ResearchWorkflow when it finishes, either way. */
@@ -654,6 +757,12 @@ ${transcript}`,
   async devRunTool(tool: string, args: unknown) {
     this.note("info", "dev.tool", { tool });
     return this.runTool(tool, JSON.stringify(args ?? {}));
+  }
+
+  /** Simulator only: id of the agent's most recent text, to simulate replying to it. */
+  async lastOwnMessageId() {
+    return this.sql<{ linq_id: string }>`
+      SELECT linq_id FROM messages WHERE direction = 'out' AND linq_id IS NOT NULL ORDER BY id DESC LIMIT 1`[0]?.linq_id;
   }
 
   /** Simulator only: the plan card's current message id. */

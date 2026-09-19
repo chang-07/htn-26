@@ -81,6 +81,25 @@ secret each time. If the tunnel answers 404 for everything, an existing
 UUIDs always stay on the dry transport, so the simulator never texts anyone even
 with a live key.
 
+### When the agent wakes
+
+In a group the agent sleeps while people talk. Every message is stored in its
+memory, but the model runs only when a message is addressed to it, so chatter
+costs no tokens and draws no interjections — and when it is called on, it has
+already read the whole conversation.
+
+| Wakes the model | How it is detected |
+|---|---|
+| An @mention of the agent | Linq marks each mention with `is_me` — no name or wake word |
+| An inline reply to one of its messages | `reply_to.message_id` matches a text or card the agent sent |
+| An answer to a question it just asked | any message within 3 minutes of its question, until it next speaks (max 3 wakes) |
+| Anything in a one-to-one chat | there is nobody else it could be for |
+
+Votes, research results and booking results wake it too, as before. In the logs
+a sleeping message is `message.stored`; a waking one is `message.in` with a
+`wake` reason. Test the gate in the simulator with `"group": true` plus
+`"mention": true` or `"replyTo": "last"` on `/api/dev/message`.
+
 ### Logging — "why didn't it reply?"
 
 Every hop logs one line in the same shape, `scope event {fields}`:
@@ -110,6 +129,62 @@ Deployed, the same lines appear in `npx wrangler tail` and in Workers Logs.
 
 Simulator chat ids (anything that is not a UUID) always use the dry Linq
 transport, even with a live `LINQ_API_KEY`, so testing never texts anyone.
+
+### Run viewer — what the agent did, turn by turn
+
+`/runs` is a live view of every run across every chat: the run list on the left,
+a timeline of the selected run on the right. It fills in step by step while a
+turn is happening, so a text sent to the number shows up a moment later.
+
+```sh
+open http://localhost:5173/runs        # deployed: https://<worker>/runs
+```
+
+A **run** is one agent turn — everything between `turn.start` and `turn.end` —
+plus its lead-in: the inbound message that woke it, or the research callback
+that landed first. Those arrive before the turn opens, so the recorder holds
+them and the turn adopts them; that is why a run's `trigger` reads
+`message.in` or `research.finished` rather than always `turn.start`. Events
+nothing ever adopts (a workflow reporting into a silent chat) become a run of
+their own after two minutes instead of being dropped.
+
+The store is D1, written by one `RunHub` Durable Object so the chats are not
+independent writers racing on the same tables. The hub is also the socket the
+viewer holds, so the same rows that get written get broadcast.
+
+```
+PlanAgent.note() ──> RunRecorder ──waitUntil──> RunHub ──> D1 (runs, run_events)
+  (per chat)         groups into runs           (one)   └─> WebSocket -> /runs
+```
+
+Nothing new is exposed: these are the lines `note()` already logged, with phone
+numbers masked and bodies as lengths. But unlike `/api/dev/*` this is reachable
+on the deployed Worker, so set a token if that matters:
+
+```sh
+npx wrangler secret put RUNS_TOKEN     # then /runs?token=… , or a Bearer header
+```
+
+Unset, the viewer is open — fine locally, a deliberate choice anywhere else.
+
+The JSON behind it, if you want to script against it:
+
+```
+GET /api/runs?chat=&outcome=&level=&before=&limit=   newest first, `before` pages
+GET /api/runs/chats                                  chats that have runs
+GET /api/runs/<runId>                                the run and its events
+WS  /agents/run-hub/global                           hello | run.open | events | run.close
+```
+
+The schema lives in `migrations/0001_runs.sql`. It is not applied automatically:
+
+```sh
+npm run runs:migrate           # local
+npm run runs:migrate:remote    # before the first deploy
+```
+
+Each chat's DO still keeps its own 300-event ring buffer for `/api/dev/logs`;
+D1 is the durable, cross-chat copy that survives eviction.
 
 ### Research — real options from the live web
 
