@@ -174,7 +174,10 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       if (paymentId.startsWith("dry-")) return { ...base, status: "dry_run", total: priced.line, shotId: await shoot() };
 
       await this.live.payProgress("paying", { shop: params.shop });
-      const done = await payCheckout(page, await paymentCard(this.env, paymentId), params.shipTo.name, priced.totalCents);
+      await this.live.payProgress("card_ready", { shop: params.shop });
+      const done = await payCheckout(page, await paymentCard(this.env, paymentId), params.shipTo.name, priced.totalCents, () =>
+        this.live.payProgress("submitted", { shop: params.shop, total: priced.line }),
+      );
       paymentId = undefined; // spent: nothing to cancel
       return { ...base, status: "paid", total: priced.line, confirmation: done.confirmation, shotId: await shoot() };
     } catch (err) {

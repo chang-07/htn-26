@@ -187,7 +187,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
    */
   private runs?: RunRecorder;
   private recorder() {
-    return (this.runs ??= new RunRecorder(this.env, this.name, (promise) => this.ctx.waitUntil(promise)));
+    return (this.runs ??= new RunRecorder(this.env, this.name, (promise) => this.ctx.waitUntil(promise), {
+      load: () => this.getMeta("runs_last"),
+      save: (json) => this.setMeta("runs_last", json),
+    }));
   }
 
   async onStart() {
