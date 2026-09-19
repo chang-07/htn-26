@@ -665,6 +665,8 @@ curl 'localhost:5173/api/dev/source?kind=flight&ident=AC123'
 curl -X POST localhost:5173/api/dev/watch -H 'content-type: application/json' -d '{"chat":"demo"}'   # check now
 curl -X POST localhost:5173/api/dev/shipped -H 'content-type: application/json' \
   -d '{"chat":"demo","itemId":"i1a2b","carrier":"Canada Post","tracking":"7023…","trackingUrl":"https://…","eta":"Tuesday"}'   # demo a delivery
+curl -X POST localhost:5173/api/dev/seedflight -H 'content-type: application/json' \
+  -d '{"chat":"demo","itemId":"i1a2b","ident":"AC123"}'   # watch an item as a flight without reading FlightAware
 open 'http://localhost:5173/api/dev/card?kind=itinerary&state=open'
 ```
 

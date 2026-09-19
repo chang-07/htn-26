@@ -57,7 +57,7 @@ Calls `POST https://api.browserbase.com/v1/fetch` with `{ url, proxies: opts.pro
 export type Flight = { price: string; currency: string; airline: string; departs: string; arrives: string; from: string; to: string; duration: string; stops: number; layover?: string; nextDay: boolean; url: string };
 export type Stay = { name: string; nightly: string; rating?: number; reviews?: number; url: string };
 export type Event = { title: string; when: string; venue?: string; city?: string; url: string; onsale?: string; soldOut?: boolean; limited?: boolean; source: "ticketmaster" | "luma" };
-export type FlightStatus = { ident: string; iata: string; status: "scheduled" | "departed" | "landed" | "cancelled" | "unknown"; from: string; to: string; gateFrom?: string; terminalFrom?: string; gateTo?: string; terminalTo?: string; scheduledDeparture: number; estimatedDeparture?: number; actualDeparture?: number; scheduledArrival: number; estimatedArrival?: number; actualArrival?: number; delayMinutes: number; url: string };
+export type FlightStatus = { ident: string; iata: string; status: "scheduled" | "departed" | "landed" | "cancelled" | "unknown"; from: string; to: string; fromTz?: string; toTz?: string; gateFrom?: string; terminalFrom?: string; gateTo?: string; terminalTo?: string; scheduledDeparture: number; estimatedDeparture?: number; actualDeparture?: number; scheduledArrival: number; estimatedArrival?: number; actualArrival?: number; delayMinutes: number; url: string };
 export type OrderStatus = { fulfilled: boolean; delivered: boolean; carrier?: string; tracking?: string; trackingUrl?: string; eta?: string };
 ```
 
@@ -92,8 +92,8 @@ Every parser is `parseX(html: string): X[]` (pure, tested on fixtures) and every
 |---|---|---|
 | `search_flights` | `from`, `to`, `depart` (YYYY-MM-DD), `return?`, `adults?` | up to 12 flights, each shaped as a ballot option `{ title: "Flair YYZ→YVR 1:55 PM–4:05 PM, nonstop", subtitle: "CA$254 · 5 hr 10 min", bookingUrl }`, plus the raw fields |
 | `search_stays` | `where`, `checkin`, `checkout`, `adults?` | up to 10 stays as options `{ title: name, subtitle: "$277/night · 4.2★ (5,186)", bookingUrl }` |
-| `find_events` | `city`, `query?`, `country?` | up to 10 events as options `{ title, subtitle: "Thu Dec 17 7:30 PM · Scotiabank Arena · on sale now", bookingUrl }` |
-| `add_to_itinerary` | `optionId?` or `item: { kind, title, subtitle?, url?, price? }`, `paidBy?` | records the commitment (below) |
+| `find_events` | `city`, `query?`, `country?` | up to 10 events as options `{ title, subtitle: "Thu Dec 17 7:30 PM · Scotiabank Arena · on sale now", bookingUrl }`, the time formatted in the searched city's zone |
+| `add_to_itinerary` | `optionId?` + `kind?`, or `item: { kind, title, subtitle?, url?, price? }` | records the commitment (below); payment is recorded later by `confirm_item`, not here |
 | `watch_flight` | `ident`, `date?`, `itemId?` | immediate status line, and starts the watch |
 | `confirm_item` | `itemId`, `note?`, `price?`, `paidBy?` | marks an itinerary item confirmed; with a price and payer it also logs the expense through the existing expense path |
 
@@ -116,7 +116,7 @@ export type ItineraryItem = {
   status: "handoff" | "confirmed" | "watching" | "done";
   note?: string;                    // confirmation number, "AC123 on Oct 10", tracking number
   paidBy?: string;                  // display name
-  watch?: { flight: { ident: string; date?: string } } | { order: { url: string } };
+  watch?: { flight: { ident: string; date?: string } } | { order: { url: string; shop: string } };
   lastUpdate?: string;              // one line, what was last posted about it
 };
 itinerary?: ItineraryItem[];
@@ -126,7 +126,7 @@ It is public state (pushed to the vote page) so it holds display names only, lik
 
 `add_to_itinerary` with an `optionId` copies the winning option's title, subtitle and `bookingUrl`, pushes the item with `status: "handoff"`, posts the itinerary ticket, says one line with the link ("flights: Flair YYZ→YVR Oct 10, CA$254 each. Book it here: <url>. Tell me the flight number once it's booked and I'll watch it."), then resets the ballot (`options: []`, `counts: {}`, `chosenOptionId` cleared, `status: "idle"`) so the next segment can open. The plan `title` is kept. With an inline `item`, the same without touching the ballot.
 
-A paid cart becomes an `order` item automatically in `payFinished`: `booking.ts` keeps `done.url` on `PayResult` as `orderUrl`, and the agent pushes `{ kind: "order", title: shop, status: "watching", watch: { order: { url } }, paidBy }`.
+A paid cart becomes an `order` item automatically in `payFinished`: `booking.ts` keeps `done.url` on `PayResult` as `orderUrl`, and the agent pushes `{ kind: "order", title: shop, status: "watching", watch: { order: { url, shop } }, paidBy }`.
 
 `bookingFinished` for a venue on the ballot also pushes a `venue` item (confirmed or handoff), so a venue booked with the existing pilot appears on the same itinerary. Plan status semantics do not change for venues.
 
@@ -154,9 +154,11 @@ Lines are plain text via `say`, not tickets, so they arrive in a second. Landed 
 ## Dev routes (`index.ts`, localhost only like the rest of `/api/dev/*`)
 
 - `GET /api/dev/source?kind=flights|stays|events|flight|order&…params` runs one source and returns the rows: the way to check a recipe without the model.
-- `POST /api/dev/watch {"chat","force":true}` runs `checkWatches` now.
+- `POST /api/dev/watch {"chat"}` runs `checkWatches` now.
+- `POST /api/dev/seedorder {"chat","shop","url"}` an order item to watch, without buying anything.
 - `POST /api/dev/shipped {"chat","itemId","carrier","tracking","trackingUrl"}` injects an order snapshot as if the store had shipped, then runs the check, so the demo shows the "shipped" line without waiting for a real parcel.
-- `POST /api/dev/flight-snapshot {"chat","itemId","status":{…}}` likewise for a flight, so a delay or a gate change can be demonstrated on cue.
+- `POST /api/dev/flight {"chat","itemId","status":{…}}` likewise for a flight, so a delay or a gate change can be demonstrated on cue.
+- `POST /api/dev/seedflight {"chat","itemId","ident"}` watches an itinerary item as a flight without reading FlightAware.
 
 ## Tests
 
