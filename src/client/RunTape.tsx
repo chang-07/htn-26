@@ -61,7 +61,7 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
   if (e.event.startsWith("provider.")) return { svc: "tool", title: "provider response", sub: `${f.provider ?? ""} HTTP ${f.statusCode ?? ""}` };
   if (e.event === "tool") {
     const tool = str(f.tool) ?? "tool";
-    return { svc: TOOL_SVC[tool] ?? "tool", title: tool, sub: TOOL_SVC[tool] ? "handed off" : "tool call" };
+    return { svc: TOOL_SVC[tool] ?? "tool", title: tool, sub: "tool call" };
   }
   if (e.event.startsWith("research.")) {
     const st = e.event.slice("research.".length);
@@ -90,20 +90,20 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
     const st = e.event.slice("pay.".length);
     const total = str(f.total) ?? "";
     const titles: Record<string, [string, string]> = {
-      asked: ["offer to pay", `${str(f.who) ?? "someone"}, by ${str(f.source) === "reaction" ? "a thumbs up" : str(f.source) === "resume" ? "picking it back up" : "text"}`],
+      asked: ["offer to pay", `${str(f.who) ?? "?"} · ${str(f.source) ?? "text"}`],
       ignored: ["ignored", str(f.reason) ?? ""],
-      needs_wallet: ["no wallet yet", "told to set up payments"],
-      needs_address: ["address asked", "private page sent"],
-      started: ["checkout started", f.live === true ? "LIVE: will charge" : "dry run: will not charge"],
+      needs_wallet: ["no wallet", "setup link sent"],
+      needs_address: ["address needed", "link sent"],
+      started: ["checkout started", f.live === true ? "live" : "dry run"],
       browser: ["browser open", str(f.shop) ?? ""],
       step: ["checkout", str(f.line) ?? ""],
       priced: ["priced", total],
-      needs_card: ["card needed", "add-card link sent"],
-      needs_approval: ["approval asked", `${total} · passkey link sent`],
-      card_ready: ["card minted", "single use, exact amount"],
-      paying: ["approved", "typing the card in"],
-      submitted: ["PAY PRESSED", total],
-      finished: [str(f.status) === "paid" ? "PAID" : `ended: ${(str(f.status) ?? "?").replace(/_/g, " ")}`, [total, str(f.confirmation)].filter(Boolean).join(" · ")],
+      needs_card: ["card needed", "link sent"],
+      needs_approval: ["approval asked", total],
+      card_ready: ["card minted", "single use"],
+      paying: ["approved", "entering card"],
+      submitted: ["pay submitted", total],
+      finished: [str(f.status) === "paid" ? "paid" : `ended: ${(str(f.status) ?? "?").replace(/_/g, " ")}`, [total, str(f.confirmation)].filter(Boolean).join(" · ")],
     };
     const [title, sub] = titles[st] ?? [e.event.replace(".", " "), ""];
     return { svc: st === "asked" || st.startsWith("needs_") ? "chat" : "shop", title, sub };
@@ -124,9 +124,9 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
   }
   switch (e.event) {
     case "message.in": return { svc: "chat", title: "inbound", sub: `from ${str(f.from) ?? "?"}` };
-    case "message.stored": return { svc: "chat", title: "stored", sub: "not addressed — no model call" };
+    case "message.stored": return { svc: "chat", title: "stored", sub: "no model call" };
     case "message.out": return { svc: "chat", title: "reply sent", sub: `${num(f.chars) ?? 0} characters` };
-    case "ticket.out": return { svc: "chat", title: "card sent", sub: `${str(f.kind) ?? ""} card, as a photo` };
+    case "ticket.out": return { svc: "chat", title: "card sent", sub: str(f.kind) ?? "" };
     case "card.update": return { svc: "chat", title: "card redrawn", sub: `version ${num(f.version) ?? "?"}` };
     case "vote.cast": return { svc: "chat", title: "vote", sub: `by ${str(f.source) ?? "?"}` };
     case "turn.start": return { svc: "model", title: "turn", sub: str(f.llm) ?? "" };
@@ -142,181 +142,6 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
     case "turn.crashed": return { svc: "model", title: "crashed", sub: str(f.error) ?? "" };
     default: return { svc: e.event.startsWith("turn.") ? "model" : "chat", title: e.event.replace(/\./g, " "), sub: "" };
   }
-}
-
-/** One plain sentence: what the agent actually did at this step. */
-function describe(n: Node): string {
-  const f = n.fields;
-  switch (n.event) {
-    case "message.in": return "Someone texted the group, and the agent was addressed.";
-    case "message.stored": return "Chatter the agent was not addressed in. Stored for context, no model call — it costs nothing.";
-    case "message.out": return "The agent texted the group back.";
-    case "ticket.out": return "A card went into the thread as a photo, with tapback voting.";
-    case "card.update": return "The card was redrawn in place, so the tally updates without a new message.";
-    case "turn.start": return "The model woke and read the conversation.";
-    case "turn.step": return str(f.decision) ?? "One model round trip and the tool calls it selected.";
-    case "turn.end": return f.outcome === "silent"
-      ? "The model had nothing useful to add and stayed quiet."
-      : "The turn finished and the agent had spoken.";
-    case "pay.asked": return "Someone offered to cover a cart. Who pays is decided by who reacted, never by the model.";
-    case "pay.needs_wallet": return "They have no wallet connected, so nothing started. They were told how to set one up.";
-    case "pay.needs_address": return "No delivery address on file. A private page was sent; saving it resumes the payment by itself.";
-    case "pay.started": return f.live === true ? "A checkout run started with payments LIVE." : "A checkout run started as a dry run: it prices the order and stops before any card exists.";
-    case "pay.browser": return "A browser opened the store's own checkout page.";
-    case "pay.step": return "The checkout form is filled by rote, with no model involved.";
-    case "pay.priced": return "The store priced shipping and tax. This is the real total, read off the page.";
-    case "pay.needs_approval": return "The wallet wants the person's passkey before it will mint a card. A link was sent; the run waits up to four minutes.";
-    case "pay.needs_card": return "The wallet has no card on file. An add-card link was sent; the run waits.";
-    case "pay.card_ready": return "A single-use card was minted for exactly this total at exactly this store. Its number never reaches a log or a model.";
-    case "pay.submitted": return "Pay was pressed on the store's checkout. From here the order may exist even if the page never confirms.";
-    case "pay.finished": return f.status === "paid" ? "The store confirmed the order." : f.status === "dry_run" ? "Priced and stopped: payments are switched off, so nothing was charged." : "The payment did not go through.";
-    case "research.started": return "Research started in the background. The agent says it is looking, then stops — findings arrive later.";
-    case "research.planned": return "The brief became search queries.";
-    case "research.selected": return "A model picked which search results were worth opening in a browser.";
-    case "research.browser": return "A browser session opened. While the run is live you can watch it here.";
-    case "research.searched": return "The queries ran in a real browser.";
-    case "research.read": return "The browser opened a result page and pulled candidate venues off it.";
-    case "research.finished": return f.ok
-      ? "Research returned real venues. Nothing can be proposed that did not come from here."
-      : "Research failed, so the agent has nothing it is allowed to propose.";
-    case "booking.started": return "A browser session opened to make the reservation for real.";
-    case "booking.finished": return f.ok ? "The reservation went through." : "The booking failed, and the agent has to take that back to the group.";
-    case "location.requested": return "The agent asked this person's phone to share its location, after they agreed to.";
-    case "location.sharing_started": return "The person accepted, and Linq reported that sharing began.";
-    case "location.taken": return f.proactive
-      ? "Someone shared their location on their own. The agent kept the city and left their share running."
-      : "The agent read the share once, kept only the city, and ended the share.";
-    case "location.read": return "The agent read where the people in this chat are, to answer something that depended on it.";
-    case "cart.updated": return "A cart was built at the store and posted to the chat. The agent cannot pay — a person finishes checkout.";
-    case "cart.edited": return "The cart's quantities were changed from this page, and the card in the thread was redrawn.";
-    case "tool": return ({
-      research: "The model asked for research. It returns at once; the work happens in a workflow.",
-      propose_plan: "The model posted options and opened voting.",
-      send_message: "One line to the chat. Text only reaches the group through this tool, never from raw model output.",
-      get_votes: "The model checked the tally before naming a winner.",
-      book_option: "The model asked for a real reservation — allowed at most once per plan.",
-      shop_search: "The model searched the store's catalog over UCP. No browser involved.",
-      shop_build_cart: "The model built the cart at the store and got back a checkout link.",
-    } as Record<string, string>)[str(f.tool) ?? ""] ?? "The model called a tool.";
-    default: return "";
-  }
-}
-
-/**
- * The longer answer, for someone who has not read the code: what this kind of
- * step is for, and what this one's numbers actually say. `describe` is the
- * headline; this is the paragraph under it.
- */
-function explain(n: Node): string[] {
-  const f = n.fields;
-  const out: string[] = [];
-  const n_ = (k: string) => num(f[k]);
-  const s_ = (k: string) => str(f[k]);
-
-  switch (n.event) {
-    case "message.in":
-      out.push("The agent only wakes for messages addressed to it — an @mention, a reply to something it said, an answer to a question it just asked, or any message in a one-to-one chat. This one qualified, so a turn was scheduled.");
-      if (n_("chars")) out.push(`The message was ${n_("chars")} characters. Phone numbers are masked before anything is written down.`);
-      break;
-    case "message.stored":
-      out.push("Everything said in the chat is stored so the agent has the full conversation when it is finally called on — but storing costs nothing, and no model runs here. This is why a busy group chat does not burn tokens.");
-      break;
-    case "turn.step":
-      out.push("A turn is a loop: the model is called, it either calls tools or stops, and the results go back for another round. This is one pass through that loop.");
-      if (Array.isArray(f.calls) && (f.calls as string[]).length) out.push(`It chose to call ${(f.calls as string[]).join(", ")}.`);
-      break;
-    case "turn.start":
-      out.push(`The model was handed the recent transcript, the current plan, anything research has returned, and the list of tools it may call. It then decides, step by step, what to do${s_("llm") ? ` — this turn ran on ${s_("llm")}` : ""}.`);
-      if (n_("history")) out.push(`It could see ${n_("history")} earlier messages.`);
-      break;
-    case "turn.end": {
-      const outcome = s_("outcome");
-      out.push(
-        outcome === "silent" ? "The model looked at the conversation and chose not to speak. In a group chat that is the common and correct outcome."
-        : outcome === "max_steps" ? "The model hit its step ceiling before finishing. That usually means it got stuck in a loop of tool calls."
-        : outcome === "llm_failed" ? "The model call itself failed — a network or provider problem, not something the model did wrong."
-        : "The turn completed and the agent had said its piece.");
-      if (n_("steps")) out.push(`It took ${n_("steps")} round trip${n_("steps") === 1 ? "" : "s"} to the model${n_("tokens") ? `, costing ${n_("tokens")!.toLocaleString()} tokens in total` : ""}.`);
-      break;
-    }
-    case "tool": {
-      const tool = s_("tool");
-      if (tool === "send_message") out.push("Text reaches the group only through this tool, never from the model's raw output — some models leak their reasoning into the reply, and that must not be texted to anyone.");
-      else if (tool === "research") out.push("This returns immediately. The real work runs in a separate workflow that can take minutes, and its findings come back later in the chat's history — which is why research steps often appear before the turn that uses them.");
-      else if (tool === "propose_plan") out.push("This posts the plan card into the thread and opens voting. People vote with tapbacks on the card, not by replying.");
-      else if (tool === "get_votes") out.push("The agent is required to check the tally here rather than guess a winner from the conversation.");
-      else if (tool === "book_option") out.push("This drives a real browser at the venue's own site. It is allowed at most once per plan, and it cannot pay for anything.");
-      else if (tool?.startsWith("shop")) out.push("The store is called over UCP — plain JSON-RPC over HTTPS, no browser. The agent can build a cart but never completes checkout; a person does that with the link.");
-      else out.push("A tool call. Arguments below are exactly what the model sent.");
-      break;
-    }
-    case "research.started":
-      out.push("A background workflow opened a real browser. The agent tells the group it is looking and then stops talking — it is not allowed to start a second run while one is in flight, and it may not invent places while waiting.");
-      break;
-    case "research.planned":
-      out.push("The model turned the plain-English brief into search queries. These are the exact strings that were typed into a search engine.");
-      break;
-    case "research.searched":
-      out.push(`The queries ran in the browser and came back with ${n_("hits") ?? 0} result links. Only a few of those get opened — reading a page is the expensive part.`);
-      break;
-    case "research.selected":
-      out.push("Opening a page costs a browser load and a model call, so a model first picks which results are worth it — preferring curated lists and venues' own pages over aggregator landing pages, and avoiding several results from one site.");
-      break;
-    case "research.browser":
-      out.push("Pages are read a tab at a time in one session, all at once rather than one after another, so the model is extracting from one page while the browser loads the next.");
-      break;
-    case "research.read":
-      out.push(`The browser opened ${s_("host") ?? "a page"} and a model read the visible text, pulling out anything that looked like a real venue. It found ${n_("candidates") ?? 0}.`);
-      out.push("The capture is what the page looked like when it loaded, so you can tell a good result from a cookie wall or a blocked page.");
-      break;
-    case "research.finished":
-      out.push(`${n_("candidates") ?? 0} venue${n_("candidates") === 1 ? "" : "s"} came back from ${n_("pagesRead") ?? 0} page${n_("pagesRead") === 1 ? "" : "s"}. From here on the agent may only propose places that appear in this list — it cannot make one up.`);
-      if (n_("ms")) out.push(`The whole run took ${dur(n_("ms")!)} of wall clock, which is why the turn that asked for it finished long before this arrived.`);
-      break;
-    case "booking.started":
-      out.push("A browser session opened at the venue's own booking page and is being driven step by step. There is a session replay below if you want to watch what it did.");
-      break;
-    case "booking.finished":
-      out.push(f.ok
-        ? "The reservation was submitted and confirmed."
-        : `It did not get a booking: ${s_("detail") ?? "no reason recorded"}. The agent has to take that back to the group rather than pretend it worked.`);
-      out.push("The capture is the last thing the browser saw, which is usually enough to tell whether it got lost or the slot was genuinely unavailable.");
-      break;
-    case "location.requested":
-      out.push("Apple only allows this in a one-to-one iMessage chat, and the person sees a system prompt they have to accept — nothing is readable until they do. The agent only calls this after they have said yes in the conversation.");
-      break;
-    case "location.sharing_started":
-      out.push("This event carries no coordinates, only that sharing began. If it never arrives — an older webhook subscription will not send it — the agent checks on a timer instead.");
-      break;
-    case "location.read":
-      out.push("Reading works in group chats — only asking someone to share is one-to-one. The model gets a city per person and a rounded distance per pair, and nothing else: the distance is worked out inside linq.ts so coordinates never reach the model, the log, or storage.");
-      out.push("This step shows counts only on purpose. Which cities and how far apart is for the chat to hear, not for run history to keep.");
-      break;
-    case "location.taken":
-      out.push("Only the city and region were kept, as the person's area, so searches are about the right place. Coordinates and the street address were never stored or logged.");
-      out.push(f.proactive ? "They started this share themselves, so it was left running — it is theirs to end, and it is what lets the group ask how far apart everyone is." : f.shareEnded ? "The share was then ended from the agent's side, so it has no way to look again." : "Ending the share failed, so the person was told how to stop it themselves.");
-      break;
-    case "cart.updated":
-      out.push("The cart was created at the store and a checkout link came back. The agent cannot pay — the card in the chat carries the link so a person finishes it.");
-      out.push("Quantities on the tape are editable: changing them rewrites the cart at the store and redraws the card in the thread.");
-      break;
-    case "cart.edited":
-      out.push("Someone changed the quantities from this page rather than through the chat. The store cart was rewritten and the card in the thread redrawn, so the checkout link now points at the new contents.");
-      break;
-    case "card.update":
-      out.push("The card already in the thread was redrawn in place rather than a new one being sent, so the vote tally updates without spamming the chat.");
-      break;
-    case "ticket.out":
-      out.push("Cards are sent as photos, which is why they look designed rather than like a link preview. Voting happens with tapbacks on the photo.");
-      break;
-    case "message.out":
-      out.push(`The agent sent ${n_("chars") ?? 0} characters to the group. It is limited to one message per turn — an earlier version rephrased itself eight times in twenty seconds.`);
-      break;
-    case "vote.cast":
-      out.push(`A vote arrived${s_("source") === "reaction" ? " as a tapback on the card" : " from the vote page"}. The agent will not name a winner until it has checked the tally.`);
-      break;
-  }
-  return out;
 }
 
 /** The picture behind a step: a saved browser frame, or a product image. */
@@ -430,7 +255,7 @@ export function RunTape({
     <div style={{ padding: "6px 0 60px" }}>
       {problem && (
         <p style={{ margin: "0 0 12px 4px", fontFamily: "var(--mono)", fontSize: 12, color: "var(--error)" }}>
-          Couldn't update the cart: {problem}
+          Cart update failed: {problem}
         </p>
       )}
 
@@ -441,7 +266,7 @@ export function RunTape({
             className={`rv-phase${b.pick !== null && picked === b.pick ? " is-selected" : ""}`}
             onClick={() => b.pick !== null && onPick(picked === b.pick ? null : b.pick)}
           >
-            <i style={{ width: 9, height: 9, borderRadius: "50%", background: `var(${SERVICES[b.svc].v})`, flex: "none", alignSelf: "center" }} />
+            <i style={{ width: 8, height: 8, borderRadius: "50%", background: `var(${SERVICES[b.svc].v})`, flex: "none", alignSelf: "center" }} />
             <b>{b.label}</b>
             <span>{b.meta.join("  ·  ")}</span>
           </button>
@@ -470,13 +295,13 @@ export function RunTape({
       )}
       {hidden > 0 && !running && (
         <p style={{ margin: "18px 0 0 8px", fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)" }}>
-          {hidden} bookkeeping row{hidden === 1 ? "" : "s"} folded away. All events shows every recorded event.
+          {hidden} low-signal event{hidden === 1 ? "" : "s"} hidden. Toggle Raw to show all.
         </p>
       )}
 
       {running && <Typing last={nodes[nodes.length - 1]} inTurn={nodes.map((n) => n.event).lastIndexOf("turn.start") > nodes.map((n) => n.event).lastIndexOf("turn.end")} />}
       {!nodes.length && !running && (
-        <p style={{ margin: 0, padding: "12px 4px", color: "var(--soft)", fontSize: 13.5 }}>Nothing was recorded for this run.</p>
+        <p style={{ margin: 0, padding: "12px 4px", color: "var(--soft)", fontSize: 13.5 }}>No events.</p>
       )}
     </div>
   );
@@ -511,8 +336,7 @@ function toBlocks(nodes: Node[], raw: boolean, liveSeq: number | null): { blocks
 
   const folded = (n: Node) =>
     n.seq !== liveSeq && n.level !== "error" && (
-      n.event === "presence" || n.event === "turn.start" || n.event === "turn.end" ||
-      ["trace.start", "trace.end", "provider.response", "llm.usage"].includes(n.event) ||
+      n.event === "presence" || n.event === "turn.start" || n.event === "turn.end" || n.event === "trace.start" ||
       // A step with nothing to say for itself: the tool rows after it are what it chose.
       (n.event === "turn.step" && !str(n.fields.decision)) ||
       // Already on the tape in its own words: the message that went out, the research that started.
@@ -575,13 +399,13 @@ function toBlocks(nodes: Node[], raw: boolean, liveSeq: number | null): { blocks
 function Typing({ last, inTurn }: { last?: Node; inTurn: boolean }) {
   const e = last?.event ?? "";
   const [svc, doing]: [ServiceId, string] =
-    !last ? ["chat", "waiting for the first step"] :
+    !last ? ["chat", "starting"] :
     e === "research.browser" || e === "research.read" || e === "research.selected" ? ["browser", "reading pages"] :
     e === "research.planned" ? ["browser", "searching"] :
-    e === "research.started" || e === "research.searched" ? ["model", e === "research.started" ? "writing search queries" : "choosing which pages to open"] :
-    e.startsWith("booking.") ? ["booking", "working through the booking page"] :
-    e.startsWith("pay.") ? ["shop", "working through checkout"] :
-    e === "message.in" || e === "presence" ? ["model", "waking up"] :
+    e === "research.started" || e === "research.searched" ? ["model", e === "research.started" ? "planning queries" : "selecting pages"] :
+    e.startsWith("booking.") ? ["booking", "booking"] :
+    e.startsWith("pay.") ? ["shop", "checkout"] :
+    e === "message.in" || e === "presence" ? ["model", "starting turn"] :
     inTurn || e === "tool" || e.startsWith("turn.") || e.startsWith("llm.") ? ["model", "thinking"] :
     [last.svc, "working"];
   return (
@@ -608,10 +432,10 @@ function Pages({ nodes, t0, chat, picked, onPick }: { nodes: Node[]; t0: number;
       <span style={timeStyle}>+{dur(nodes[0].ts - t0)}</span>
       <i className="rv-mark" style={{ background: "var(--s-browser)" }} title="Browser" />
       <span style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
-        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 600, fontSize: 14.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>
+        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 500, fontSize: 13.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>
           {nodes.length === 1 ? "page read" : `${nodes.length} pages read`}
         </span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)" }}>{found} possible venue{found === 1 ? "" : "s"} pulled off them</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)" }}>{found} candidate{found === 1 ? "" : "s"}</span>
       </span>
       <div className="rv-media rv-pages">
         {nodes.map((n) => {
@@ -625,7 +449,7 @@ function Pages({ nodes, t0, chat, picked, onPick }: { nodes: Node[]; t0: number;
               title={str(n.fields.url)}
             >
               <span className="rv-thumb"><img src={shotFor(n.fields, chat)} alt="" loading="lazy" onError={hideBroken} /></span>
-              <span className="rv-cap"><span>{(str(n.fields.host) ?? "").replace(/^www\./, "")}</span><span>{c ? `${c} found` : "nothing"}</span></span>
+              <span className="rv-cap"><span>{(str(n.fields.host) ?? "").replace(/^www\./, "")}</span><span>{c}</span></span>
             </button>
           );
         })}
@@ -676,7 +500,7 @@ function Row({
         aria-label={`${svc.label}: ${node.title}${node.sub ? `, ${node.sub}` : ""}. Show what this step means`}
         style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0, margin: 0, padding: 0, background: "none", border: 0, cursor: "pointer", font: "inherit", color: "inherit", textAlign: "left" }}
       >
-        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 600, fontSize: 14.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>{node.title}</span>
+        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 500, fontSize: 13.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>{node.title}</span>
         {node.sub && (
           <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{node.sub}</span>
         )}
@@ -700,7 +524,7 @@ function Row({
         <span className="rv-media rv-frame" style={{ maxWidth: 640, borderColor: "var(--ink)" }} onClick={(e) => e.stopPropagation()}>
           <span className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", color: "var(--ink)" }}>
             <i className="rv-live" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--s-browser)" }} />
-            The agent's browser, live
+            Live browser
           </span>
           <iframe
             src={`/live/${encodeURIComponent(chat)}`}
@@ -760,7 +584,7 @@ function CartLines({
           <span style={{ ...mono, minWidth: 64, textAlign: "right" }}>${(qtyOf(node, li, items) * priceNum(it.price)).toFixed(2)}</span>
         </div>
       ))}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 8, marginTop: 2, borderTop: "2px dotted var(--rule)", ...mono }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 8, marginTop: 2, borderTop: "1px solid var(--hair)", ...mono }}>
         <span className="rv-meta">total</span>
         <b style={{ marginLeft: "auto", fontWeight: 500 }}>${total.toFixed(2)}</b>
       </div>
@@ -796,22 +620,21 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
 
   const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId", "thinking", "decision"]);
   const raw = Object.fromEntries(Object.entries(f).filter(([k]) => !skip.has(k)));
-  const paras = explain(node);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
       <div style={{ padding: "18px 22px 14px", display: "flex", gap: 12, alignItems: "flex-start", flex: "none" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <i style={{ width: 9, height: 9, borderRadius: "50%", background: `var(${svc.v})`, flex: "none" }} />
+            <i style={{ width: 7, height: 7, borderRadius: "50%", background: `var(${svc.v})`, flex: "none" }} />
             <span style={{ color: `var(${svc.v})` }}>{svc.label}</span>
             <span>{node.event}</span>
           </div>
-          <h2 style={{ margin: "8px 0 0", fontFamily: "var(--sans)", fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.15, textWrap: "balance" }}>
-            {describe(node) || node.title}
+          <h2 style={{ margin: "8px 0 0", fontFamily: "var(--sans)", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3, textWrap: "balance" }}>
+            {node.title}{node.sub ? <span style={{ fontWeight: 400, color: "var(--soft)" }}> · {node.sub}</span> : null}
           </h2>
           <p style={{ margin: "8px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
-            +{dur(node.ts - t0)} into the run{node.ms != null && `, took ${dur(node.ms)}`}
+            +{dur(node.ts - t0)}{node.ms != null && ` · ${dur(node.ms)}`} · seq {node.seq}
           </p>
         </div>
         {onClose && (
@@ -825,30 +648,23 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
       <hr className="rv-perf" style={{ margin: "0 22px" }} />
 
       <div style={{ overflowY: "auto", padding: "16px 22px 32px", display: "flex", flexDirection: "column", gap: 20, minHeight: 0 }}>
-        {paras.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {paras.map((para, i) => (
-              <p key={i} style={{ margin: 0, fontFamily: "var(--sans)", fontSize: 14.5, lineHeight: 1.55, maxWidth: "58ch" }}>{para}</p>
-            ))}
-          </div>
-        )}
         {str(f.decision) && (
-          <Section label="Decision summary">
+          <Section label="Decision">
             <p className="rv-quote is-thinking">{str(f.decision)}</p>
           </Section>
         )}
         {str(f.text) && (
-          <Section label={node.event === "message.in" ? "The message" : "What it sent"}>
+          <Section label={node.event === "message.in" ? "Message" : "Sent"}>
             <p className="rv-quote">{str(f.text)}</p>
           </Section>
         )}
         {shot && (
-          <Section label="What the browser saw">
+          <Section label="Screenshot">
             <span className="rv-frame"><img src={shot} alt="Page capture" /></span>
           </Section>
         )}
         {plan && (
-          <Section label="Queries it wrote">
+          <Section label="Queries">
             <pre className="rv-code">{plan.join("\n")}</pre>
           </Section>
         )}
@@ -863,7 +679,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
           </Section>
         )}
         {node.event === "turn.end" && (
-          <Section label="The turn">
+          <Section label="Turn">
             <Stats pairs={[
               ["Duration", num(f.ms) != null ? dur(num(f.ms)!) : "—"],
               ["Model steps", String(num(f.steps) ?? 0)],
@@ -874,7 +690,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
         )}
         {pretty && <Section label="Arguments"><pre className="rv-code">{pretty}</pre></Section>}
         {replays.length > 0 && (
-          <Section label="Session replay">
+          <Section label="Replay">
             {replays.map((u) => (
               <a key={u} href={u} target="_blank" rel="noreferrer" style={{ fontFamily: "var(--mono)", fontSize: 12, wordBreak: "break-all", display: "block" }}>
                 {u}
@@ -882,7 +698,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
             ))}
           </Section>
         )}
-        {Object.keys(raw).length > 0 && <details><summary style={{ cursor: "pointer", fontSize: 13 }}>Technical details & trace IDs</summary><div style={{ marginTop: 12 }}><FieldList fields={raw} lines={8} /></div></details>}
+        {Object.keys(raw).length > 0 && <Section label="Fields"><FieldList fields={raw} lines={8} /></Section>}
       </div>
     </div>
   );

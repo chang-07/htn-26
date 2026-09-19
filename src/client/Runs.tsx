@@ -286,20 +286,20 @@ export function Runs() {
       <link rel="stylesheet" href={FONT_LINK} />
 
       {showRail && (
-        <aside style={{ borderRight: mid ? "2px dotted var(--rule)" : 0, overflowY: "auto", minHeight: 0 }}>
+        <aside style={{ borderRight: mid ? "1px solid var(--hair)" : 0, overflowY: "auto", minHeight: 0 }}>
           <header style={{ padding: "18px 18px 14px", position: "sticky", top: 0, background: "var(--ground)", zIndex: 2 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-              <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 800, fontSize: 22, letterSpacing: "-0.02em", lineHeight: 1 }}>Plan</a>
-              <span className="rv-meta">run viewer</span>
+              <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16, letterSpacing: "-0.01em", lineHeight: 1 }}>Whim</a>
+              <span className="rv-meta">Runs</span>
               <span
                 title={live ? "Connected: new runs appear as they happen" : "Not connected. New runs will not appear until it reconnects."}
                 aria-label={live ? "connected" : "disconnected"}
-                style={{ marginLeft: "auto", width: 9, height: 9, borderRadius: "50%", background: live ? "var(--good)" : "var(--faint)" }}
+                style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: live ? "var(--good)" : "var(--faint)" }}
               />
             </div>
             {problem ? (
               <p style={{ margin: "10px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--error)" }}>
-                {problem === "locked" ? "This viewer is locked." : `Couldn't load runs: ${problem}`}
+                {problem === "locked" ? "Locked. Enter the viewer key." : `Failed to load runs: ${problem}`}
               </p>
             ) : null}
             {problem === "locked" ? (
@@ -345,16 +345,16 @@ export function Runs() {
               >
                 Background
               </button>
-              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Include trace events and raw fields in the activity feed">
-                All events
+              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Print every step's fields on the tape">
+                Raw
               </button>
-              <button className="rv-btn is-quiet" onClick={flipTheme} title="Switch between paper and night">
-                {theme === "light" ? "Night" : "Paper"}
+              <button className="rv-btn is-quiet" onClick={flipTheme} title="Toggle theme">
+                {theme === "light" ? "Dark" : "Light"}
               </button>
             </div>
           </header>
           {sessions.map((sess) => (
-            <div key={sess.id} style={{ borderTop: "2px dotted var(--rule)" }}>
+            <div key={sess.id} style={{ borderTop: "1px solid var(--hair)" }}>
               <SessionHeader
                 session={sess}
                 open={isOpen(sess)}
@@ -367,8 +367,8 @@ export function Runs() {
             </div>
           ))}
           {!shown.length && !problem && (
-            <p style={{ color: "var(--soft)", padding: "16px 18px", fontSize: 13.5, borderTop: "2px dotted var(--rule)", margin: 0, maxWidth: "36ch" }}>
-              No runs yet. Text the number and the first turn appears here as it happens.
+            <p style={{ color: "var(--soft)", padding: "16px 18px", fontSize: 13.5, borderTop: "1px solid var(--hair)", margin: 0, maxWidth: "36ch" }}>
+              No runs yet.
               {isLocal ? <> Or, in a terminal: <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>POST /api/dev/message</code>.</> : null}
             </p>
           )}
@@ -381,14 +381,13 @@ export function Runs() {
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
-                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} run={detail} />
-                <h2 style={{ fontSize: 18, margin: "8px 0" }}>Activity</h2>
-                <p style={{ fontSize: 12, color: "var(--soft)", margin: "0 0 16px" }}>Messages, decisions and results in order. Select an event for details.</p>
                 <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
+                {/* Analytics sit under the tape: the run reads first, the numbers after. */}
+                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} run={detail} />
               </div>
             </>
           ) : (
-            <p style={{ color: "var(--soft)", padding: 24, margin: 0 }}>{runs.length ? "Pick a run from the rail." : "The first run will open here by itself."}</p>
+            <p style={{ color: "var(--soft)", padding: 24, margin: 0 }}>{runs.length ? "Select a run." : "No runs yet."}</p>
           )}
         </section>
       )}
@@ -410,7 +409,7 @@ function Legend() {
     <p style={{ margin: "0 0 12px", display: "flex", flexWrap: "wrap", gap: "4px 14px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)" }}>
       {(Object.keys(SERVICES) as (keyof typeof SERVICES)[]).map((k) => (
         <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <i style={{ width: 8, height: 8, borderRadius: "50%", background: `var(${SERVICES[k].v})` }} />
+          <i style={{ width: 7, height: 7, borderRadius: "50%", background: `var(${SERVICES[k].v})` }} />
           {SERVICES[k].label}
         </span>
       ))}
@@ -421,10 +420,10 @@ function Legend() {
 /** A run is named by what was said to it; failing that, by what woke it. */
 const runTitle = (run: RunSummary) =>
   // The rail is what a projector shows first, so an address typed into a chat stays off it.
-  run.said?.trim().replace(/\s+/g, " ").replace(/\S+@\S+/g, "(email)") || (run.outcome !== "background" && OUTCOME_TITLE[run.outcome ?? ""]) || (run.trigger ?? "run").replace(/[._]/g, " ");
+  run.said?.trim().replace(/\s+/g, " ").replace(/\S+@\S+/g, "(email)") || (run.outcome !== "background" && run.outcome !== "replied" && OUTCOME_TITLE[run.outcome ?? ""]) || (run.trigger ?? "run").replace(/[._]/g, " ");
 
 /** The outcome as one word, for beside a title that no longer says it. */
-const OUTCOME_WORD: Record<string, string> = { replied: "replied", silent: "stayed quiet", llm_failed: "model failed", max_steps: "step ceiling", background: "background" };
+const OUTCOME_WORD: Record<string, string> = { replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
 
 type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
 type ShownSession = Session & { visible: RunSummary[] };
@@ -516,11 +515,11 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
 
 /** What each outcome code means, in a sentence a judge can read from the back of the room. */
 const OUTCOME_TITLE: Record<string, string> = {
-  replied: "It replied",
-  silent: "It stayed quiet",
-  llm_failed: "The model call failed",
-  max_steps: "It hit the step ceiling",
-  background: "Work between turns",
+  replied: "Replied",
+  silent: "No reply",
+  llm_failed: "Model error",
+  max_steps: "Max steps",
+  background: "Background",
 };
 
 /**
@@ -534,8 +533,8 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
   const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
   const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
   const asked = nodes.find((n) => (n.event === "message.in" || n.event === "message.stored") && typeof n.fields.text === "string");
-  const title = (asked?.fields.text as string | undefined)?.trim() || run.said?.trim() || (running ? "Running now" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "Run"));
-  const verdict = running ? "running now" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
+  const title = (asked?.fields.text as string | undefined)?.trim() || run.said?.trim() || (running ? "Running" : runTitle(run));
+  const verdict = running ? "Running" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
   const facts = [
     wall != null ? `${dur(wall)} wall` : null,
     run.ms != null ? `${dur(run.ms)} in turn` : null,
@@ -543,21 +542,24 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
     slowest ? `slowest ${slowest.fields.operation ?? slowest.event}` : null,
   ].filter(Boolean) as string[];
   return (
-    <header style={{ flex: "none", padding: "18px 18px 0", borderBottom: "2px dotted var(--rule)" }}>
+    <header style={{ flex: "none", padding: "18px 18px 0", borderBottom: "1px solid var(--hair)" }}>
       <div style={{ display: "flex", alignItems: "stretch", gap: 18 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="rv-meta" style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             {onBack && (
               <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
             )}
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
-              <i className={running ? "rv-live" : undefined} style={{ width: 8, height: 8, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
-              {verdict}
-            </span>
-            <span title={run.chat}>chat {run.chat.slice(0, 8)}</span>
+            {/* A reply is the ordinary case and goes without saying; anything else is worth a label. */}
+            {(running || run.outcome !== "replied") && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
+                <i className={running ? "rv-live" : undefined} style={{ width: 7, height: 7, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
+                {verdict}
+              </span>
+            )}
+            <span title={run.chat} style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{run.chat.slice(0, 8)}</span>
             <span style={{ fontVariantNumeric: "tabular-nums" }}>{new Date(run.started).toLocaleString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" })}</span>
           </div>
-          <h1 className="rv-clamp2" title={title} style={{ margin: "10px 0 0", fontFamily: "var(--sans)", fontWeight: 800, fontSize: title.length > 60 ? 20 : 25, lineHeight: 1.12, letterSpacing: "-0.02em", textWrap: "balance", maxWidth: "34ch" }}>
+          <h1 className="rv-clamp2" title={title} style={{ margin: "10px 0 0", fontFamily: "var(--sans)", fontWeight: 600, fontSize: title.length > 60 ? 17 : 20, lineHeight: 1.25, letterSpacing: "-0.01em", textWrap: "balance", maxWidth: "34ch" }}>
             {title}
           </h1>
           <p style={{ margin: "10px 0 8px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
@@ -587,7 +589,7 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
       <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
         <i
           className={running ? "rv-live" : undefined}
-          style={{ width: 7, height: 7, background: running ? "var(--ink)" : levelColor(run.level), flexShrink: 0 }}
+          style={{ width: 6, height: 6, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level), flexShrink: 0 }}
         />
         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500, color: quiet && !selected ? "var(--soft)" : undefined }}>
           {runTitle(run)}
@@ -597,7 +599,7 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
       <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
         <span style={{ display: "flex", gap: 3 }}>
           {servicesForTools(run.tools).map((s) => (
-            <i key={s} title={SERVICES[s].label} style={{ width: 8, height: 8, borderRadius: "50%", background: `var(${SERVICES[s].v})` }} />
+            <i key={s} title={SERVICES[s].label} style={{ width: 6, height: 6, borderRadius: "50%", background: `var(${SERVICES[s].v})` }} />
           ))}
         </span>
         {facts.map((f) => <span key={f}>{f}</span>)}

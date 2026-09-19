@@ -5,9 +5,9 @@
  * chat the first time it is woken there.
  *
  *   node scripts/linq-contact-card.mjs show
- *   node scripts/linq-contact-card.mjs set "Plan"                     photo = <PUBLIC_BASE_URL>/card/avatar.png
- *   node scripts/linq-contact-card.mjs set "Plan" --image <url>       any public image instead
- *   node scripts/linq-contact-card.mjs set "Plan" --number +1555…     when the key has more than one line
+ *   node scripts/linq-contact-card.mjs set "Whim"                     photo = <PUBLIC_BASE_URL>/card/avatar.png
+ *   node scripts/linq-contact-card.mjs set "Whim" --image <url>       any public image instead
+ *   node scripts/linq-contact-card.mjs set "Whim" --number +1555…     when the key has more than one line
  *
  * Linq fetches the image when the card is written, so PUBLIC_BASE_URL must be
  * reachable at that moment (the tunnel up, or the Worker deployed). Writes are
@@ -42,7 +42,7 @@ if (cmd === "show") {
   if (!all.length) console.log("no contact card yet — run `set`");
   all.forEach(show);
 } else if (cmd === "set") {
-  const [first_name, ...rest] = (args[0] && !args[0].startsWith("--") ? args[0] : "Plan").split(" ");
+  const [first_name, ...rest] = (args[0] && !args[0].startsWith("--") ? args[0] : "Whim").split(" ");
   const image_url = flag("--image") ?? (env.PUBLIC_BASE_URL ? `${env.PUBLIC_BASE_URL}/card/avatar.png` : undefined);
   if (!image_url) throw new Error("No photo: set PUBLIC_BASE_URL in .env or pass --image <url>");
   const phone_number = await ourNumber();

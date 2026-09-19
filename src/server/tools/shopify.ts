@@ -47,7 +47,7 @@ export function agentProfileUrl(env: Env) {
   return `${env.PUBLIC_BASE_URL}/.well-known/ucp-agent.json?v=2`;
 }
 
-const USER_AGENT = "htn-planner/1.0";
+const USER_AGENT = "whim/1.0";
 
 async function endpointFor(shop: string): Promise<string> {
   const host = shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
