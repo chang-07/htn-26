@@ -3,7 +3,7 @@ import type OpenAI from "openai";
 import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
-import { people as peopleStore, profileLines, type Profile } from "./people";
+import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { markRead, sendCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
@@ -42,7 +42,10 @@ on a time, book it, and order anything they need.
   individual votes.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
-- book_option makes a real reservation. Call it at most once per plan.
+- book_option drives a real browser through the venue's booking page. Call it
+  at most once per plan. It needs the full name and email the reservation goes
+  under: if nobody has given them, ask who is booking and for their email, and
+  never make either up.
 - You cannot pay for anything. shop_build_cart posts the cart card with a
   checkout link for a human to complete. When the group changes the order, call
   it again with the whole new cart; never describe cart changes in text.
@@ -132,6 +135,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       ok INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, report TEXT NOT NULL
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS shots (id TEXT PRIMARY KEY, jpeg TEXT NOT NULL, ts INTEGER NOT NULL)`;
     this.sql`CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, json TEXT NOT NULL, message_id TEXT, ts INTEGER NOT NULL
     )`;
@@ -197,13 +201,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.ctx.waitUntil(this.acknowledge());
 
     // The profile link is private, so it only ever goes to a direct chat: on
-    // request, or once on its own a little after the first reply.
+    // request, or once on its own when onboarding finishes.
     if (msg.isGroup === false) {
       if (/^\s*(my\s+)?profile\b/i.test(msg.text)) await this.sendProfileLink();
-      else if (this.getMeta("profile_link_sent") !== "1" && this.getMeta("profile_offer_queued") !== "1") {
-        this.setMeta("profile_offer_queued", "1");
-        await this.schedule(20, "offerProfile");
-      }
+
     }
 
     // A short delay batches a burst of texts into a single turn.
@@ -393,21 +394,17 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return true;
   }
 
-  /** Scheduler callback: once per direct chat, shortly after the first reply. */
+  /** Scheduler callback: once per direct chat, right after onboarding finishes. */
   async offerProfile() {
     if (this.getMeta("is_group") !== "0" || this.getMeta("profile_link_sent") === "1") return;
-    const person = this.participants()[0];
-    if (!person) return;
-    // Someone who already filled it in from another chat does not need asking again.
-    const known = await peopleStore(this.env).getMany([person.handle]).catch(() => ({}) as Record<string, Profile>);
-    // Facts picked up in chat do not count: only the form's own fields do.
-    const p = known[person.handle];
-    if (p && (p.area || p.diet || p.interests || p.about)) return void this.setMeta("profile_link_sent", "1");
-    await this.sendProfileLink("30 seconds so plans actually fit you (food rules, budget, where you live):\n");
+    await this.sendProfileLink("change any of that here, anytime:\n");
   }
 
   /** What each person has told us about themselves, for the turn's context. */
-  private async aboutPeople(people: { handle: string; name: string | null }[], direct: boolean): Promise<string> {
+  private async aboutPeople(
+    people: { handle: string; name: string | null }[],
+    direct: boolean,
+  ): Promise<{ text: string; onboarding: string }> {
     const profiles = await peopleStore(this.env)
       .getMany(people.map((p) => p.handle))
       .catch((err) => {
@@ -426,7 +423,45 @@ export class PlanAgent extends Agent<Env, PlanState> {
       .map((p) => [this.label(p.handle, people), profiles[p.handle] ? profileLines(profiles[p.handle]) : ""] as const)
       .filter(([, line]) => line)
       .map(([who, line]) => `\n- ${who}: ${line}`);
-    return lines.join("") || "nothing yet";
+    const text = lines.join("") || "nothing yet";
+
+    if (!direct) {
+      // The bot cannot open a DM with someone who has never texted it, so in a
+      // group the most it can do is say where onboarding happens.
+      const strangers = people.filter((p) => missingFields(profiles[p.handle]).length > 3).map((p) => this.label(p.handle, people));
+      return {
+        text: strangers.length
+          ? `${text}\nNo profile yet: ${strangers.join(", ")}. At most once in this chat, and only when it fits, mention that anyone can text you directly to set up a profile so plans suit them. If the transcript shows you already said it, never repeat it.`
+          : text,
+        onboarding: "",
+      };
+    }
+
+    // Onboarding. The harness decides what is still missing; the model only
+    // words the next question, so it cannot loop or skip ahead.
+    const me = people[0];
+    const missing = me ? missingFields(profiles[me.handle]) : [];
+    if (!missing.length) {
+      if (me && this.getMeta("onboarded") !== "1" && profiles[me.handle]) {
+        this.setMeta("onboarded", "1");
+        // The form is the "edit anytime" door, so it arrives once they are done.
+        await this.schedule(6, "offerProfile");
+        return {
+          text,
+          onboarding:
+            "\nOnboarding just finished: every question is answered or skipped. Tell them in one or two short lines that they're set, and that they can add you to any group chat and you'll plan around everyone. Do not ask anything.",
+        };
+      }
+      return { text, onboarding: "" };
+    }
+    const first = missing.length === ONBOARDING.length;
+    return {
+      text,
+      onboarding: `\nOnboarding: still unknown about this person, in order: ${missing.map((m) => `${m.key} (${m.ask})`).join("; ")}.
+- First call save_profile with everything their latest message answered — one message can answer several — and put anything they declined in skipped. "skip", "pass" or "rather not" means skipped. Then send_message.
+- ${first ? "This is your first exchange: say in one line who you are (a planner they can add to group chats) and that a few quick questions will make plans fit them, then ask the first one." : "Ask only the next unknown item, as one short friendly question. No lists, no preamble."}
+- If they asked for something else instead, help with that and leave onboarding for later. Never ask about an item that is not in the unknown list.`,
+    };
   }
 
   private rsvps(): Rsvps {
@@ -459,20 +494,22 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** Read receipt, typing bubble and — once per chat — the name and photo. */
   private async acknowledge() {
+    // Each is "ok", "dry" or the error, so the run viewer shows what Linq said.
+    const read = await markRead(this.env, this.name);
+    const typing = await this.typing();
     const firstTime = this.getMeta("contact_card_shared") !== "1";
-    this.note("info", "presence", { read: true, typing: true, contactCard: firstTime });
-    await markRead(this.env, this.name);
-    await this.typing();
-    if (!firstTime) return;
-    this.setMeta("contact_card_shared", "1");
-    await shareContactCard(this.env, this.name);
+    const contactCard = firstTime ? await shareContactCard(this.env, this.name) : "already shared";
+    // A failure (no card set up yet) is tried again at the next wake.
+    if (contactCard === "ok" || contactCard === "dry") this.setMeta("contact_card_shared", "1");
+    const failed = [read, typing, contactCard].some((r) => !["ok", "dry", "fresh", "already shared"].includes(r));
+    this.note(failed ? "warn" : "info", "presence", { read, typing, contactCard });
   }
 
   /** Raises the bubble, or refreshes it before its ~85s runs out. */
   private async typing() {
-    if (Date.now() - this.typingAt < TYPING_REFRESH_MS) return;
+    if (Date.now() - this.typingAt < TYPING_REFRESH_MS) return "fresh";
     this.typingAt = Date.now();
-    await startTyping(this.env, this.name);
+    return startTyping(this.env, this.name);
   }
 
   private async say(text: string, opts: SendOptions = {}) {
@@ -539,7 +576,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       {
         role: "user",
         content: `People in the chat: ${people.map((p) => this.label(p.handle, people)).join(", ")}
-About the people: ${about}
+About the people: ${about.text}
 Where the group is based: ${this.getMeta("area") ?? "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
 Research: ${research.text}
@@ -548,7 +585,7 @@ ${
   votesIn
     ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
     : this.getMeta("is_group") === "0"
-      ? "This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop."
+      ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}`
       : ""
 }
 
@@ -699,6 +736,23 @@ ${transcript}`,
         return "remembered";
       }
 
+      case "save_profile": {
+        const { skipped, ...fields } = parseToolArgs("save_profile", rawArgs);
+        if (this.getMeta("is_group") !== "0") return "Direct chats only. In a group, use remember_fact for what someone says about themselves.";
+        const person = this.participants()[0];
+        if (!person) return "Nobody to save it for yet.";
+        const store = peopleStore(this.env);
+        const before = (await store.getMany([person.handle]))[person.handle];
+        const saved = await store.save(person.handle, {
+          ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined && v !== "")),
+          skipped: [...new Set([...(before?.skipped ?? []), ...(skipped ?? [])])],
+        });
+        if (fields.name) this.sql`UPDATE participants SET name = ${fields.name} WHERE handle = ${person.handle}`;
+        if (!(await syncMatchPool(this.env, person.handle, saved))) this.note("warn", "match_pool.failed", {});
+        const left = missingFields(saved);
+        return left.length ? `Saved. Still unknown: ${left.map((m) => m.key).join(", ")}. Ask only about ${left[0].key} next.` : "Saved. Nothing left to ask: tell them they're set.";
+      }
+
       case "send_profile_link": {
         if (this.getMeta("is_group") !== "0") {
           return "Not in a group: the link is private. Tell them to text you directly and say 'profile'.";
@@ -778,18 +832,29 @@ ${transcript}`,
         const args = parseToolArgs("book_option", rawArgs);
         const option = this.state.options.find((o) => o.id === args.optionId);
         if (!option) return "No such option";
-        if (this.state.status === "booking" || this.state.status === "booked") {
+        if (this.state.status === "booking" || this.state.status === "booked" || this.state.status === "handoff") {
           return `Already ${this.state.status}`;
         }
 
         this.publish({ status: "booking", chosenOptionId: option.id });
         await this.syncCard();
 
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {
+          return "That is not a real email address. Ask the person booking for theirs; do not invent one.";
+        }
+        // The booker's own number, from whoever spoke last: venues ask for one.
+        const lastSpeaker = this.sql<{ author: string | null }>`
+          SELECT author FROM messages WHERE direction = 'in' ORDER BY id DESC LIMIT 1`[0]?.author;
         const params: BookingParams = {
           title: option.title,
           url: option.bookingUrl ?? "",
           partySize: args.partySize,
           isoTime: args.isoTime,
+          contact: {
+            name: args.contactName,
+            email: args.contactEmail,
+            phone: lastSpeaker && /^\+?\d{8,}$/.test(lastSpeaker) ? lastSpeaker : undefined,
+          },
         };
         const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
         this.note("info", "booking.started", { workflowId: short(workflowId), option: option.title });
@@ -1081,20 +1146,70 @@ ${transcript}`,
   }
 
   /** Called over RPC by BookingWorkflow when it finishes, either way. */
+  /** Called over RPC by BookingWorkflow while the pilot works. */
+  async bookingProgress(stage: string, fields: Fields = {}) {
+    if (stage === "browser" && typeof fields.liveUrl === "string") {
+      // Served as a short redirect: the raw live-view url is long and ugly in a text.
+      this.setMeta("live_url", fields.liveUrl);
+      this.note("info", "booking.browser", { provider: fields.provider, live: true });
+      await this.say(`booking it now. watch the browser: ${this.env.PUBLIC_BASE_URL}/live/${encodeURIComponent(this.name)}`);
+      return;
+    }
+    this.note("info", `booking.${stage}`, fields);
+  }
+
+  /** Where /live/<chat> redirects: the Browserbase live view of the current booking run. */
+  async liveUrl() {
+    return this.getMeta("live_url");
+  }
+
+  /** Stores the pilot's final screenshot (base64 JPEG) and returns its id. */
+  async saveShot(base64: string): Promise<string> {
+    const id = crypto.randomUUID().slice(0, 12);
+    this.sql`INSERT INTO shots (id, jpeg, ts) VALUES (${id}, ${base64}, ${Date.now()})`;
+    this.sql`DELETE FROM shots WHERE ts < ${Date.now() - 3 * 24 * 3600 * 1000}`;
+    return id;
+  }
+
+  async getShot(id: string): Promise<string | null> {
+    return this.sql<{ jpeg: string }>`SELECT jpeg FROM shots WHERE id = ${id}`[0]?.jpeg ?? null;
+  }
+
+  /** Called over RPC by BookingWorkflow when it finishes, whatever the outcome. */
   async bookingFinished(result: BookingResult) {
     const option = this.state.options.find((o) => o.id === this.state.chosenOptionId);
-    this.note(result.ok ? "info" : "warn", "booking.finished", { ok: result.ok, detail: result.detail });
+    const name = option?.title ?? "it";
+    this.setMeta("live_url", "");
+    this.note(result.ok ? "info" : "warn", "booking.finished", {
+      status: result.status,
+      steps: result.steps,
+      tokens: result.tokens,
+      replay: result.replayUrl,
+    });
+
+    // Three outcomes, not two: confirmed, taken as far as the agent is allowed
+    // to go (a person finishes it), or genuinely failed.
+    const handedOff = result.status === "ready" || result.status === "needs_payment";
     this.publish({
-      status: result.ok ? "booked" : "failed",
+      status: result.ok ? "booked" : handedOff ? "handoff" : "failed",
       bookingNote: result.ok ? result.confirmation : result.detail,
     });
     await this.syncCard();
     if (result.ok) await this.planTicketIfNew();
-    await this.say(
-      result.ok
-        ? `booked ${option?.title ?? "it"}${result.confirmation ? ` — ${result.confirmation}` : ""}`
-        : `couldn't book ${option?.title ?? "it"}: ${result.detail ?? "unknown error"}`,
-      result.ok ? { screenEffect: "confetti" } : {},
-    );
+
+    if (result.ok) {
+      await this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" });
+    } else if (handedOff) {
+      await this.say(`${name}: ${result.detail}\nfinish it here: ${result.handoffUrl}`);
+    } else {
+      await this.say(`couldn't book ${name}: ${result.detail}${result.handoffUrl ? `\nyou can book it yourself here: ${result.handoffUrl}` : ""}`);
+    }
+
+    // The pilot's last view of the page: evidence of how far it really got.
+    if (result.shotId) {
+      await sendPhoto(this.env, this.name, `${this.env.PUBLIC_BASE_URL}/shot/${encodeURIComponent(this.name)}/${result.shotId}.jpg`).catch((err) =>
+        this.note("warn", "booking.shot_failed", errorFields(err)),
+      );
+    }
   }
 }

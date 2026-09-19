@@ -1,6 +1,7 @@
 /** Shapes shared by the Worker and the React vote page. */
 
-export type PlanStatus = "idle" | "voting" | "booking" | "booked" | "failed";
+/** "handoff": the agent took the booking as far as it may (payment, or a dry run) and a person finishes it. */
+export type PlanStatus = "idle" | "voting" | "booking" | "booked" | "handoff" | "failed";
 
 export type PlanOption = {
   id: string;

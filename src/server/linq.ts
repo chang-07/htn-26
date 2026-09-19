@@ -36,6 +36,8 @@ function statusLabel(plan: PlanState, participantCount: number) {
       return "Booking…";
     case "booked":
       return "Booked";
+    case "handoff":
+      return "Yours to finish";
     case "failed":
       return "Booking failed";
     default:
@@ -135,12 +137,19 @@ export async function sendText(env: Env, chatId: string, value: string, opts: Se
 // without promising delivery — so a failure is logged and never thrown: none of
 // them is worth losing a turn over.
 
-async function quietly(env: Env, chatId: string, event: string, call: (linq: LinqAPIV3) => Promise<unknown>) {
-  if (isDry(env, chatId)) return void log("info", "linq", `dry.${event}`, { chat: short(chatId) });
+/** Resolves to "ok", "dry", or the error — for the caller's own log, never thrown. */
+async function quietly(env: Env, chatId: string, event: string, call: (linq: LinqAPIV3) => Promise<unknown>): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", `dry.${event}`, { chat: short(chatId) });
+    return "dry";
+  }
   try {
     await call(linqClient(env));
+    return "ok";
   } catch (err) {
-    log("warn", "linq", `${event}.failed`, { chat: short(chatId), error: String(err).slice(0, 200) });
+    const error = String(err).slice(0, 200);
+    log("warn", "linq", `${event}.failed`, { chat: short(chatId), error });
+    return error;
   }
 }
 

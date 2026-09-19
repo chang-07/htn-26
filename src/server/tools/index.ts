@@ -43,6 +43,8 @@ export const toolSchemas = {
     optionId: z.string(),
     partySize: z.number().int().min(1),
     isoTime: z.string().describe("ISO 8601 local time of the reservation"),
+    contactName: z.string().describe("Full name the reservation goes under — a real person in the chat, as they gave it"),
+    contactEmail: z.string().describe("That person's email, exactly as they typed it. Never invent one."),
   }),
   shop_search: z.object({
     shop: z.string().describe("Shopify store domain, e.g. partycity.com"),
@@ -63,6 +65,19 @@ export const toolSchemas = {
   remember_fact: z.object({
     who: z.string().describe("The speaker label exactly as shown in the transcript"),
     fact: z.string().describe("One short durable fact in plain words: 'vegetarian', 'can't do Thursdays', 'lives in Kensington'"),
+  }),
+  save_profile: z.object({
+    name: z.string().optional().describe("What they go by"),
+    area: z.string().optional().describe("Neighbourhood or city"),
+    diet: z.string().optional().describe("Food rules in their words, or 'none'"),
+    budget: z.string().optional().describe("What a night out costs them, in their words"),
+    interests: z.string().optional().describe("Comma-separated, in their words"),
+    about: z.string().optional().describe("Anything else lasting they volunteered"),
+    matchOptIn: z.boolean().optional().describe("true only if they clearly said yes to being introduced to people"),
+    skipped: z
+      .array(z.enum(["name", "area", "diet", "budget", "interests", "matchOptIn"]))
+      .optional()
+      .describe("Questions they declined or said skip to"),
   }),
   send_profile_link: z.object({}),
   forget_person: z.object({
@@ -122,6 +137,8 @@ const descriptions: Record<ToolName, string> = {
     "Set the cart's full contents and post the cart card with its checkout link for someone to pay. Calling it again for the same shop replaces the contents of the same cart and redraws the card, so use it for every change. You never pay yourself.",
   remember_fact:
     "Save something lasting a person said about THEMSELVES (diet, budget, where they live, what they like, when they are free). It follows them into every chat. Never save what someone says about another person, and never save one-off plans.",
+  save_profile:
+    "Save the profile answers of the person you are talking to. Direct chats only. Include every field their message answered, even several at once. Call it BEFORE send_message.",
   send_profile_link:
     "Send this person their private profile link. Only works in a direct one-to-one chat, because the link is theirs alone.",
   forget_person: "Delete everything saved about a person. Only when that person themselves asks ('forget me').",

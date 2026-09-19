@@ -139,6 +139,7 @@ const STATUS_META: Record<PlanState["status"], string> = {
   voting: "React to vote",
   booking: "Booking…",
   booked: "Confirmed",
+  handoff: "Yours to finish",
   failed: "Booking failed",
 };
 

@@ -9,7 +9,7 @@
   "assets": {
     "not_found_handling": "single-page-application",
     // Everything the Worker must answer itself; the rest is the React app.
-    "run_worker_first": ["/api/*", "/agents/*", "/card/*", "/p/*", "/.well-known/*"]
+    "run_worker_first": ["/api/*", "/agents/*", "/card/*", "/p/*", "/live/*", "/shot/*", "/.well-known/*"]
   },
 
   // One PlanAgent per iMessage group chat. Each is a Durable Object with its

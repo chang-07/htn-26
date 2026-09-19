@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { upsertProfile } from "./tools/match";
 
 /**
  * What the agent knows about a person, keyed by phone handle so it follows
@@ -21,8 +22,33 @@ export type Profile = {
   /** Things they said in a chat, newest last. */
   facts: string[];
   matchOptIn?: boolean;
+  /** Onboarding questions they chose not to answer, so they are not asked twice. */
+  skipped?: string[];
   updated: number;
 };
+
+/**
+ * What onboarding asks for, in order, with the question's intent. The harness
+ * works out what is still missing each turn; the model only words the question.
+ */
+export const ONBOARDING = [
+  { key: "name", ask: "what they go by" },
+  { key: "area", ask: "which neighbourhood or city they are based in" },
+  { key: "diet", ask: "any food rules (vegetarian, halal, allergies) or none" },
+  { key: "budget", ask: "what a normal night out costs them" },
+  { key: "interests", ask: "a few things they are into" },
+  { key: "matchOptIn", ask: "whether they want to be introduced to people here with similar interests (yes or no)" },
+] as const;
+
+export type OnboardingKey = (typeof ONBOARDING)[number]["key"];
+
+export function missingFields(p: Profile | undefined): (typeof ONBOARDING)[number][] {
+  return ONBOARDING.filter(({ key }) => {
+    if (p?.skipped?.includes(key)) return false;
+    const value = p?.[key];
+    return value === undefined || value === "";
+  });
+}
 
 const EMPTY: Profile = { links: [], facts: [], updated: 0 };
 const MAX_FACTS = 12;
@@ -103,6 +129,20 @@ export function profileLines(p: Profile): string {
     p.facts.length && `mentioned: ${p.facts.join("; ")}`,
   ].filter(Boolean);
   return parts.join(" · ").slice(0, 420);
+}
+
+/**
+ * Same profile, same consent: opting in is what puts someone in the match pool.
+ * Returns false when the pool could not be reached, which must not lose the save.
+ */
+export async function syncMatchPool(env: Env, handle: string, p: Profile): Promise<boolean> {
+  if (!p.matchOptIn || !matchBlurb(p)) return true;
+  try {
+    await upsertProfile(env, { id: handle, name: p.name ?? "", blurb: matchBlurb(p) });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The blurb the match pool embeds, from the same profile. */

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { RunEventRow, RunSummary } from "../server/runs";
+import { RunGraph } from "./RunGraph";
+import { COLOR, FONT, FieldList, MONO, clock, dur, levelColor } from "./ui";
 
 /**
  * Live view of what the agent is doing, across every chat.
@@ -11,22 +13,6 @@ import type { RunEventRow, RunSummary } from "../server/runs";
  */
 
 type TimelineEvent = { seq: number; ts: number; level: string; event: string; fields: Record<string, unknown> };
-
-const COLOR = {
-  bg: "#0B0B0F",
-  panel: "#141419",
-  line: "#25252E",
-  text: "#FAFAFA",
-  dim: "#9C9CAC",
-  info: "#5B8CFF",
-  warn: "#E0A33E",
-  error: "#E5484D",
-  good: "#3DD68C",
-};
-
-const levelColor = (l: string) => (l === "error" ? COLOR.error : l === "warn" ? COLOR.warn : COLOR.dim);
-
-const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif";
 
 /** /runs/<runId> — so a run found here can be pasted to someone else. */
 const runIdFromPath = () => window.location.pathname.match(/^\/runs\/(.+)$/)?.[1] ?? null;
@@ -39,6 +25,7 @@ export function Runs() {
   const [follow, setFollow] = useState(true);
   const [live, setLive] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [mode, setMode] = useState<"graph" | "list">("graph");
   // /runs?token=… — the API and the live socket both need it when RUNS_TOKEN is set.
   const token = useMemo(() => new URLSearchParams(window.location.search).get("token") ?? "", []);
   const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
@@ -132,6 +119,11 @@ export function Runs() {
       .catch(() => {});
   }, [selected, events]);
 
+  // Landing on bare /runs with an empty pane is a dead end; open the newest.
+  useEffect(() => {
+    if (!selected && runs.length) select(runs[0].runId, false);
+  }, [selected, runs, select]);
+
   const chats = useMemo(() => [...new Set(runs.map((r) => r.chat))], [runs]);
   const shown = chat ? runs.filter((r) => r.chat === chat) : runs;
   const detail = selected ? runs.find((r) => r.runId === selected) : undefined;
@@ -162,6 +154,13 @@ export function Runs() {
               <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
               follow
             </label>
+            <button
+              onClick={() => setMode((m) => (m === "graph" ? "list" : "graph"))}
+              style={{ ...selectStyle, cursor: "pointer", fontFamily: MONO, marginLeft: "auto" }}
+              title="The graph shows which services a turn touched; the list is easier to read field by field."
+            >
+              {mode === "graph" ? "graph" : "list"}
+            </button>
           </div>
         </header>
         {shown.map((r) => (
@@ -170,8 +169,14 @@ export function Runs() {
         {!shown.length && <p style={{ color: COLOR.dim, padding: 16, fontSize: 13 }}>No runs yet. Text the agent, or POST /api/dev/message.</p>}
       </aside>
 
-      <section style={{ overflowY: "auto", padding: 24 }}>
-        {detail ? <Timeline run={detail} events={events[detail.runId] ?? []} /> : <p style={{ color: COLOR.dim }}>Pick a run.</p>}
+      <section style={{ overflow: mode === "graph" ? "hidden" : "auto", padding: mode === "graph" ? 0 : 24 }}>
+        {!detail ? (
+          <p style={{ color: COLOR.dim, padding: 24 }}>Pick a run.</p>
+        ) : mode === "graph" ? (
+          <RunGraph run={detail} events={events[detail.runId] ?? []} />
+        ) : (
+          <Timeline run={detail} events={events[detail.runId] ?? []} />
+        )}
       </section>
     </div>
   );
@@ -184,20 +189,20 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
       onClick={onClick}
       style={{
         display: "block", width: "100%", textAlign: "left", background: selected ? COLOR.panel : "transparent",
-        border: "none", borderBottom: `1px solid ${COLOR.line}`, borderLeft: `2px solid ${selected ? COLOR.info : "transparent"}`,
+        border: "none", borderBottom: `1px solid ${COLOR.line}`, borderLeft: `2px solid ${selected ? COLOR.accent : "transparent"}`,
         color: COLOR.text, padding: "10px 16px", cursor: "pointer", font: "inherit",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-        <span style={{ width: 6, height: 6, borderRadius: 6, background: running ? COLOR.info : levelColor(run.level), flexShrink: 0 }} />
+        <span style={{ width: 6, height: 6, borderRadius: 6, background: running ? COLOR.accent : levelColor(run.level), flexShrink: 0 }} />
         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {running ? <em style={{ color: COLOR.info }}>running…</em> : (run.outcome ?? "—")}
+          {running ? <em style={{ color: COLOR.accent }}>running…</em> : (run.outcome ?? "—")}
         </span>
         <span style={{ color: COLOR.dim, fontSize: 11 }}>{clock(run.started)}</span>
       </div>
       <div style={{ color: COLOR.dim, fontSize: 11, marginTop: 4, display: "flex", gap: 10 }}>
         <span>{run.chat.slice(0, 8)}</span>
-        {run.ms !== null && <span>{run.ms}ms</span>}
+        {run.ms !== null && <span>{dur(run.ms)}</span>}
         {!!run.tokens && <span>{run.tokens} tok</span>}
         {!!run.tools.length && <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.tools.join(" → ")}</span>}
       </div>
@@ -214,7 +219,7 @@ function Timeline({ run, events }: { run: RunSummary; events: TimelineEvent[] })
       </h2>
       <p style={{ color: COLOR.dim, fontSize: 12, margin: "0 0 20px" }}>
         {run.chat} · {new Date(run.started).toLocaleString()}
-        {run.ms !== null && ` · ${run.ms}ms`}
+        {run.ms !== null && ` · ${dur(run.ms)}`}
         {!!run.tokens && ` · ${run.tokens} tokens`}
         {run.steps !== null && ` · ${run.steps} steps`}
       </p>
@@ -233,55 +238,10 @@ function Timeline({ run, events }: { run: RunSummary; events: TimelineEvent[] })
   );
 }
 
-/**
- * One `k=v  k=v` line per event. Tool arguments and research reports run long,
- * so it clamps to two lines until clicked, and any URL in there — a Browserbase
- * session replay, a checkout link — stays clickable.
- */
-function FieldList({ fields }: { fields: Record<string, unknown> }) {
-  const [open, setOpen] = useState(false);
-  const text = Object.entries(fields)
-    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
-    .join("  ");
-  return (
-    <pre
-      onClick={() => setOpen((o) => !o)}
-      style={{
-        margin: "4px 0 0", color: COLOR.dim, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word",
-        cursor: "pointer", ...(open ? {} : { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }),
-      }}
-    >
-      {linkify(text)}
-    </pre>
-  );
-}
-
-/** Splits on URLs so they render as anchors; everything else stays plain text. */
-function linkify(text: string) {
-  return text.split(/(https?:\/\/[^\s"',\]}]+)/g).map((part, i) =>
-    part.startsWith("http") ? (
-      <a
-        key={i}
-        href={part}
-        target="_blank"
-        rel="noreferrer"
-        onClick={(e) => e.stopPropagation()}
-        style={{ color: COLOR.info }}
-      >
-        {part}
-      </a>
-    ) : (
-      part
-    ),
-  );
-}
-
 const selectStyle: React.CSSProperties = {
   background: COLOR.panel, color: COLOR.text, border: `1px solid ${COLOR.line}`,
   borderRadius: 6, padding: "4px 8px", fontSize: 12,
 };
-
-const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 const EMPTY_RUN: RunSummary = {
   runId: "", chat: "", trigger: null, started: Date.now(), ended: null,

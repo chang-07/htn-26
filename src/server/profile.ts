@@ -1,6 +1,5 @@
-import { errorFields, log, mask } from "./log";
-import { matchBlurb, people, type Profile } from "./people";
-import { upsertProfile } from "./tools/match";
+import { log, mask } from "./log";
+import { people, syncMatchPool, type Profile } from "./people";
 
 /**
  * The page behind a person's profile link: GET shows the form, POST saves it.
@@ -76,11 +75,7 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
     log("info", "people", "profile.saved", { who: mask(handle), matchOptIn: saved.matchOptIn, links: saved.links.length });
 
     // Same profile, same consent: ticking the box is what puts someone in the pool.
-    if (saved.matchOptIn && matchBlurb(saved)) {
-      await upsertProfile(env, { id: handle, name: saved.name ?? "", blurb: matchBlurb(saved) }).catch((err) =>
-        log("warn", "people", "match_pool.failed", errorFields(err)),
-      );
-    }
+    if (!(await syncMatchPool(env, handle, saved))) log("warn", "people", "match_pool.failed", { who: mask(handle) });
     return page(`<main><span class="meta">Saved</span><h1>Got it${saved.name ? `, ${esc(saved.name)}` : ""}</h1>
       <p>The planner will use this in every chat you're in. Open this link again any time to change it, or text "forget me" to delete it.</p></main>`, true);
   }

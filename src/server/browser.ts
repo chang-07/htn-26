@@ -20,6 +20,8 @@ export type BrowserSession = {
   provider: "browserbase" | "cloudflare";
   /** Browserbase session id, for the replay link. */
   sessionId?: string;
+  /** Browserbase live view: watch the browser being driven, in real time. */
+  liveUrl?: string;
   close: () => Promise<void>;
 };
 
@@ -47,10 +49,17 @@ export async function openBrowser(env: Env, opts: { timeoutSeconds?: number } = 
   const browser = await puppeteer.connect({ transport: await nativeSocket(session.connectUrl) });
   log("info", "browse", "session.open", { provider: "browserbase", session: short(session.id) });
 
+  // The live view is a nicety; a session is still usable without it.
+  const liveUrl = await fetch(`${BB_API}/sessions/${session.id}/debug`, { headers })
+    .then((r) => (r.ok ? (r.json() as Promise<{ debuggerFullscreenUrl?: string }>) : null))
+    .then((d) => d?.debuggerFullscreenUrl)
+    .catch(() => undefined);
+
   return {
     browser,
     provider: "browserbase",
     sessionId: session.id,
+    liveUrl,
     close: async () => {
       await browser.close().catch(() => {});
       // Disconnecting normally ends the session; releasing makes sure of it.

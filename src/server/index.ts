@@ -7,6 +7,7 @@ import type {
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
 import { openBrowser, readPage, searchWeb } from "./browser";
+import { observe, runPilot } from "./pilot";
 import { renderAvatar, cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, venueTicket, type Ticket } from "./card";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
@@ -46,6 +47,24 @@ export default {
     if (url.pathname === "/card/avatar.png") {
       const image = await renderAvatar(env.IMESSAGE_APP_NAME);
       return new Response(image.body, { headers: { ...pngHeaders, "cache-control": "public, max-age=300" } });
+    }
+
+    // Short link to the Browserbase live view of a booking in progress.
+    if (url.pathname.startsWith("/live/")) {
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, decodeURIComponent(url.pathname.slice("/live/".length)));
+      const live = await agent.liveUrl();
+      return live ? Response.redirect(live, 302) : new Response("No booking is running right now.", { status: 404 });
+    }
+
+    // The pilot's final screenshot, sent to the chat as a photo.
+    if (url.pathname.startsWith("/shot/")) {
+      const [chat, file] = url.pathname.slice("/shot/".length).split("/");
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, decodeURIComponent(chat ?? ""));
+      const jpeg = await agent.getShot((file ?? "").replace(/\.jpg$/, ""));
+      if (!jpeg) return new Response("Not found", { status: 404 });
+      return new Response(Uint8Array.from(atob(jpeg), (c) => c.charCodeAt(0)), {
+        headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400" },
+      });
     }
 
     if (url.pathname.startsWith("/card/")) {
@@ -267,6 +286,50 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
       depth: body.depth === "deep" ? "deep" : "quick",
     });
     return Response.json({ ok: true, started });
+  }
+  if (url.pathname === "/api/dev/pilot") {
+    // Drive one site with the browser pilot, outside any chat or workflow:
+    //   /api/dev/pilot?mode=availability&url=https://…&task=Find+times+for+4+on+Saturday+evening
+    // Always a dry run here, so it can never confirm a booking.
+    const session = await openBrowser(env, { timeoutSeconds: 360 });
+    try {
+      log("info", "pilot", "dev.start", { live: session.liveUrl ?? "(no live view)" });
+      const page = await session.browser.newPage();
+
+      // mode=inspect: what the pilot SEES on a page, plus the raw markup around a
+      // keyword — for when it cannot find a control and guessing has run out.
+      if (url.searchParams.get("mode") === "inspect") {
+        await page.setViewport({ width: 1280, height: 900 });
+        await page.goto(url.searchParams.get("url") ?? "https://example.com", { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await new Promise((r) => setTimeout(r, 3000));
+        const seen = await observe(page);
+        const find = url.searchParams.get("find") ?? "quantity";
+        const markup = await page.evaluate((word) => {
+          const re = new RegExp(word, "i");
+          return Array.from(document.querySelectorAll<HTMLElement>("body *"))
+            .filter((el) => el.children.length <= 6 && re.test(el.outerHTML.slice(0, 400)) && el.outerHTML.length < 1500)
+            .slice(-4)
+            .map((el) => el.outerHTML.replace(/\s+/g, " ").slice(0, 900));
+        }, find);
+        return Response.json({ elements: seen.elements, markup });
+      }
+
+      const result = await runPilot(
+        env,
+        page,
+        {
+          mode: url.searchParams.get("mode") === "book" ? "book" : "availability",
+          task: url.searchParams.get("task") ?? "Find available times",
+          startUrl: url.searchParams.get("url") ?? "https://example.com",
+          dryRun: true,
+          maxSteps: Number(url.searchParams.get("steps") ?? 14),
+        },
+        (n, line) => log("info", "pilot", "step", { n, line }),
+      );
+      return Response.json({ provider: session.provider, sessionId: session.sessionId, liveUrl: session.liveUrl, ...result });
+    } finally {
+      await session.close();
+    }
   }
   if (url.pathname === "/api/dev/browse") {
     const session = await openBrowser(env, { timeoutSeconds: 120 });

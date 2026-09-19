@@ -7,6 +7,7 @@ const STATUS_LABEL: Record<PlanState["status"], string> = {
   voting: "Voting open",
   booking: "Booking…",
   booked: "Booked",
+  handoff: "Ready for you to finish",
   failed: "Booking failed",
 };
 
