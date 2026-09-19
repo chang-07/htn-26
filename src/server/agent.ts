@@ -2,7 +2,7 @@ import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
-import { llmFor } from "./llm";
+import { llmFor, modelExtras } from "./llm";
 import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
@@ -1187,7 +1187,7 @@ ${transcript}`,
       let res;
       if (!spoke) await this.typing();
       try {
-        res = await client.chat.completions.create({ model, messages, tools: openAiTools() });
+        res = await client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never);
       } catch (err) {
         end("error", "llm_failed", { step, ...errorFields(err) });
         return;
