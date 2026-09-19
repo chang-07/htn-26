@@ -43,7 +43,13 @@ export function Runs() {
   const token = useMemo(() => {
     const fromUrl = new URLSearchParams(window.location.search).get("token");
     try {
-      if (fromUrl) localStorage.setItem(TOKEN_KEY, fromUrl);
+      if (fromUrl) {
+        localStorage.setItem(TOKEN_KEY, fromUrl);
+        // Remembered now, so take it out of the address bar: this page gets projected.
+        const clean = new URL(window.location.href);
+        clean.searchParams.delete("token");
+        window.history.replaceState({}, "", clean.pathname + clean.search);
+      }
       return fromUrl ?? localStorage.getItem(TOKEN_KEY) ?? "";
     } catch {
       // Private window, or site data blocked. The URL token still works.
@@ -202,13 +208,32 @@ export function Runs() {
             <h1 style={{ fontSize: 16, margin: 0, flex: 1 }}>Agent runs</h1>
             {problem ? (
               <span style={{ fontSize: 12, color: "var(--error)" }}>
-                {problem === "locked"
-                  ? "Locked. Open this page once as /runs?token=<RUNS_TOKEN> and it will be remembered."
-                  : `Couldn't load: ${problem}`}
+                {problem === "locked" ? "Locked" : `Couldn't load: ${problem}`}
               </span>
             ) : null}
             <span title={live ? "connected" : "disconnected"} style={{ width: 8, height: 8, borderRadius: 8, background: live ? "var(--good)" : "var(--muted)" }} />
           </div>
+          {problem === "locked" ? (
+            // Asked for once per browser. The key is RUNS_TOKEN; it is kept in this browser only.
+            <form
+              style={{ display: "flex", gap: 6, marginTop: 10 }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                const key = String(new FormData(e.currentTarget).get("key") ?? "").trim();
+                if (!key) return;
+                try {
+                  localStorage.setItem(TOKEN_KEY, key);
+                  window.location.reload();
+                } catch {
+                  // No storage (private window): carry it in the URL for this visit instead.
+                  window.location.search = `?token=${encodeURIComponent(key)}`;
+                }
+              }}
+            >
+              <input name="key" type="password" placeholder="viewer key" autoFocus autoComplete="current-password" style={{ ...selectStyle, flex: 1, minWidth: 0 }} />
+              <button type="submit" style={selectStyle}>Unlock</button>
+            </form>
+          ) : null}
           <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
             <select value={chat} onChange={(e) => setChat(e.target.value)} style={selectStyle}>
               <option value="">all chats</option>
