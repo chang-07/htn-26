@@ -1,14 +1,14 @@
 import { Agent, callable } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
-import { EMPTY_PLAN, REACTION_SLOTS, type PlanOption, type PlanState } from "../types";
+import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { cartTicket, matchTicket, planTicket, rsvpTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { markRead, sendCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
-import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
+import { KNOWN_SHOPS, cancelCart, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import { RunRecorder } from "./runs";
 import type { BookingParams, BookingResult } from "./booking";
@@ -46,9 +46,19 @@ on a time, book it, and order anything they need.
   at most once per plan. It needs the full name and email the reservation goes
   under: if nobody has given them, ask who is booking and for their email, and
   never make either up.
-- You cannot pay for anything. shop_build_cart posts the cart card with a
-  checkout link for a human to complete. When the group changes the order, call
-  it again with the whole new cart; never describe cart changes in text.
+- You cannot pay for anything. shop_build_cart posts one store's cart card with
+  a checkout link for a human to complete. When the group changes that order,
+  call it again with that store's whole new cart; never describe cart changes in
+  text.
+- An event usually shops at several stores (cake from one, balloons from
+  another). Each store has its own cart and its own checkout: build them one
+  store at a time, and never put one store's variantId in another store's cart.
+  The "Shopping list" below is every cart so far. Once the shopping is settled,
+  or when someone asks what it all comes to, call show_shopping_list once.
+- Size quantities to the headcount below, not to the number of people talking:
+  if 6 are in, order for 6. If nobody has been asked yet and the amount depends
+  on it, ask who is in (ask_rsvp) before building a cart. When the headcount
+  changes after a cart is built, say so and offer to resize it.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
@@ -227,7 +237,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** True for anything the agent posted: texts, and every id a card has had. */
   private isOwnMessage(id: string) {
-    if (this.cardIds().includes(id) || id === this.getMeta("cart_message_id")) return true;
+    if (this.cardIds().includes(id)) return true;
+    // Each store's pay card has its own id, kept under that store's key.
+    if (this.carts().some((c) => id === this.getMeta(`cart_message_id:${shopKey(c.shop)}`))) return true;
     return this.sql<Row>`SELECT 1 FROM messages WHERE linq_id = ${id} AND direction = 'out'`.length > 0;
   }
 
@@ -464,6 +476,57 @@ export class PlanAgent extends Agent<Env, PlanState> {
     };
   }
 
+  // ------------------------------------------------------------ shopping list
+
+  /** Every store's cart. Reads pre-multi-store state (a single `cart`) too. */
+  private carts(): CartSummary[] {
+    return cartsOf(this.state);
+  }
+
+  /** Writing carts also retires the legacy single-cart field for good. */
+  private saveCarts(carts: CartSummary[]) {
+    this.publish({ carts, cart: undefined });
+  }
+
+  /**
+   * Who a cost is split across: the people who said they are in, once anyone
+   * has; until then everyone in the chat.
+   */
+  private headcount(): number {
+    const going = this.rsvps().going.length;
+    return going || this.participants().length;
+  }
+
+  /** One line for tool results: what the whole list looks like now. */
+  private shoppingListLine(): string {
+    const carts = this.carts();
+    if (!carts.length) return "Shopping list: empty.";
+    const sum = cartsTotal(carts);
+    const people = this.headcount();
+    const total = sum ? `${sum.symbol}${sum.amount.toFixed(2)}` : "mixed currencies, not summed";
+    const split = sum && people > 1 ? `, ${sum.symbol}${(sum.amount / people).toFixed(2)} each across ${people}` : "";
+    return `Shopping list: ${carts.length} store${carts.length === 1 ? "" : "s"}, ${total}${split}. ${carts
+      .map((c) => `${c.shop} ${c.total}${c.paidBy ? ` (paid by ${c.paidBy})` : " (unpaid)"}`)
+      .join("; ")}.`;
+  }
+
+  /** The full list for the model's turn context: every store, item and total. */
+  private shoppingListContext(): string {
+    const carts = this.carts();
+    if (!carts.length) return "empty";
+    return `${this.shoppingListLine()} Items — ${carts
+      .map((c) => `${c.shop}: ${c.lines.map((l) => `${l.quantity}x ${l.title} @ ${l.price}`).join(", ")}`)
+      .join(" | ")}`;
+  }
+
+  /** What the model is told about headcount, so quantities can be sized to it. */
+  private headcountContext(): string {
+    const r = this.rsvps();
+    const asked = r.going.length + r.out.length > 0 || this.getMeta("rsvp_open") === "1";
+    if (!asked) return `not asked yet; ${this.participants().length} in the chat`;
+    return `${r.going.length} in${r.going.length ? ` (${r.going.join(", ")})` : ""}, ${r.out.length} out, ${r.waiting.length} no reply — ${r.locked ? "LOCKED" : "still open"}`;
+  }
+
   private rsvps(): Rsvps {
     const people = this.participants();
     const answers = new Map(this.sql<{ handle: string; answer: string }>`SELECT handle, answer FROM rsvps`.map((r) => [r.handle, r.answer]));
@@ -568,7 +631,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const direct = this.getMeta("is_group") === "0";
     const about = await this.aboutPeople(people, direct);
 
-    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify(this.state);
+    // Carts get their own "Shopping list" line below, whatever the plan's status.
+    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined });
     const research = this.researchContext();
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -579,6 +643,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
 About the people: ${about.text}
 Where the group is based: ${this.getMeta("area") ?? "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
+Shopping list: ${this.shoppingListContext()}
+Headcount: ${this.headcountContext()}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
@@ -868,41 +934,82 @@ ${transcript}`,
       }
 
       case "shop_build_cart": {
-        const { shop, lines } = parseToolArgs("shop_build_cart", rawArgs);
+        const args = parseToolArgs("shop_build_cart", rawArgs);
+        const shop = shopKey(args.shop);
         // One cart and one card per shop; a second call edits both. The id holds
         // the cart's secret key, so it lives in meta rather than the public state.
-        const cart = await setCart(this.env, shop, lines, this.getMeta(`cart_id:${shop}`) || undefined);
+        const cart = await setCart(this.env, shop, args.lines, this.getMeta(`cart_id:${shop}`) || undefined);
         this.setMeta(`cart_id:${shop}`, cart.id);
         if (!cart.lines.length) {
           return `Nothing could be added, so no card was posted. Store says: ${cart.messages.join("; ") || "no reason given"}. Choose a different variant from shop_search.`;
         }
-        this.publish({ cart: { shop, checkoutUrl: cart.checkoutUrl, total: cart.total, lines: cart.lines } });
+        // Replace this store's entry and leave every other store's cart alone.
+        // An edited cart is unpaid again: what was paid for is no longer what is in it.
+        const mine = { shop, checkoutUrl: cart.checkoutUrl, total: cart.total, lines: cart.lines };
+        // In place, so the list does not reshuffle every time one store is edited.
+        const before = this.carts();
+        const at = before.findIndex((c) => shopKey(c.shop) === shop);
+        this.saveCarts(at === -1 ? [...before, mine] : before.map((c, i) => (i === at ? mine : c)));
         // The photo first, so the pay card lands directly under what it is for.
-        await this.postTicket("cart", cartTicket(this.state.cart!, this.participants().length));
+        await this.postTicket("cart", cartTicket(mine, this.headcount()));
 
         const messageId = this.getMeta(`cart_message_id:${shop}`);
         if (messageId) {
           // updateCard returns the card's new id; the old one is dead after a redraw.
-          const newId = await timed("agent", "cart.update", { version: this.state.version }, () =>
-            updateCard(this.env, messageId, this.name, this.state, 0, "cart"),
+          const newId = await timed("agent", "cart.update", { shop, version: this.state.version }, () =>
+            updateCard(this.env, messageId, this.name, this.state, 0, "cart", shop),
             this.note,
           ).catch(() => undefined);
           if (newId) this.setMeta(`cart_message_id:${shop}`, newId);
         } else {
-          const id = await sendCard(this.env, this.name, this.name, this.state, 0, "cart");
+          const id = await sendCard(this.env, this.name, this.name, this.state, 0, "cart", shop);
           this.setMeta(`cart_message_id:${shop}`, id);
         }
         const summary = cart.lines.map((l) => `${l.quantity}x ${l.title} (${l.price})`).join(", ");
-        return `Cart card ${messageId ? "redrawn" : "posted"} with its checkout link. ${summary}. Total ${cart.total}.${
+        return `Cart card for ${shop} ${messageId ? "redrawn" : "posted"} with its checkout link. ${summary}. Total ${cart.total}.${
           cart.messages.length ? ` Store says: ${cart.messages.join("; ")}` : ""
-        }`;
+        } ${this.shoppingListLine()}`;
+      }
+
+      case "shop_drop_cart": {
+        const shop = shopKey(parseToolArgs("shop_drop_cart", rawArgs).shop);
+        const carts = this.carts();
+        if (!carts.some((c) => shopKey(c.shop) === shop)) {
+          return `There is no cart at ${shop}. ${this.shoppingListLine()}`;
+        }
+        this.saveCarts(carts.filter((c) => shopKey(c.shop) !== shop));
+        const cartId = this.getMeta(`cart_id:${shop}`);
+        // The checkout link already in the thread cannot be unsent, so at least
+        // ask the store to void the cart behind it.
+        const cancelled = cartId ? await cancelCart(this.env, shop, cartId) : false;
+        this.setMeta(`cart_id:${shop}`, "");
+        this.setMeta(`cart_message_id:${shop}`, "");
+        this.note("info", "cart.dropped", { shop, cancelledAtStore: cancelled });
+        return `Dropped the ${shop} cart. Its old checkout card is still in the thread, so tell the group in one line not to use it. ${this.shoppingListLine()}`;
+      }
+
+      case "show_shopping_list": {
+        const carts = this.carts();
+        if (!carts.length) return "The shopping list is empty: no carts have been built.";
+        await this.postTicket("list", shoppingListTicket(carts, this.headcount()));
+        return `Shopping list ticket posted. ${this.shoppingListLine()}`;
       }
 
       case "mark_paid": {
-        const { who } = parseToolArgs("mark_paid", rawArgs);
-        if (!this.state.cart) return "There is no cart in this chat.";
-        await this.postTicket("cart", cartTicket(this.state.cart, this.participants().length, who));
-        return "PAID ticket posted.";
+        const { who, shop: named } = parseToolArgs("mark_paid", rawArgs);
+        const carts = this.carts();
+        if (!carts.length) return "There is no cart in this chat.";
+        // Tolerate "milk bar" for milkbarstore.com, but never guess between stores.
+        const norm = (s: string) => shopKey(s).replace(/[^a-z0-9]/g, "");
+        const hits = carts.filter((c) => norm(c.shop).includes(norm(named)) || norm(named).includes(norm(c.shop).replace(/(com|ca|co|store|shop)$/g, "")));
+        const cart = hits.length === 1 ? hits[0] : carts.length === 1 ? carts[0] : undefined;
+        if (!cart) return `Which store? "${named}" does not pick out one cart. ${this.shoppingListLine()}`;
+        if (cart.paidBy) return `${cart.shop} is already marked paid by ${cart.paidBy}.`;
+
+        const paid = { ...cart, paidBy: who };
+        this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
+        await this.postTicket("cart", cartTicket(paid, this.headcount()));
+        return `PAID ticket posted for ${cart.shop}. ${this.shoppingListLine()}`;
       }
 
       case "show_venue": {

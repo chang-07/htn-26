@@ -1,5 +1,5 @@
 import LinqAPIV3 from "@linqapp/sdk";
-import { SLOT_EMOJI, type PlanState } from "../types";
+import { SLOT_EMOJI, cartsOf, shopKey, type PlanState } from "../types";
 import { log, short } from "./log";
 
 export function linqClient(env: Env) {
@@ -13,8 +13,8 @@ export function cardImageUrl(env: Env, agentName: string, version: number) {
 
 export type CardKind = "plan" | "cart";
 
-export function cartImageUrl(env: Env, agentName: string, version: number) {
-  return `${cardImageUrl(env, agentName, version)}&kind=cart`;
+export function cartImageUrl(env: Env, agentName: string, version: number, shop: string) {
+  return `${cardImageUrl(env, agentName, version)}&kind=cart&shop=${encodeURIComponent(shop)}`;
 }
 
 export function widgetUrl(env: Env, agentName: string) {
@@ -75,9 +75,15 @@ export function appCardPart(
   };
 }
 
-/** The cart as an app card. Tapping goes straight to the store's checkout. */
-export function cartCardPart(env: Env, agentName: string, plan: PlanState) {
-  const cart = plan.cart!;
+/**
+ * One store's cart as an app card. Tapping goes straight to that store's
+ * checkout. With no `shop` it falls back to the first cart, which is all a
+ * single-store plan has.
+ */
+export function cartCardPart(env: Env, agentName: string, plan: PlanState, shop?: string) {
+  const carts = cartsOf(plan);
+  const cart = carts.find((c) => shop && shopKey(c.shop) === shopKey(shop)) ?? carts[0];
+  if (!cart) throw new Error(`no cart${shop ? ` for ${shop}` : ""} to draw a card for`);
   const items = cart.lines.reduce((n, l) => n + l.quantity, 0);
   return {
     ...appCardPart(env, agentName, plan, 0),
@@ -87,7 +93,7 @@ export function cartCardPart(env: Env, agentName: string, plan: PlanState) {
       caption: `Cart · ${cart.shop}`,
       subcaption: `${items} item${items === 1 ? "" : "s"}`,
       trailing_caption: cart.total,
-      image_url: cartImageUrl(env, agentName, plan.version),
+      image_url: cartImageUrl(env, agentName, plan.version, cart.shop),
     },
   };
 }
@@ -261,11 +267,13 @@ export async function sendCard(
   plan: PlanState,
   participantCount: number,
   kind: CardKind = "plan",
+  /** Which store's cart, for a cart card. Each store has a card of its own. */
+  shop?: string,
 ): Promise<string> {
-  const part = kind === "cart" ? cartCardPart(env, agentName, plan) : appCardPart(env, agentName, plan, participantCount);
+  const part = kind === "cart" ? cartCardPart(env, agentName, plan, shop) : appCardPart(env, agentName, plan, participantCount);
   if (isDry(env, chatId)) {
-    log("info", "linq", "dry.card", { chat: short(chatId), kind, image: part.layout.image_url, url: part.url });
-    return `dry-${kind}`;
+    log("info", "linq", "dry.card", { chat: short(chatId), kind, shop, image: part.layout.image_url, url: part.url });
+    return kind === "cart" && shop ? `dry-cart-${shopKey(shop)}` : `dry-${kind}`;
   }
   const linq = linqClient(env);
 
@@ -291,9 +299,10 @@ export async function updateCard(
   plan: PlanState,
   participantCount: number,
   kind: CardKind = "plan",
+  shop?: string,
 ) {
-  if (isDry(env, agentName)) return void log("info", "linq", "dry.card_update", { messageId, kind, version: plan.version });
-  const part = kind === "cart" ? cartCardPart(env, agentName, plan) : appCardPart(env, agentName, plan, participantCount);
+  if (isDry(env, agentName)) return void log("info", "linq", "dry.card_update", { messageId, kind, shop, version: plan.version });
+  const part = kind === "cart" ? cartCardPart(env, agentName, plan, shop) : appCardPart(env, agentName, plan, participantCount);
   const res = hasAppIdentity(env)
     ? await linqClient(env).messages.updateAppCard(messageId, {
         url: part.url,
