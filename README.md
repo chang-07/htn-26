@@ -18,7 +18,7 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
    ├─ public state ──WebSocket──► vote page (useAgent)   src/client/
    ├─ schedule(): batches bursts of texts into one turn; nudges non-voters
    ├─ LLM tool loop (OpenAI, or a free dev provider)     src/server/llm.ts
-   │     ├─ search_places · propose_plan · get_votes
+   │     ├─ propose_plan · get_votes
    │     ├─ research ──► ResearchWorkflow (durable, minutes-long)
    │     │                 └─ Browserbase: search, read pages   src/server/browser.ts
    │     ├─ shop_search · shop_build_cart   → Shopify UCP (JSON-RPC, no key)
@@ -108,7 +108,7 @@ Every hop logs one line in the same shape, `scope event {fields}`:
 linq   webhook.received       {"type":"message.received","chat":"62c58f3a"}
 agent  message.in             {"chat":"62c58f3a","from":"…5178","chars":38,"group":false}
 agent  turn.start             {"chat":"62c58f3a","llm":"dev/gpt-oss:20b","history":4}
-agent  tool                   {"chat":"62c58f3a","tool":"search_places","args":"{...}","ms":2}
+agent  tool                   {"chat":"62c58f3a","tool":"get_votes","args":"{}","ms":2}
 agent  turn.end               {"chat":"62c58f3a","outcome":"silent","ms":4210,"tokens":1873,...}
 ```
 
@@ -325,6 +325,5 @@ localhost-only and return 404 on the deployed Worker.
   it will miss. The agent keeps all of a card's ids for tapback matching.
 - **Everyone in the chat needs iMessage**, and on a shared Linq line each person
   must text the number first (inbound-first).
-- `src/server/tools/places.ts` returns stub venues — wire a real provider.
 - `vite.config.ts` needs the `agents()` plugin, or `@callable()` is a syntax
   error at Worker startup.

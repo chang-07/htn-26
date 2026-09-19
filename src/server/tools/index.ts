@@ -13,10 +13,6 @@ export const toolSchemas = {
     who: z.string().describe("The speaker label exactly as shown in the transcript, e.g. …4821"),
     name: z.string().describe("What they go by"),
   }),
-  search_places: z.object({
-    query: z.string().describe("e.g. 'ramen', 'bowling', 'rooftop bar'"),
-    near: z.string().describe("Neighbourhood, city or address"),
-  }),
   research: z.object({
     brief: z
       .string()
@@ -61,6 +57,31 @@ export const toolSchemas = {
       .min(1)
       .describe("The whole cart, not just what changed"),
   }),
+  mark_paid: z.object({
+    who: z.string().describe("Name of the person who said they paid"),
+  }),
+  show_venue: z.object({
+    name: z.string().describe("Venue name as it appears in the research findings or the plan options"),
+  }),
+  ask_rsvp: z.object({
+    title: z.string().optional().describe("Defaults to \"Who's in?\""),
+    when: z.string().optional().describe("Short, e.g. 'Fri 8:00 PM'"),
+  }),
+  record_rsvp: z.object({
+    who: z.string().describe("The speaker label exactly as shown in the transcript"),
+    answer: z.enum(["in", "out"]),
+  }),
+  get_rsvps: z.object({}),
+  lock_headcount: z.object({}),
+  introduce_match: z.object({
+    a: z.string().describe("First name of one person"),
+    b: z.string().describe("First name of the other"),
+    common: z
+      .array(z.object({ emoji: z.string().optional().describe("One emoji"), text: z.string().describe("Under 28 characters") }))
+      .min(1)
+      .max(3)
+      .describe("What they share, taken from their own blurbs. Never invented."),
+  }),
   join_match_pool: z.object({
     who: z.string().describe("Transcript label of the person opting in"),
     blurb: z.string().describe("Their interests, in their own words"),
@@ -75,7 +96,6 @@ export type ToolName = keyof typeof toolSchemas;
 const descriptions: Record<ToolName, string> = {
   send_message: "Send a plain text message to the group chat.",
   remember_name: "Remember what a participant goes by, once they or someone else says it.",
-  search_places: "Instant lookup of venue names near a location. For anything the group will actually choose between, use research instead.",
   research:
     "Research real options on the live web: reads guides, lists and venue sites, then returns ranked places with sources. Runs in the background for a few minutes and the results arrive on their own — say you're looking into it, then stop. Use it once the group has given you something to go on (what, where, roughly when).",
   propose_plan:
@@ -87,6 +107,16 @@ const descriptions: Record<ToolName, string> = {
     "Search a Shopify store's catalog for things to order (decor, snacks, gifts). Prices come back ready to quote.",
   shop_build_cart:
     "Set the cart's full contents and post the cart card with its checkout link for someone to pay. Calling it again for the same shop replaces the contents of the same cart and redraws the card, so use it for every change. You never pay yourself.",
+  mark_paid: "Someone said they paid for the cart. Posts the green PAID ticket. Only when a person in the chat says so.",
+  show_venue:
+    "Post a ticket with one venue's details (what it is, price, address, caveats). Use when someone asks about a specific place. One venue per turn.",
+  ask_rsvp:
+    "Open a headcount and post the Who's in ticket. People answer with a thumbs up or down on it. Use once a time and place are fixed.",
+  record_rsvp: "Record an RSVP that someone gave in words instead of a tapback ('I'm in', 'can't make it').",
+  get_rsvps: "Read who is in, who is out and who has not answered.",
+  lock_headcount: "Close the headcount and post the final green ticket. It closes on its own once everyone has answered.",
+  introduce_match:
+    "Post the introduction ticket for two people from the match pool. Both must have opted in, and the things in common must come from their blurbs.",
   join_match_pool:
     "Add someone to the matchmaking pool. Only when that person has explicitly asked to be included.",
   find_matches: "Find people in the opt-in pool with similar interests.",

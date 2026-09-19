@@ -6,7 +6,6 @@ import { llmFor } from "./llm";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { sendCard, sendText, sendTicket, tapbackLegend, updateCard } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
-import { searchPlaces } from "./tools/places";
 import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import { RunRecorder } from "./runs";
@@ -22,7 +21,10 @@ on a time, book it, and order anything they need.
   reply NOOP unless you still have a non-message tool to call.
 - Do not announce what you are about to do. Do it, then report the result.
 - Never invent a venue, address or price. Every option you propose must come
-  from a search_places or shop_search result in this conversation.
+  from the Research findings below or a shop_search result in this conversation.
+- A vote needs at least two real options. If research found only one good
+  place, do not pad the list: tell the group about that one and ask whether to
+  go with it or look further.
 - To find real places, call research. It takes a few minutes and its findings
   appear under "Research" below when done: tell the group you're on it, then
   stop. Never start a second run while one is in progress, and never invent
@@ -503,11 +505,6 @@ ${transcript}`,
         if (!person) return `No participant labelled ${who}`;
         this.sql`UPDATE participants SET name = ${goesBy} WHERE handle = ${person.handle}`;
         return "remembered";
-      }
-
-      case "search_places": {
-        const { query, near } = parseToolArgs("search_places", rawArgs);
-        return JSON.stringify(await searchPlaces(query, near));
       }
 
       case "research": {

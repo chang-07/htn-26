@@ -7,7 +7,7 @@ import type {
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
 import { openBrowser, readPage, searchWeb } from "./browser";
-import { renderCard, renderCartCard } from "./card";
+import { cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, venueTicket, type Ticket } from "./card";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
 import type { PlanState } from "../types";
@@ -129,7 +129,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
- *   GET  /api/dev/card?status=voting|booking|booked|failed&title=..&o=A&o=B&votes=2,1&kind=cart   card preview from sample data
+ *   GET  /api/dev/card?kind=plan|cart|venue|rsvp|match&state=open|done   card preview from sample data (plan also takes status, title, o, votes)
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
@@ -168,7 +168,28 @@ function samplePlan(url: URL): PlanState {
 async function handleDev(request: Request, url: URL, env: Env): Promise<Response> {
   if (url.pathname === "/api/dev/card") {
     const plan = samplePlan(url);
-    const img = await (url.searchParams.get("kind") === "cart" ? renderCartCard(plan.cart!) : renderCard(plan));
+    const done = plan.status === "booked" || url.searchParams.get("state") === "done";
+    const people = ["Maya", "Jordan", "Sam"];
+    const tickets: Record<string, Ticket> = {
+      plan: planTicket(plan),
+      cart: cartTicket(plan.cart!, 4, done ? "Maya" : undefined),
+      venue: venueTicket(
+        { name: "Kinton Ramen", kind: "Ramen", price: "$$", why: "Loud, fast, good for six", address: "51 Baldwin St", caveat: "No reservations after 8" },
+        0,
+        2,
+      ),
+      rsvp: rsvpTicket(
+        done
+          ? { title: "Who's in?", when: "Fri 8:00 PM", going: [...people, "Alex", "Dev"], out: ["Priya"], waiting: [], locked: true }
+          : { title: "Who's in?", when: "Fri 8:00 PM", going: people, out: ["Priya"], waiting: ["Alex", "Dev"], locked: false },
+      ),
+      match: matchTicket("Maya", "Jordan", [
+        { emoji: "🧗", text: "Bouldering, both V4-ish" },
+        { emoji: "🍜", text: "Will travel for ramen" },
+        { emoji: "🎞", text: "Shoot film cameras" },
+      ]),
+    };
+    const img = await renderTicket(tickets[url.searchParams.get("kind") ?? "plan"] ?? tickets.plan);
     return new Response(await img.arrayBuffer(), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }
   const body = request.method === "POST" ? ((await request.json()) as Record<string, string>) : {};
