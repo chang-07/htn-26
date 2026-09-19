@@ -1,5 +1,5 @@
 import { ImageResponse } from "workers-og";
-import { SLOT_EMOJI, type PlanState } from "../types";
+import { SLOT_EMOJI, type CartSummary, type PlanState } from "../types";
 
 const esc = (s: string) =>
   s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -57,4 +57,56 @@ export function renderCard(plan: PlanState): Response {
 
   // Twemoji supplies the tapback emoji as SVG; the default font has none.
   return new ImageResponse(html, { width: 1200, height: 628, emoji: "twemoji" });
+}
+
+const CART_ROWS = 3;
+
+/** Shopify's CDN resizes on request; a full-size product PNG can be megabytes. */
+const thumb = (url: string) => {
+  try {
+    const u = new URL(url);
+    if (u.hostname === "cdn.shopify.com") u.searchParams.set("width", "200");
+    return u.toString();
+  } catch {
+    return url;
+  }
+};
+
+/** The cart card: what's in it, what it costs, where it's from. Same frame as the plan card. */
+export function renderCartCard(cart: CartSummary): Response {
+  const shown = cart.lines.slice(0, CART_ROWS);
+  const hidden = cart.lines.length - shown.length;
+
+  const rows = shown
+    .map(
+      (l) => `
+      <div style="display:flex;align-items:center;padding:16px 28px;margin-top:16px;border-radius:20px;background:#15151C;">
+        ${
+          l.imageUrl
+            ? `<img src="${esc(thumb(l.imageUrl))}" width="88" height="88" style="border-radius:14px;margin-right:24px;" />`
+            : `<div style="display:flex;width:88px;height:88px;border-radius:14px;margin-right:24px;background:#1E1E26;"></div>`
+        }
+        <div style="display:flex;flex-direction:column;flex:1;">
+          <div style="display:flex;font-size:32px;font-weight:600;">${esc(l.title.length > 44 ? `${l.title.slice(0, 43)}…` : l.title)}</div>
+          <div style="display:flex;font-size:24px;color:#9C9CAC;">${esc(l.price)}</div>
+        </div>
+        <div style="display:flex;font-size:32px;color:#9C9CAC;">x${l.quantity}</div>
+      </div>`,
+    )
+    .join("");
+
+  const html = `
+  <div style="display:flex;flex-direction:column;width:1200px;height:628px;padding:48px 64px;
+              background:#0B0B0F;color:#FAFAFA;font-family:sans-serif;">
+    <div style="display:flex;align-items:center;">
+      <div style="display:flex;flex-direction:column;flex:1;">
+        <div style="display:flex;font-size:48px;font-weight:700;">Cart</div>
+        <div style="display:flex;font-size:26px;color:#9C9CAC;">${esc(cart.shop)}${hidden > 0 ? ` · +${hidden} more` : ""}</div>
+      </div>
+      <div style="display:flex;font-size:48px;font-weight:700;color:#7DE2B0;">${esc(cart.total)}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;margin-top:12px;">${rows}</div>
+  </div>`;
+
+  return new ImageResponse(html, { width: 1200, height: 628 });
 }

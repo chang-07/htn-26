@@ -1,3 +1,4 @@
+import { UCP_CAPABILITIES, UCP_VERSION } from "./tools/shopify";
 import { getAgentByName, routeAgentRequest } from "agents";
 import type {
   MessageReceivedWebhookEvent,
@@ -5,13 +6,14 @@ import type {
 } from "@linqapp/sdk/resources/webhooks";
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
-import { openBrowser, readPage } from "./browser";
-import { renderCard } from "./card";
+import { openBrowser, readPage, searchWeb } from "./browser";
+import { renderCard, renderCartCard } from "./card";
 import { errorFields, log, short } from "./log";
 import type { PlanState } from "../types";
 
 export { PlanAgent } from "./agent";
 export { BookingWorkflow } from "./booking";
+export { ResearchWorkflow } from "./research";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -32,10 +34,11 @@ export default {
 
     // Shopify fetches this to validate every UCP call the agent makes.
     if (url.pathname === "/.well-known/ucp-agent.json") {
-      return Response.json({
-        ucp: { version: "2026-08-25", services: {}, capabilities: {}, payment_handlers: {} },
-        keys: [],
-      });
+      // Shopify rejects the profile ("Invalid cache control") without a public max-age.
+      return Response.json(
+        { ucp: { version: UCP_VERSION, services: {}, capabilities: UCP_CAPABILITIES, payment_handlers: {} }, keys: [] },
+        { headers: { "cache-control": "public, max-age=3600" } },
+      );
     }
 
     // WebSocket + RPC traffic from useAgent() on the vote page.
@@ -115,9 +118,11 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
+ *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
- *   GET  /api/dev/browse?url=...     open a browser session and read one page
+ *   POST /api/dev/research {"chat":"demo","brief":"...","near":"...","depth":"quick"}   start a run without the model
+ *   GET  /api/dev/browse?url=...|q=...   open a browser session; read one page or run one search
  */
 async function handleDev(request: Request, url: URL, env: Env): Promise<Response> {
   const body = request.method === "POST" ? ((await request.json()) as Record<string, string>) : {};
@@ -129,8 +134,14 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/react") {
-    await agent.ingestReaction({ messageId: "dry-card", from: body.from, reactionType: body.reaction });
+    // Reacts to whatever the plan card's id currently is, real or dry.
+    const messageId = (await agent.currentCardId()) ?? "dry-plan";
+    await agent.ingestReaction({ messageId, from: body.from, reactionType: body.reaction });
     return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/tool") {
+    const { tool, args } = body as unknown as { tool: string; args?: unknown };
+    return Response.json({ result: await agent.devRunTool(tool, args) });
   }
   if (url.pathname === "/api/dev/dump") {
     return Response.json(await agent.dump());
@@ -142,9 +153,20 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
       .join("\n");
     return new Response(text + "\n", { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
+  if (url.pathname === "/api/dev/research") {
+    const started = await agent.startResearch({
+      brief: body.brief,
+      near: body.near,
+      when: body.when,
+      depth: body.depth === "deep" ? "deep" : "quick",
+    });
+    return Response.json({ ok: true, started });
+  }
   if (url.pathname === "/api/dev/browse") {
     const session = await openBrowser(env, { timeoutSeconds: 120 });
     try {
+      const q = url.searchParams.get("q");
+      if (q) return Response.json({ sessionId: session.sessionId, hits: await searchWeb(session.browser, q) });
       const page = await readPage(session.browser, url.searchParams.get("url") ?? "https://example.com");
       return Response.json({ provider: session.provider, sessionId: session.sessionId, ...page });
     } finally {
@@ -160,11 +182,12 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
   const plan = (await agent.state) as PlanState;
 
-  const key = `${name}/${plan.version}.png`;
+  const cart = url.searchParams.get("kind") === "cart" ? plan.cart : undefined;
+  const key = `${name}/${cart ? "cart-" : ""}${plan.version}.png`;
   const cached = await env.CARDS.get(key);
   if (cached) return new Response(cached.body, { headers: pngHeaders });
 
-  const png = await renderCard(plan).arrayBuffer();
+  const png = await (cart ? renderCartCard(cart) : renderCard(plan)).arrayBuffer();
   ctx.waitUntil(env.CARDS.put(key, png));
   return new Response(png, { headers: pngHeaders });
 }

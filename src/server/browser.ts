@@ -116,3 +116,42 @@ async function lightweight(page: Page) {
     else req.continue().catch(() => {});
   });
 }
+
+export type SearchHit = { title: string; url: string; snippet: string };
+
+/**
+ * Web search through the same browser. DuckDuckGo's HTML endpoint is used
+ * because its markup is static and stable; result links are redirects that
+ * carry the real destination in `uddg`.
+ */
+export async function searchWeb(browser: Browser, query: string, limit = 8): Promise<SearchHit[]> {
+  const page = await browser.newPage();
+  try {
+    await lightweight(page);
+    await page.goto(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 25_000,
+    });
+    const hits = await page.evaluate(() =>
+      [...document.querySelectorAll(".result:not(.result--ad)")].map((r) => ({
+        title: r.querySelector<HTMLElement>(".result__a")?.innerText.trim() ?? "",
+        url: r.querySelector<HTMLAnchorElement>(".result__a")?.href ?? "",
+        snippet: r.querySelector<HTMLElement>(".result__snippet")?.innerText.trim() ?? "",
+      })),
+    );
+    return hits
+      .map((h) => ({ ...h, url: unwrapRedirect(h.url) }))
+      .filter((h) => h.title && h.url.startsWith("http") && !h.url.includes("duckduckgo.com/y.js"))
+      .slice(0, limit);
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+function unwrapRedirect(href: string): string {
+  try {
+    return new URL(href).searchParams.get("uddg") ?? href;
+  } catch {
+    return href;
+  }
+}

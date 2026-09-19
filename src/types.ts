@@ -13,8 +13,9 @@ export type PlanOption = {
 export type CartSummary = {
   shop: string;
   checkoutUrl: string;
-  total?: string;
-  lines: { title: string; quantity: number }[];
+  /** Display strings, already formatted ("$36.00"). */
+  total: string;
+  lines: { title: string; quantity: number; price: string; imageUrl?: string }[];
 };
 
 /**

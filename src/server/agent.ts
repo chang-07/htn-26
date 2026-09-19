@@ -7,9 +7,10 @@ import { errorFields, log, mask, short, timed, type Fields, type Level } from ".
 import { sendCard, sendText, tapbackLegend, updateCard } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { searchPlaces } from "./tools/places";
-import { createCart, searchCatalog } from "./tools/shopify";
+import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import type { BookingParams, BookingResult } from "./booking";
+import type { ResearchParams, ResearchReport } from "./research";
 
 const SYSTEM = `You are a planning agent living inside an iMessage group chat. You help the
 group brainstorm a hangout and then actually make it happen: pick a place, agree
@@ -19,6 +20,10 @@ on a time, book it, and order anything they need.
 - Do not announce what you are about to do. Do it, then report the result.
 - Never invent a venue, address or price. Every option you propose must come
   from a search_places or shop_search result in this conversation.
+- To find real places, call research. It takes a few minutes and its findings
+  appear under "Research" below when done: tell the group you're on it, then
+  stop. Never start a second run while one is in progress, and never invent
+  places, prices or links — propose only what research found.
 - Brainstorm in plain text. Once there are 2-4 concrete options, call
   propose_plan; it posts the card and opens voting. Call it again to redraw the
   same card when options change rather than describing changes in text.
@@ -28,8 +33,12 @@ on a time, book it, and order anything they need.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
 - book_option makes a real reservation. Call it at most once per plan.
-- You cannot pay for anything. shop_build_cart posts a checkout link for a
-  human to complete.
+- You cannot pay for anything. shop_build_cart posts the cart card with a
+  checkout link for a human to complete. When the group changes the order, call
+  it again with the whole new cart; never describe cart changes in text.
+- Quote shop prices exactly as shop_search returns them. Stores known to work:
+${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
+  Other Shopify stores work too; if shop_search says a domain is not one, move on.
 - Only add someone to the match pool when they themselves asked to join.
 - Most messages in a group chat are not for you. If you have nothing useful to
   add, reply with exactly NOOP and nothing else.`;
@@ -38,6 +47,8 @@ const MAX_STEPS = 8;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
 const EVENT_HISTORY = 300;
+/** A run that has not reported back by now is treated as lost, so the chat is not stuck. */
+const RESEARCH_STALE_MS = 15 * 60 * 1000;
 
 type Row = Record<string, string | number | boolean | null>;
 
@@ -67,6 +78,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
       voter TEXT PRIMARY KEY, option_id TEXT NOT NULL, source TEXT NOT NULL
     )`;
     this.sql`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`;
+    this.sql`CREATE TABLE IF NOT EXISTS research (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+      ok INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, report TEXT NOT NULL
+    )`;
     this.sql`CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
@@ -107,10 +122,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   async ingestReaction(r: { messageId: string; from: string; reactionType: string }) {
-    if (r.messageId !== this.getMeta("card_message_id")) {
+    // Every redraw gives the card a new message id, and a tapback can land on
+    // whichever one the reacting phone last saw — so match all of them.
+    if (!this.cardIds().includes(r.messageId)) {
       this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
       return;
     }
+    // Someone who tapbacks is in the chat even if they have never texted, so
+    // they belong in the "n of m voted" denominator.
+    this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${r.from})`;
     const option = this.state.options[REACTION_SLOTS.indexOf(r.reactionType as never)];
     if (!option) {
       this.note("info", "reaction.ignored", { reason: "no option in that slot", type: r.reactionType });
@@ -138,7 +158,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
     await this.syncCard();
     // The card already shows the running tally, so a vote only deserves the
     // model's attention (and tokens) once it settles the question.
-    if (this.state.awaiting.length === 0) await this.schedule(2, "runTurn");
+    if (this.state.awaiting.length === 0) {
+      this.setMeta("turn_reason", "votes_in");
+      await this.schedule(2, "runTurn");
+    }
   }
 
   // ------------------------------------------------------------------ state
@@ -183,14 +206,26 @@ export class PlanAgent extends Agent<Env, PlanState> {
     });
   }
 
+  /** All message ids the plan card has had, newest last. */
+  private cardIds(): string[] {
+    return JSON.parse(this.getMeta("card_message_ids") ?? "[]");
+  }
+
+  /** Records the card's current id. Linq issues a new one on every redraw. */
+  private rememberCardId(id: string) {
+    this.setMeta("card_message_id", id);
+    this.setMeta("card_message_ids", JSON.stringify([...this.cardIds().filter((x) => x !== id), id].slice(-30)));
+  }
+
   private async syncCard() {
     const messageId = this.getMeta("card_message_id");
     if (!messageId) return;
     // A failed redraw must not abort the turn that caused it; timed() records it.
-    await timed("agent", "card.update", { version: this.state.version }, () =>
+    const newId = await timed("agent", "card.update", { version: this.state.version }, () =>
       updateCard(this.env, messageId, this.name, this.state, this.participants().length),
       this.note,
-    ).catch(() => {});
+    ).catch(() => undefined);
+    if (newId) this.rememberCardId(newId);
   }
 
   private async say(text: string) {
@@ -227,6 +262,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   private async think() {
     const { client, model, profile } = llmFor(this.env);
+    // Why this turn is running. A vote-triggered turn has a specific job; with
+    // no stated purpose the model fills the silence with chatter.
+    const votesIn = this.getMeta("turn_reason") === "votes_in";
+    this.setMeta("turn_reason", "");
     const people = this.participants();
 
     const history = this.sql<{ direction: string; author: string | null; body: string | null }>`
@@ -236,6 +275,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       .join("\n");
 
     const plan = this.state.status === "idle" ? "none yet" : JSON.stringify(this.state);
+    const research = this.researchContext();
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: SYSTEM },
@@ -243,11 +283,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
         role: "user",
         content: `People in the chat: ${people.map((p) => this.label(p.handle, people)).join(", ")}
 Current plan: ${plan}
+Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
-  this.getMeta("is_group") === "0"
-    ? "This is a direct one-to-one chat, so every message is addressed to you: always reply, never NOOP."
-    : ""
+  votesIn
+    ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
+    : this.getMeta("is_group") === "0"
+      ? "This is a direct one-to-one chat, so every message is addressed to you: always reply, never NOOP."
+      : ""
 }
 
 Transcript (most recent last):
@@ -263,6 +306,7 @@ ${transcript}`,
 
     this.note("info", "turn.start", { llm: `${profile}/${model}`, history: history.length });
     let spoke = false;
+    let reminded = false;
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
       try {
@@ -277,14 +321,24 @@ ${transcript}`,
 
       const calls = (reply.tool_calls ?? []).filter((c) => c.type === "function");
       if (calls.length === 0) {
-        // Smaller dev models often answer in plain content instead of calling
-        // send_message, so treat trailing content as the message.
+        // Text reaches the chat only through send_message, never from raw
+        // content: some models leak their reasoning into content, and that
+        // must not be texted to a group. A model that answered in content
+        // gets one reminder to send it properly.
         const text = reply.content?.trim();
-        const silent = !text || text === "NOOP";
-        if (!silent && !spoke) await this.say(text);
-        // "silent" is a decision, not a failure — but it is the first thing to
-        // check when someone asks why the agent did not answer.
-        end("info", spoke || !silent ? "replied" : "silent", { steps: step + 1 });
+        const wantsToSpeak = Boolean(text) && text !== "NOOP" && !spoke;
+        if (wantsToSpeak && !reminded) {
+          reminded = true;
+          messages.push({
+            role: "user",
+            content:
+              "Nothing has been sent to the chat. To say something, call send_message with exactly the words to send (one or two short lines, no reasoning). Otherwise reply NOOP.",
+          });
+          continue;
+        }
+        if (wantsToSpeak) this.note("warn", "turn.content_dropped", { chars: text!.length });
+        end("info", spoke ? "replied" : "silent", { steps: step + 1 });
+        if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
         return;
       }
 
@@ -314,6 +368,7 @@ ${transcript}`,
       }
     }
     end("warn", "max_steps");
+    if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
   }
 
   private async runTool(name: string, rawArgs: string): Promise<string> {
@@ -337,6 +392,11 @@ ${transcript}`,
       case "search_places": {
         const { query, near } = parseToolArgs("search_places", rawArgs);
         return JSON.stringify(await searchPlaces(query, near));
+      }
+
+      case "research": {
+        const args = parseToolArgs("research", rawArgs);
+        return this.startResearch(args);
       }
 
       case "propose_plan": {
@@ -366,7 +426,7 @@ ${transcript}`,
             this.state,
             this.participants().length,
           );
-          if (id) this.setMeta("card_message_id", id);
+          this.rememberCardId(id);
           // Recipients without the extension see a static card with no
           // affordance, so spell out the tapback convention once.
           await this.say(`react to vote:\n${tapbackLegend(this.state)}`);
@@ -412,25 +472,36 @@ ${transcript}`,
       case "shop_search": {
         const { shop, query } = parseToolArgs("shop_search", rawArgs);
         const found = await searchCatalog(this.env, shop, query);
-        return JSON.stringify(found).slice(0, 6000);
+        return found.length ? JSON.stringify(found) : `Nothing at ${shop} matches "${query}".`;
       }
 
       case "shop_build_cart": {
         const { shop, lines } = parseToolArgs("shop_build_cart", rawArgs);
-        const result = await createCart(this.env, shop, lines);
-        const cart = result?.cart ?? result;
-        const checkoutUrl: string | undefined = cart?.checkout_url ?? cart?.continue_url;
-        if (!checkoutUrl) return `Cart created but no checkout url found: ${JSON.stringify(cart).slice(0, 800)}`;
+        // One cart and one card per shop; a second call edits both. The id holds
+        // the cart's secret key, so it lives in meta rather than the public state.
+        const cart = await setCart(this.env, shop, lines, this.getMeta(`cart_id:${shop}`) || undefined);
+        this.setMeta(`cart_id:${shop}`, cart.id);
+        if (!cart.lines.length) {
+          return `Nothing could be added, so no card was posted. Store says: ${cart.messages.join("; ") || "no reason given"}. Choose a different variant from shop_search.`;
+        }
+        this.publish({ cart: { shop, checkoutUrl: cart.checkoutUrl, total: cart.total, lines: cart.lines } });
 
-        this.publish({
-          cart: {
-            shop,
-            checkoutUrl,
-            lines: lines.map((l) => ({ title: l.title, quantity: l.quantity })),
-          },
-        });
-        await this.say(checkoutUrl);
-        return "Checkout link posted to the chat.";
+        const messageId = this.getMeta(`cart_message_id:${shop}`);
+        if (messageId) {
+          // updateCard returns the card's new id; the old one is dead after a redraw.
+          const newId = await timed("agent", "cart.update", { version: this.state.version }, () =>
+            updateCard(this.env, messageId, this.name, this.state, 0, "cart"),
+            this.note,
+          ).catch(() => undefined);
+          if (newId) this.setMeta(`cart_message_id:${shop}`, newId);
+        } else {
+          const id = await sendCard(this.env, this.name, this.name, this.state, 0, "cart");
+          this.setMeta(`cart_message_id:${shop}`, id);
+        }
+        const summary = cart.lines.map((l) => `${l.quantity}x ${l.title} (${l.price})`).join(", ");
+        return `Cart card ${messageId ? "redrawn" : "posted"} with its checkout link. ${summary}. Total ${cart.total}.${
+          cart.messages.length ? ` Store says: ${cart.messages.join("; ")}` : ""
+        }`;
       }
 
       case "join_match_pool": {
@@ -450,13 +521,97 @@ ${transcript}`,
     }
   }
 
+  // --------------------------------------------------------------- research
+
+  /** Also called directly by the simulator, to test the pipeline without the model choosing to. */
+  async startResearch(params: ResearchParams): Promise<string> {
+    const since = Number(this.getMeta("research_started") ?? 0);
+    if (since && Date.now() - since < RESEARCH_STALE_MS) {
+      return "Research is already running. Wait for it to finish.";
+    }
+    this.setMeta("research_started", String(Date.now()));
+    const workflowId = await this.runWorkflow("RESEARCH_WORKFLOW", params);
+    this.note("info", "research.started", { workflowId: short(workflowId), depth: params.depth, brief: params.brief.slice(0, 120), near: params.near });
+    return "Research started; it takes a few minutes. Tell the group you're looking into it in one short line, then stop. The findings will arrive on their own.";
+  }
+
+  /** Called over RPC by ResearchWorkflow as it moves through its stages. */
+  async researchProgress(stage: string, fields: Fields = {}) {
+    this.note("info", `research.${stage}`, fields);
+  }
+
+  /** Called over RPC by ResearchWorkflow when it finishes, either way. */
+  async researchFinished(report: ResearchReport) {
+    this.setMeta("research_started", "0");
+    this.note(report.ok ? "info" : "warn", "research.finished", {
+      ok: report.ok,
+      candidates: report.candidates.length,
+      ...report.stats,
+      detail: report.detail,
+      replays: report.sessions.map((id) => `https://browserbase.com/sessions/${id}`),
+    });
+    this.sql`INSERT INTO research (ts, ok, report) VALUES (${Date.now()}, ${report.ok ? 1 : 0}, ${JSON.stringify(report)})`;
+    // Nobody texted, but there is news: give the model a turn to share it.
+    await this.schedule(1, "runTurn");
+  }
+
+  /** What the model is told about research: in progress, fresh results, or earlier results. */
+  private researchContext(): { text: string; deliveredId?: number } {
+    const since = Number(this.getMeta("research_started") ?? 0);
+    if (since && Date.now() - since < RESEARCH_STALE_MS) {
+      return { text: `in progress, started ${Math.round((Date.now() - since) / 1000)}s ago. Do not start another.` };
+    }
+    const row = this.sql<{ id: number; delivered: number; report: string }>`
+      SELECT id, delivered, report FROM research ORDER BY id DESC LIMIT 1`[0];
+    if (!row) return { text: "none yet" };
+
+    const report = JSON.parse(row.report) as ResearchReport;
+    const body = report.ok
+      ? JSON.stringify({
+          brief: report.brief,
+          summary: report.summary,
+          // Shaped like propose_plan options, so the model can pass them straight through.
+          options: report.candidates.map((c) => ({
+            title: c.name,
+            subtitle: [c.price, c.why].filter(Boolean).join(" · ").slice(0, 90),
+            bookingUrl: c.bookingUrl,
+            address: c.address,
+            caveat: c.caveat,
+            independentSources: c.sources.length,
+          })),
+        })
+      : `failed: ${report.detail}`;
+    if (row.delivered) return { text: `earlier findings, already shared with the group: ${body}` };
+    return {
+      deliveredId: row.id,
+      text: report.ok
+        ? `JUST FINISHED — the group has not seen this yet. Whatever else is going on, share the highlights in one or two lines now, then call propose_plan with the best 2-4 options below, passing title, subtitle and bookingUrl through unchanged. ${body}`
+        : `JUST FAILED — tell the group in one line that the search came up empty and ask what to change. ${body}`,
+    };
+  }
+
   /** Simulator only (see /api/dev in index.ts). */
   async dump() {
     return {
       state: this.state,
+      research: this.sql<{ report: string }>`SELECT report FROM research ORDER BY id DESC LIMIT 1`.map((r) => JSON.parse(r.report))[0],
       transcript: this.sql<Row>`SELECT direction, author, body FROM messages ORDER BY id`,
       votes: this.sql<Row>`SELECT voter, option_id, source FROM votes`,
     };
+  }
+
+  /**
+   * Simulator only: run one tool exactly as the model would, without a model.
+   * Deterministic and free, which makes it the way to iterate on cards.
+   */
+  async devRunTool(tool: string, args: unknown) {
+    this.note("info", "dev.tool", { tool });
+    return this.runTool(tool, JSON.stringify(args ?? {}));
+  }
+
+  /** Simulator only: the plan card's current message id. */
+  async currentCardId() {
+    return this.getMeta("card_message_id");
   }
 
   /** Most recent events, oldest first. Simulator only. */

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { z } from "zod";
 import { log } from "./log";
 
 /**
@@ -38,4 +39,38 @@ export function llmFor(env: Env): { client: OpenAI; model: string; profile: stri
     model: env.OPENAI_MODEL,
     client: new OpenAI({ apiKey: env.OPENAI_API_KEY }),
   };
+}
+
+/**
+ * One structured answer, validated. Used by the research pipeline, where each
+ * call is a small self-contained question rather than a conversation. A reply
+ * that fails validation is retried once with the error, which is usually all a
+ * small dev model needs.
+ */
+export async function askJson<T>(
+  env: Env,
+  schema: z.ZodType<T>,
+  system: string,
+  user: string,
+): Promise<{ value: T; tokens: number }> {
+  const { client, model } = llmFor(env);
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: `${system}\n\nReply with a single JSON object matching this schema, and nothing else:\n${JSON.stringify(z.toJSONSchema(schema))}` },
+    { role: "user", content: user },
+  ];
+
+  let tokens = 0;
+  let lastError = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await client.chat.completions.create({ model, messages, response_format: { type: "json_object" } });
+    tokens += res.usage?.total_tokens ?? 0;
+    const raw = res.choices[0].message.content ?? "";
+    try {
+      return { value: schema.parse(JSON.parse(raw)), tokens };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      messages.push({ role: "assistant", content: raw }, { role: "user", content: `That did not validate: ${lastError.slice(0, 500)}\nSend the corrected JSON object only.` });
+    }
+  }
+  throw new Error(`LLM did not return valid JSON: ${lastError.slice(0, 300)}`);
 }

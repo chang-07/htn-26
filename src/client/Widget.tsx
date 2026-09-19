@@ -96,7 +96,7 @@ export function Widget({ agentName }: { agentName: string }) {
             fontWeight: 600,
           }}
         >
-          Check out {plan.cart.lines.reduce((n, l) => n + l.quantity, 0)} items at {plan.cart.shop}
+          Check out {plan.cart.lines.reduce((n, l) => n + l.quantity, 0)} items at {plan.cart.shop} · {plan.cart.total}
         </a>
       ) : null}
 

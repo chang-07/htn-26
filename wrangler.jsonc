@@ -24,6 +24,11 @@
       "name": "booking-workflow",
       "binding": "BOOKING_WORKFLOW",
       "class_name": "BookingWorkflow"
+    },
+    {
+      "name": "research-workflow",
+      "binding": "RESEARCH_WORKFLOW",
+      "class_name": "ResearchWorkflow"
     }
   ],
 

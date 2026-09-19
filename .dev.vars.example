@@ -21,5 +21,11 @@ DEV_LLM_BASE_URL=
 DEV_LLM_API_KEY=
 DEV_LLM_MODEL=
 
+# --- Browserbase (research + booking browser sessions) ---
+# Leave blank to fall back to Cloudflare Browser Rendering, which search engines
+# and review sites tend to block. Project id is optional; it is inferred from the key.
+BROWSERBASE_API_KEY=
+BROWSERBASE_PROJECT_ID=
+
 # --- Public URL of this Worker (card images, vote page, Shopify agent profile) ---
 PUBLIC_BASE_URL=https://htn-planner.<your-subdomain>.workers.dev

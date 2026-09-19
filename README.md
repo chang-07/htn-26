@@ -19,6 +19,8 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
    ├─ schedule(): batches bursts of texts into one turn; nudges non-voters
    ├─ LLM tool loop (OpenAI, or a free dev provider)     src/server/llm.ts
    │     ├─ search_places · propose_plan · get_votes
+   │     ├─ research ──► ResearchWorkflow (durable, minutes-long)
+   │     │                 └─ Browserbase: search, read pages   src/server/browser.ts
    │     ├─ shop_search · shop_build_cart   → Shopify UCP (JSON-RPC, no key)
    │     ├─ join_match_pool · find_matches  → Workers AI embeddings + Vectorize
    │     └─ book_option ──► BookingWorkflow (durable, retried)
@@ -85,6 +87,38 @@ Deployed, the same lines appear in `npx wrangler tail` and in Workers Logs.
 Simulator chat ids (anything that is not a UUID) always use the dry Linq
 transport, even with a live `LINQ_API_KEY`, so testing never texts anyone.
 
+### Research — real options from the live web
+
+The `research` tool starts `ResearchWorkflow` (`src/server/research.ts`), which
+browses through Browserbase and reports back to the chat's agent when done:
+
+```
+plan ─▶ search ─▶ select ─▶ read + extract ─▶ synthesize ─▶ agent.researchFinished()
+LLM     browser    LLM       browser + LLM     LLM           model gets a turn, posts the card
+```
+
+The model decides what to look for and what the pages mean; fixed code does the
+navigation, so a run is bounded. `DEPTH` in `research.ts` is the whole budget:
+`quick` is 2 searches and 3 pages, `deep` is 4 and 8. Addresses, prices and
+links in the report are copied from per-page extractions, never from the
+ranking step's retelling.
+
+Run the pipeline without waiting for the model to choose it:
+
+```sh
+curl -X POST localhost:5173/api/dev/research -H 'content-type: application/json' \
+  -d '{"chat":"demo","brief":"birthday dinner for 8, ~$60pp, one vegetarian","near":"King West, Toronto","depth":"quick"}'
+curl 'localhost:5173/api/dev/logs?chat=demo'     # research.planned / searched / read / finished
+curl 'localhost:5173/api/dev/dump?chat=demo'     # .research is the full report
+curl 'localhost:5173/api/dev/browse?q=ramen+waterloo'   # just the browser: one search, or ?url= for one page
+```
+
+`research.finished` logs a Browserbase replay link per session — open it first
+when a run comes back thin. On the local dev model a quick run takes 2-4
+minutes, nearly all of it LLM time on page extraction; it is much faster on the
+demo profile. Without `BROWSERBASE_API_KEY`, `src/server/browser.ts` falls back
+to Cloudflare Browser Rendering, which search engines tend to block.
+
 ### LLM usage sources
 
 `LLM_PROFILE` picks where tokens are spent:
@@ -105,7 +139,7 @@ the `demo` profile only.
 npx wrangler login
 npx wrangler r2 bucket create htn-cards
 npx wrangler vectorize create htn-people --dimensions=768 --metric=cosine
-for s in LINQ_API_KEY LINQ_WEBHOOK_SECRET OPENAI_API_KEY PUBLIC_BASE_URL; do npx wrangler secret put $s; done
+for s in LINQ_API_KEY LINQ_WEBHOOK_SECRET OPENAI_API_KEY PUBLIC_BASE_URL BROWSERBASE_API_KEY; do npx wrangler secret put $s; done
 # set "LLM_PROFILE": "demo" in wrangler.jsonc, then:
 npm run deploy
 ```
