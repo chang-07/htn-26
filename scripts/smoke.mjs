@@ -85,7 +85,7 @@ await check("a voter's latest tapback replaces their earlier one", async () => {
 });
 await check("plan card renders as a PNG", async () => expect((await get(`/card/${a}?v=1`)).headers.get("content-type") === "image/png", "not a PNG"));
 await check("every ticket design renders", async () => {
-  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice"]) {
+  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice", "icon"]) {
     const res = await get(`/api/dev/card?kind=${kind}`);
     expect(res.headers.get("content-type") === "image/png", `${kind}: ${res.status}`);
   }
@@ -129,6 +129,28 @@ await check("availability check refuses options with no link", async () => {
   const { state } = await dump(b);
   const out = await tool(b, "check_availability", { optionIds: [state.options[1].id], partySize: 4, isoTime: "2026-10-14T19:00:00" });
   expect(/nothing to check/i.test(out), `unexpected reply: ${out}`);
+});
+
+console.log("\nthe chat becomes the plan (no browser; Linq calls are dry)");
+await check("a confirmed booking in a group renames the chat, sets its icon and background", async () => {
+  const d = chat("dress");
+  await post("/api/dev/message", { chat: d, group: true, from: "+15550001111", text: "ramen friday?" });
+  await tool(d, "propose_plan", { title: "Friday dinner", emoji: "🍜", options: [{ title: "Kinton Ramen" }, { title: "Pai" }] });
+  const out = await (await post("/api/dev/booked", { chat: d })).json();
+  expect(out.name === "🍜 Friday dinner · Kinton Ramen", `name: ${out.name}`);
+  const { state } = await dump(d);
+  expect(state.status === "booked", `status=${state.status}`);
+  const text = await logs(d);
+  expect(/chat\.dressed .*"name":"dry".*"icon":"dry".*"background":"dry"/.test(text), "chat.dressed did not report all three calls");
+  const icon = await get(`/card/${d}/icon.png?v=${state.version}`);
+  expect(icon.headers.get("content-type") === "image/png", `icon: ${icon.status}`);
+});
+await check("a direct chat is left alone: no name or icon to set", async () => {
+  const d = chat("dress-dm");
+  await post("/api/dev/message", { chat: d, group: false, from: "+15550001111", text: "hi" });
+  await tool(d, "propose_plan", { title: "Solo ramen", options: [{ title: "Kinton" }, { title: "Pai" }] });
+  await post("/api/dev/booked", { chat: d });
+  expect(!(await logs(d)).includes("chat.dressed"), "dressed a one-to-one chat");
 });
 
 console.log("\npayment setup (stubbed for simulator chats; no model involved)");

@@ -8,7 +8,8 @@ import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMat
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, markRead, readLocation, requestLocation, stopLocation, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { groupName } from "../dressing";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
@@ -1542,6 +1543,7 @@ ${transcript}`,
         this.sql`DELETE FROM votes`;
         this.publish({
           title: args.title,
+          emoji: args.emoji,
           options,
           status: "voting",
           chosenOptionId: undefined,
@@ -2307,6 +2309,7 @@ this.rememberCardId(id);
 
     if (result.ok) {
       await this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" });
+      if (onBallot) await this.dressChat();
     } else if (handedOff) {
       await this.say(`${name}: ${result.detail}\nfinish it here: ${result.handoffUrl}`);
     } else {
@@ -2319,5 +2322,33 @@ this.rememberCardId(id);
         this.note("warn", "booking.shot_failed", errorFields(err)),
       );
     }
+  }
+
+  /**
+   * The chat becomes the plan: once booked, the group is renamed after the
+   * outing ("🍜 Friday dinner · Kinton Ramen"), its icon becomes the plan's
+   * stamp and its background changes. Code, never the model, and best-effort:
+   * Linq accepts each change asynchronously and a name or an icon is only for
+   * groups, so a direct chat is left alone and a failure is logged, not thrown.
+   */
+  private async dressChat() {
+    if (this.getMeta("is_group") === "0") return;
+    const name = groupName(this.state);
+    const outcome = await dressChat(this.env, this.name, { name, iconUrl: planIconUrl(this.env, this.name, this.state.version) });
+    this.note("info", "chat.dressed", { title: name, ...outcome });
+  }
+
+  /**
+   * Simulator only: land the booked outcome without a browser, on the first
+   * option or the one named. Exercises everything a real confirmation does —
+   * the ticket, the confetti, the chat's new name — so it can be shown on demand.
+   */
+  async devBooked(optionId?: string, confirmation = "DEMO-1234") {
+    const option = this.state.options.find((o) => !optionId || o.id === optionId);
+    if (!option) return { error: optionId ? "No such option" : "No options to book: propose_plan first" };
+    this.setMeta("booking_for", JSON.stringify({ title: option.title, onBallot: true }));
+    this.publish({ status: "booking", chosenOptionId: option.id });
+    await this.bookingFinished({ ok: true, status: "submitted", confirmation, detail: "confirmed" });
+    return { ok: true, name: groupName(this.state) };
   }
 }

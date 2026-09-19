@@ -203,6 +203,40 @@ node scripts/linq-contact-card.mjs show
 The agent then offers the card to each chat the first time it is woken there.
 All of this is best-effort and iMessage-only; failures are logged, never thrown.
 
+### The chat becomes the plan
+
+The moment a booking is confirmed, the group chat itself changes: it is renamed
+after the outing, its icon becomes the plan's stamp, and its background changes
+— so the thread list reads `🍜 Friday dinner · Kinton Ramen` instead of three
+numbers, and opening it feels like the plan is already underway.
+
+```
+booked ─▶ chats.update  { display_name: "🍜 Friday dinner · Kinton Ramen" }
+       ─▶ chats.update  { group_chat_icon: <base>/card/<chat>/icon.png }   the emoji over the venue, in the ticket's green
+       ─▶ chats.background.set { type: "dynamic", style: "aurora" }
+```
+
+The emoji is the model's: `propose_plan` takes an optional `emoji` with the
+ballot (🍜 ramen, 🎳 bowling); anything that is not one falls back to 📍. The
+name is `src/dressing.ts` (pure, `npm test`), the icon is `renderPlanIcon` in
+`card.ts`, and the three calls are `dressChat` in `linq.ts`. Everything is
+code, never the model, and the same footing as presence: each call is
+best-effort, a direct chat is left alone (a name and an icon are group things),
+and Linq applies the change asynchronously — the phones catch up a moment after
+the confetti. The outcome of each call is one `chat.dressed` log line.
+
+```sh
+open 'http://localhost:5173/api/dev/card?kind=icon&emoji=🎳&venue=The%20Ballroom'   # the icon, from sample data
+curl -X POST localhost:5173/api/dev/booked -H 'content-type: application/json' \
+  -d '{"chat":"demo"}'      # land a confirmed booking without a browser: ticket, confetti, and the chat's new name
+```
+
+`/api/dev/booked` is also the safety net for a live demo run from the laptop
+(tunnel up, real chat id): if the venue's site is slow, the booked outcome can
+be landed by hand and everything downstream — the ticket, the renamed chat,
+the invoice — still happens for real. Like every `/api/dev/*` route it answers
+only on localhost, so it is not there on the deployed Worker.
+
 ### Pairing — "find me someone to climb with"
 
 In a direct chat, someone in the match pool can ask to be paired up
