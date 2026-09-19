@@ -8,15 +8,14 @@ import type { PlanAgent } from "./agent";
 import { openBrowser, pooled, readPage, searchWeb, TABS, type SearchHit } from "./browser";
 import { askJson } from "./llm";
 import { errorFields, log } from "./log";
-import { fetchSource, scoreSources, searchSources, selectSources, type ResearchHit } from "./research-sources";
+import { fetchSource, requireJev, scoreCandidates, scoreSources, searchSources, selectSources, type ResearchHit } from "./research-sources";
 
 /**
  * Deep research for one planning question: "where should eight of us go for a
  * birthday dinner near King West on Friday, ~$60 a head".
  *
- *   plan ─▶ search ─▶ select ─▶ read + extract ─▶ synthesize ─▶ report
- *   LLM     Search     Jev       Fetch + LLM       LLM           agent RPC
- * Browser search/reading and LLM selection remain fallbacks without API keys.
+ *   plan → search → Jev source gate → read/extract → Jev option gate → synthesize → report
+ * Browser search/reading remain fallbacks without Browserbase; Jev scoring is required.
  *
  * It is a Workflow for the same reason booking is: it runs for minutes, far
  * longer than an agent turn should block, and every `step.do` result is
@@ -88,6 +87,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       this.live.researchProgress(stage, fields).catch((err) => log("warn", "research", "progress.failed", { stage, ...errorFields(err) }));
 
     try {
+      requireJev(this.env); // Fail before spending on search/browser/model calls if scoring is unavailable.
       const specialist = await step.do("browserbase-plan", STEP, async () => {
         try { return await planBrowserbase(this.env, ask); }
         catch (err) {
@@ -145,26 +145,13 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       if (found.hits.length === 0) throw new Error("every search came back empty");
 
       // 3. Jev gates relevance AND confidence before spending on page retrieval.
-      const picked = await step.do("select", STEP, async () => {
-        if (this.env.AI_GATEWAY_API_KEY) {
-          const scored = await scoreSources(this.env, ask, found.hits);
-          const selected = selectSources(this.env, scored.hits, budget.pages);
-          return {
-            urls: selected.map((hit) => hit.url), tokens: scored.tokens, provider: "jev-vercel-gateway",
-            scores: scored.hits.map(({ url, relevance, confidence }) => ({ url, relevance, confidence })),
-          };
-        }
-        const r = await askJson(
-          this.env,
-          z.object({ indexes: z.array(z.number().int()) }),
-          `Pick the ${budget.pages} search results most likely to name specific places that fit the brief. Prefer curated lists, local guides and the venues' own pages over aggregator landing pages with no detail. Avoid picking several results from the same site. Answer with their indexes.`,
-          `Brief: ${ask}\n\n${found.hits.map((h, i) => `[${i}] ${h.title} — ${new URL(h.url).host}\n    ${h.snippet}`).join("\n")}`,
-        );
-        const urls = [...new Set(r.value.indexes)].map((i) => found.hits[i]?.url).filter(Boolean) as string[];
-        // A model that returns nothing usable should not sink the run.
+      // New step name prevents replaying a pre-change, possibly unscored selection.
+      const picked = await step.do("score-sources", STEP, async () => {
+        const scored = await scoreSources(this.env, ask, found.hits);
+        const selected = selectSources(this.env, scored.hits, budget.pages);
         return {
-          urls: (urls.length ? urls : found.hits.map((h) => h.url)).slice(0, budget.pages),
-          tokens: r.tokens, provider: "llm-fallback", scores: [],
+          urls: selected.map((hit) => hit.url), tokens: scored.tokens, provider: "jev-vercel-gateway",
+          scores: scored.hits.map(({ url, relevance, confidence }) => ({ url, relevance, confidence })),
         };
       });
       tokens += picked.tokens;
@@ -239,10 +226,17 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       tokens += read.tokens;
       if (read.session) sessions.push(read.session);
 
-      const all = read.pages.flatMap((pg) => pg.candidates.map((c) => ({ ...c, source: pg.url, checkedAt: pg.checkedAt })));
-      if (all.length === 0) throw new Error(`read ${read.pages.length} pages and found no specific places`);
+      const extracted = read.pages.flatMap((pg) => pg.candidates.map((c) => ({ ...c, source: pg.url, checkedAt: pg.checkedAt })));
+      if (extracted.length === 0) throw new Error(`read ${read.pages.length} pages and found no specific places`);
 
-      // 5. Merge duplicates, rank, and say why.
+      const evaluated = await step.do("score-candidates", STEP, () => scoreCandidates(this.env, ask, extracted));
+      tokens += evaluated.tokens;
+      await progress("candidates_scored", { provider: "jev-vercel-gateway", count: extracted.length,
+        accepted: evaluated.candidates.length, scores: evaluated.scores });
+      const all = evaluated.candidates;
+      if (!all.length) throw new Error("No extracted options passed Jev's relevance and confidence thresholds. Try more specific constraints.");
+
+      // 5. Merge only Jev-approved candidates and explain the evidence.
       const final = await step.do("synthesize", STEP, async () => {
         const r = await askJson(
           this.env,

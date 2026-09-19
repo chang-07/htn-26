@@ -384,12 +384,12 @@ navigation, so a run is bounded. `DEPTH` in `research.ts` is the whole budget:
 links in the report are copied from per-page extractions, never from the
 ranking step's retelling.
 
-Set `AI_GATEWAY_API_KEY` to enable Jev's pre-fetch filter through Vercel AI Gateway. It scores each search
+Research requires `AI_GATEWAY_API_KEY` for Jev scoring through Vercel AI Gateway. It scores each search
 result's metadata for relevance to the brief, and returns confidence in that
 judgment separately. Defaults are relevance >= 2 on a 0–3 rubric and confidence
 >= 0.5; tune `RESEARCH_MIN_RELEVANCE` and `RESEARCH_MIN_CONFIDENCE` against real
 results. These are initial thresholds, not calibrated guarantees. `JEV_MODEL`
-defaults to `typesafe-ai/jev`. Requests use Vercel's TypeSafe-compatible endpoint
+may be omitted or set to `typesafe-ai/jev`; other models are rejected. Requests use Vercel's TypeSafe-compatible endpoint
 `https://ai-gateway.vercel.sh/typesafe/v1/systemone`; a direct TypeSafe key is no
 longer used. Scores are recorded in `research.selected` with provider
 `jev-vercel-gateway`.
@@ -409,9 +409,20 @@ malformed scores also cannot silently bypass the Jev gate. Search metadata does
 not establish current availability, price, or factual accuracy; extraction still
 uses the fetched page as evidence.
 
-Without an AI Gateway key, the original LLM selector is retained and logged as
-`llm-fallback`. Without a Browserbase key, search and page reading use the
-existing browser path. The Search/Fetch API path creates no watchable browser
+Source URLs are normalized and deduplicated before scoring. Jev evaluates up to
+16 results per request with at most two requests in flight, using bounded metadata
+rather than full pages. Every extracted option—including Browserbase skill listings,
+menus, trails and events—is scored again against the actual planning constraints in
+one shared stage before synthesis. Candidate scores are recorded in
+`research.candidates_scored`; only passing candidates reach the response model.
+Identical candidate evidence is evaluated once per call while retaining its source
+attribution. New runs always receive fresh judgments.
+
+Without an AI Gateway key, research stops before searching or opening a browser;
+there is no general-LLM or unscored fallback. Provider errors, omitted judgments and
+all-rejected batches also stop the run rather than weakening the gate. Without a
+Browserbase key, search and page reading use the existing browser path, with the
+same required Jev gates. The Search/Fetch API path creates no watchable browser
 session; booking continues to use browser sessions.
 
 Run the isolated, mocked provider/selection checks with

@@ -6,7 +6,7 @@ The ten requested skills were installed with `browse skills add <id>` on 2026-09
 
 ## When it runs
 
-Research first checks whether the brief has a plausible specialist use. A Browserbase-specific model then chooses at most one skill or declines. A matching keyword alone is insufficient: ordinary brainstorming, generic dinner recommendations and incomplete travel requests should decline. The normal Search → relevance/confidence scoring → Fetch pipeline still decides which sources qualify. A skill only runs against a selected source on its matching domain, at most one source for quick research or two for deep research.
+Research first checks whether the brief has a plausible specialist use. A Browserbase-specific model then chooses at most one skill or declines. A matching keyword alone is insufficient: ordinary brainstorming, generic dinner recommendations and incomplete travel requests should decline. The mandatory Search → Typesafe Jev relevance/confidence scoring → Fetch pipeline decides which sources qualify. `AI_GATEWAY_API_KEY` is required; missing credentials stop research before paid discovery. URLs are deduplicated and scored in batches of 16 with at most two requests in flight. A skill only runs against a selected source on its matching domain, at most one source for quick research or two for deep research.
 
 | Skill | Use and execution |
 | --- | --- |
@@ -24,6 +24,8 @@ Research first checks whether the brief has a plausible specialist use. A Browse
 API specialists have three GETs maximum, with domain/path allowlists. Browser specialists have ten pilot actions maximum and share one session across source tabs. Full instructions enter only the selected specialist's context. Browserbase verified/proxy settings follow the selected site's needs. Routing failures, blocked sites, missing sessions or unsupported methods fall back to ordinary page retrieval. If that also fails, the source is omitted; failures are never interpreted as sold-out inventory.
 
 The Worker adapts catalog instructions to its existing browser pilot; it cannot execute arbitrary JavaScript, shell pipelines or embedded CLI commands. Workflows requiring those methods may need a handoff. Yelp requires an image-capable model; login walls, unavailable proxy entitlements and bot challenges can prevent extraction. The implementation is covered by mocked provider tests, not live validation of all nine sites.
+
+All extracted options from normal pages and Browserbase skills pass a second batched Jev gate against the planning constraints before synthesis. This catches irrelevant listings on otherwise relevant source pages. Rejected or uncertain options never enter the response context, and scoring errors never fall back to an unscored list. Jev evaluates relevance; it does not verify facts or availability.
 
 ## Booking, payments and responses
 
