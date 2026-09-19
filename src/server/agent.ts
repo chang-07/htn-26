@@ -7,11 +7,12 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, sendPhoto, sendPhotos, sizedImage, updateMusicCard, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
+import { searchTrack } from "./tools/music";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
@@ -88,6 +89,10 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
+- When someone names a song for the group playlist, call add_song once per
+  song, exactly as they said it. The playlist card in the thread updates
+  itself; never list the tracks in text. show_playlist reposts the card when
+  someone asks to see or play it.
 - Tickets are photos the group sees: show_venue when someone asks about one
   place, ask_rsvp once a time and place are fixed, mark_paid when a person says
   they paid, introduce_match for a pair from the pool. A ticket speaks for
@@ -428,6 +433,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
   private rememberCardId(id: string) {
     this.setMeta("card_message_id", id);
     this.setMeta("card_message_ids", JSON.stringify([...this.cardIds().filter((x) => x !== id), id].slice(-30)));
+  }
+
+  /** Keeps the playlist card's track count current: first change posts it, later ones redraw it. */
+  private async syncMusicCard() {
+    const count = (this.state.playlist ?? []).length;
+    const existing = this.getMeta("music_card_id");
+    if (existing) {
+      const newId = await timed("agent", "music_card.update", { tracks: count }, () => updateMusicCard(this.env, existing, this.name, count), this.note).catch(() => undefined);
+      if (newId) this.setMeta("music_card_id", newId);
+      return;
+    }
+    const id = await timed("agent", "music_card.out", { tracks: count }, () => sendMusicCard(this.env, this.name, this.name, count), this.note).catch(() => undefined);
+    if (id) this.setMeta("music_card_id", id);
   }
 
   private async syncCard() {
@@ -1771,6 +1789,29 @@ this.rememberCardId(id);
         await this.schedule(Math.ceil(INTRO_TTL_MS / 1000), "introExpired", { id: intro.id });
         this.note("info", "intro.requested", { intro: intro.id });
         return "Asked them privately. Tell the asker, in one or two short lines: you have asked, and a group chat with the two of them opens the moment the other person says yes. Do not promise a yes.";
+      }
+
+      case "add_song": {
+        const { title, artist, who } = parseToolArgs("add_song", rawArgs);
+        const found = await searchTrack(title, artist);
+        if (!found) return `iTunes has nothing for "${title}"${artist ? ` by ${artist}` : ""}. Ask for another spelling or a different song.`;
+        const playlist = [...(this.state.playlist ?? [])];
+        const key = (t: { title: string; artist: string }) => `${t.title}|${t.artist}`.toLowerCase();
+        if (playlist.some((t) => key(t) === key(found))) return `${found.title} — ${found.artist} is already on the playlist (${playlist.length} tracks).`;
+        playlist.push({ ...found, addedBy: who });
+        this.publish({ playlist });
+        this.note("info", "playlist.added", { title: found.title, artist: found.artist, tracks: playlist.length });
+        await this.syncMusicCard();
+        return `Added ${found.title} — ${found.artist}${found.previewUrl ? "" : " (no preview clip for this one)"}. Playlist has ${playlist.length} track${playlist.length === 1 ? "" : "s"}; its card in the thread updated itself. Do not list the songs in text.`;
+      }
+
+      case "show_playlist": {
+        const playlist = this.state.playlist ?? [];
+        if (!playlist.length) return "The playlist is empty. Ask the group for songs.";
+        // A fresh card, not an update: "show me" means put it back in view.
+        const id = await timed("agent", "playlist.card", { tracks: playlist.length }, () => sendMusicCard(this.env, this.name, this.name, playlist.length), this.note).catch(() => undefined);
+        if (id) this.setMeta("music_card_id", id);
+        return `Playlist card posted (${playlist.length} tracks). Do not also list the songs in text.`;
       }
 
       case "answer_intro": {

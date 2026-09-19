@@ -41,6 +41,30 @@ export default {
       return requireRunsAuth(request, url, env) ?? handleRuns(request, url, env);
     }
 
+    // The native iMessage widget: plain HTTP where the web page uses the
+    // WebSocket. Public plan state only, and the unguessable chat id is the
+    // capability, exactly as on /w/<chat>.
+    if (url.pathname.startsWith("/api/widget/")) {
+      const [chatEnc, action] = url.pathname.slice("/api/widget/".length).split("/");
+      const chat = decodeURIComponent(chatEnc ?? "");
+      if (!chat) return new Response("Not found", { status: 404 });
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
+      if (!action && request.method === "GET") {
+        return Response.json(await agent.state, { headers: { "cache-control": "no-store" } });
+      }
+      if (action === "vote" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { optionId?: string; voter?: string };
+        if (!body.optionId || !body.voter) return new Response("optionId and voter are required", { status: 400 });
+        try {
+          await agent.vote(body.optionId, String(body.voter).slice(0, 80));
+        } catch (err) {
+          return new Response(err instanceof Error ? err.message : "vote failed", { status: 400 });
+        }
+        return Response.json(await agent.state, { headers: { "cache-control": "no-store" } });
+      }
+      return new Response("Not found", { status: 404 });
+    }
+
     if (url.pathname.startsWith("/p/")) {
       return handleProfile(request, url, env);
     }
