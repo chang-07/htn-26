@@ -89,11 +89,15 @@ export function cartCardPart(env: Env, agentName: string, plan: PlanState, shop?
     ...appCardPart(env, agentName, plan, 0),
     url: cart.checkoutUrl,
     fallback_text: `Cart at ${cart.shop} — ${cart.total}\n${cart.checkoutUrl}`,
+    // The thing being bought, not a drawing of a receipt: its photo and name
+    // when the store sent them, the rendered order ticket when it did not.
     layout: {
-      caption: `Cart · ${cart.shop}`,
-      subcaption: `${items} item${items === 1 ? "" : "s"}`,
+      caption: cart.lines.length === 1 ? cart.lines[0].title : `${items} items`,
+      subcaption: cart.shop,
       trailing_caption: cart.total,
-      image_url: cartImageUrl(env, agentName, plan.version, cart.shop),
+      image_url: cart.lines.find((l) => l.imageUrl)?.imageUrl
+        ? sizedImage(cart.lines.find((l) => l.imageUrl)!.imageUrl!)
+        : cartImageUrl(env, agentName, plan.version, cart.shop),
     },
   };
 }
@@ -211,6 +215,25 @@ export async function sendLinkCard(
       },
     },
   });
+  return res.message.id;
+}
+
+/**
+ * Shopify serves product images at full resolution; a width hint keeps the
+ * download small. Other hosts get the URL untouched.
+ */
+export const sizedImage = (url: string, width = 1200) =>
+  /cdn\.shopify\.com|\/cdn\/shop\//.test(url) ? `${url}${url.includes("?") ? "&" : "?"}width=${width}` : url;
+
+/** Several photos as one message, which iMessage shows as a single stack. */
+export async function sendPhotos(env: Env, chatId: string, urls: string[]): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.photos", { chat: short(chatId), images: urls });
+    return `dry-photo-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
+    message: { parts: urls.map((url) => ({ type: "media", url })) },
+  } as never);
   return res.message.id;
 }
 

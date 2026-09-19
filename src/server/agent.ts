@@ -7,7 +7,7 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { markRead, sendCard, sendLinkCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { markRead, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
@@ -593,8 +593,26 @@ export class PlanAgent extends Agent<Env, PlanState> {
         imageUrl: l.imageUrl,
       })),
     });
-    // The photo first, so the pay card lands directly under what it is for.
-    await this.postTicket("cart", cartTicket(mine, this.headcount()));
+    // The photo first, so the pay card lands directly under what it is for —
+    // and the photo is of the things themselves. A drawn ticket saying "The
+    // Sorbet" tells a group nothing; the bouquet does. Only photos not already
+    // in the thread are sent, so editing a quantity does not repost them.
+    const shown: string[] = JSON.parse(this.getMeta(`cart_photos:${shop}`) || "[]");
+    const photos = [...new Set(mine.lines.map((l) => l.imageUrl).filter((u): u is string => Boolean(u)))];
+    const fresh = photos.filter((u) => !shown.includes(u)).slice(0, 4);
+    if (fresh.length) {
+      const id = await timed("agent", "cart.photos", { shop, count: fresh.length }, () => sendPhotos(this.env, this.name, fresh.map((u) => sizedImage(u))), this.note).catch(
+        () => undefined,
+      );
+      if (id) {
+        const caption = `[photo: ${mine.lines.filter((l) => l.imageUrl && fresh.includes(l.imageUrl)).map((l) => l.title).join(", ")}]`;
+        this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${caption}, ${Date.now()})`;
+        this.setMeta(`cart_photos:${shop}`, JSON.stringify([...shown, ...fresh].slice(-20)));
+      }
+    } else if (!photos.length) {
+      // A store with no product images still gets something to look at.
+      await this.postTicket("cart", cartTicket(mine, this.headcount()));
+    }
 
     const messageId = this.getMeta(`cart_message_id:${shop}`);
     if (messageId) {
@@ -1198,6 +1216,7 @@ ${transcript}`,
         const cancelled = cartId ? await cancelCart(this.env, shop, cartId) : false;
         this.setMeta(`cart_id:${shop}`, "");
         this.setMeta(`cart_message_id:${shop}`, "");
+        this.setMeta(`cart_photos:${shop}`, "");
         this.note("info", "cart.dropped", { shop, cancelledAtStore: cancelled });
         return `Dropped the ${shop} cart. Its old checkout card is still in the thread, so tell the group in one line not to use it. ${this.shoppingListLine()}`;
       }
