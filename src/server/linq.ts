@@ -1,6 +1,6 @@
 import LinqAPIV3 from "@linqapp/sdk";
 import { SLOT_EMOJI, cartsOf, shopKey, type PlanState } from "../types";
-import { log, short } from "./log";
+import { errorFields, log, short } from "./log";
 
 export function linqClient(env: Env) {
   return new LinqAPIV3({ apiKey: env.LINQ_API_KEY });
@@ -243,10 +243,11 @@ export async function sendLinkCard(
 // a single-use virtual card for that purchase alone. Nothing here ever sees a
 // card number. These three calls are only the SETUP half: no money moves.
 
-export type PaymentConnection = { status: "not_connected" | "pending" | "connected" | "revoked"; connectId?: string };
+export type PaymentConnection = { status: "not_connected" | "pending" | "connected" | "revoked"; connectId?: string; simulated?: boolean };
 
 export async function paymentConnection(env: Env, chatId: string, handle: string): Promise<PaymentConnection> {
-  if (isDry(env, chatId)) return { status: "not_connected" };
+  // Simulator chats have no Linq to ask; the caller falls back to what the stubbed setup recorded.
+  if (isDry(env, chatId)) return { status: "not_connected", simulated: true };
   const c = await linqClient(env).paymentHandles.connection(handle);
   return { status: c.status ?? "not_connected" };
 }
@@ -274,6 +275,83 @@ export async function verifyPayments(env: Env, chatId: string, handle: string, c
 export async function revokePayments(env: Env, chatId: string, handle: string): Promise<void> {
   if (isDry(env, chatId)) return void log("info", "linq", "dry.payments_revoke", { chat: short(chatId) });
   await linqClient(env).paymentHandles.revoke(handle);
+}
+
+// ---- paying
+// A purchase mints a single-use virtual card for one exact amount at one
+// merchant. Linq never sees the number: it hands back a short-lived token, and
+// the card is fetched from the provider directly, used once, and dropped.
+
+export type PaymentStep =
+  | { status: "ready"; id: string }
+  | { status: "needs_connection" }
+  | { status: "needs_card"; url: string }
+  | { status: "needs_approval"; url: string }
+  | { status: "failed"; why: string };
+
+export type PaymentAsk = { handle: string; amountCents: number; currency: string; description: string; merchant: { name: string; url: string }; key: string };
+
+/**
+ * Advances one payment. Call it again with the same `key` after the person has
+ * acted (added a card, approved with their passkey) and it moves forward; the
+ * key is what stops a retry from minting a second card.
+ */
+export async function requestPayment(env: Env, chatId: string, ask: PaymentAsk): Promise<PaymentStep> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.payment", { chat: short(chatId), amountCents: ask.amountCents, merchant: ask.merchant.name });
+    return { status: "ready", id: `dry-pay-${ask.key.slice(0, 8)}` };
+  }
+  const p = await linqClient(env).payments.create(
+    { handle: ask.handle, amount_cents: ask.amountCents, currency: ask.currency.toLowerCase(), description: ask.description, merchant: ask.merchant, metadata: { chat: short(chatId) } },
+    { idempotencyKey: ask.key },
+  );
+  if ((p.status === "ready" || p.status === "authorized") && p.id) return { status: "ready", id: p.id };
+  if (p.status === "needs_connection" || p.status === "connecting") return { status: "needs_connection" };
+  if (p.status === "awaiting_user_action" && p.approval_url) return { status: "needs_approval", url: p.approval_url };
+  if (p.status === "awaiting_user_action" && p.attach_url) return { status: "needs_card", url: p.attach_url };
+  return { status: "failed", why: p.status ?? "no status" };
+}
+
+/** Closes the virtual card. Best-effort: an unused single-use card expires on its own. */
+export async function cancelPayment(env: Env, chatId: string, paymentId: string): Promise<void> {
+  if (isDry(env, chatId) || paymentId.startsWith("dry-")) return;
+  await linqClient(env).payments.cancel(paymentId).catch((err: unknown) => log("warn", "linq", "payment.cancel_failed", errorFields(err)));
+}
+
+export async function paymentSucceeded(env: Env, chatId: string, paymentId: string): Promise<boolean> {
+  if (isDry(env, chatId) || paymentId.startsWith("dry-")) return false;
+  const p = await linqClient(env).payments.retrieve(paymentId);
+  return p.status === "succeeded" || p.status === "authorized";
+}
+
+/**
+ * The card for a ready payment, fetched straight from the provider. The result
+ * must stay in local variables: never logged, never stored, never returned from
+ * a workflow step (step results are persisted), never put in a prompt.
+ */
+export async function paymentCard(env: Env, paymentId: string): Promise<{ number: string; expMonth: string; expYear: string; cvc: string }> {
+  const { handoff } = await linqClient(env).payments.credentials(paymentId);
+  if (!handoff?.fetch_url || !handoff.user_token) throw new Error("no card handoff for this payment");
+  const res = await fetch(handoff.fetch_url, { headers: { authorization: `Bearer ${handoff.user_token}`, accept: "application/json" } });
+  if (!res.ok) throw new Error(`card provider answered ${res.status}`);
+  // Providers differ in shape and naming, so look for the four values wherever they sit.
+  const flat: Record<string, string> = {};
+  const walk = (v: unknown) => {
+    if (!v || typeof v !== "object") return;
+    for (const [k, val] of Object.entries(v)) {
+      if (typeof val === "string" || typeof val === "number") flat[k.toLowerCase().replace(/[^a-z]/g, "")] ??= String(val);
+      else walk(val);
+    }
+  };
+  walk(await res.json());
+  const pick = (...names: string[]) => names.map((n) => flat[n]).find(Boolean);
+  const number = pick("pan", "number", "cardnumber")?.replace(/\D/g, "");
+  const cvc = pick("cvc", "cvv", "securitycode", "cvc2", "cvv2");
+  const expiry = pick("expiry", "expiration", "exp", "expirationdate");
+  const expMonth = pick("expmonth", "expirationmonth", "expirymonth") ?? expiry?.match(/^(\d{1,2})/)?.[1];
+  const expYear = pick("expyear", "expirationyear", "expiryyear") ?? expiry?.match(/(\d{2,4})$/)?.[1];
+  if (!number || !cvc || !expMonth || !expYear) throw new Error(`card provider (${handoff.provider ?? "unknown"}) answered in a shape this code does not know: ${Object.keys(flat).join(",").slice(0, 200)}`);
+  return { number, expMonth, expYear, cvc };
 }
 
 /** The card that asks someone to add a payment card to their wallet. */

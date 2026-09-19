@@ -7,7 +7,8 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
@@ -66,8 +67,11 @@ on a time, book it, and order anything they need.
 - Payment setup is not yours to run. If someone wants you to be able to pay for
   things, tell them to text you "set up payments" in a direct chat; "remove my
   payments" undoes it. Never ask for or accept card details in the chat.
-- You cannot pay for anything. shop_build_cart posts one store's cart card with
-  a checkout link for a human to complete. When the group changes that order,
+- You cannot pay for anything yourself, and you never decide who pays. Paying
+  is handled outside you: whoever gives a cart a thumbs up, or texts "i'll
+  pay", covers it, and the chat is told how it went. If asked how to pay, say
+  exactly that in one line. shop_build_cart posts one store's cart card with
+  a checkout link a human can also complete by hand. When the group changes that order,
   call it again with that store's whole new cart; never describe cart changes in
   text.
 - An event usually shops at several stores (cake from one, balloons from
@@ -245,6 +249,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // Every message is remembered, but only one addressed to the agent wakes the
     // model. Group chatter costs no tokens and draws no interjections; when the
     // agent is finally called on, the whole conversation is already in its memory.
+    if (await this.handlePayText(msg)) return;
+
     const wake = this.wakeReason(msg);
     this.note("info", wake ? "message.in" : "message.stored", {
       from: mask(msg.from),
@@ -315,6 +321,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
       if (!answer) return void this.note("info", "reaction.ignored", { reason: "not an rsvp tapback", type: r.reactionType });
       this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${r.from})`;
       await this.recordRsvp(r.from, answer, "reaction");
+      return;
+    }
+    // A thumbs up or a heart on a cart (its card or its photo) is "this one's on me".
+    const cart = this.carts().find((c) => this.cartMessages(shopKey(c.shop)).includes(r.messageId));
+    if (cart) {
+      if (r.reactionType !== "like" && r.reactionType !== "love") return void this.note("info", "reaction.ignored", { reason: "not a pay tapback", type: r.reactionType });
+      await this.startPay(shopKey(cart.shop), r.from, "reaction");
       return;
     }
     if (!this.cardIds().includes(r.messageId)) {
@@ -532,6 +545,136 @@ export class PlanAgent extends Agent<Env, PlanState> {
       return true;
     }
     return false;
+  }
+
+  // -------------------------------------------------------------------- paying
+  // One tapback or one short text, and that person pays for that cart. All of
+  // it is code: who pays, how much, and where is never the model's call. The
+  // guards, in order: payments switched on, the cart unpaid and not already
+  // being paid, the payer's wallet connected, an address on file, and a cap the
+  // real total (known only once the store has priced shipping) must sit under.
+
+  private cartMessages(shop: string): string[] {
+    return JSON.parse(this.getMeta(`cart_msgs:${shop}`) || "[]");
+  }
+
+  private rememberCartMessage(shop: string, id: string) {
+    this.setMeta(`cart_msgs:${shop}`, JSON.stringify([...this.cartMessages(shop).filter((x) => x !== id), id].slice(-20)));
+  }
+
+  /** "i'll pay", "charge me", "pay": only ever the whole message, and only while a cart is unpaid. */
+  private async handlePayText(msg: { from: string; text: string }): Promise<boolean> {
+    if (!/^\s*(@\S+\s+)?(i'?ll (pay|get (it|this|that))|i got (it|this|that)|charge (me|it to me)|put it on me|pay( for (it|this|that))?( now)?)\s*[.!]*\s*$/i.test(msg.text)) return false;
+    const unpaid = this.carts().filter((c) => !c.paidBy);
+    if (!unpaid.length) return false; // not about a cart: leave it to the conversation
+    if (unpaid.length > 1) {
+      await this.say(`which one? thumbs up the cart you're covering: ${unpaid.map((c) => c.shop).join(", ")}`);
+      return true;
+    }
+    await this.startPay(shopKey(unpaid[0].shop), msg.from, "text");
+    return true;
+  }
+
+  private async startPay(shop: string, payer: string, source: "reaction" | "text" | "resume") {
+    const cart = this.carts().find((c) => shopKey(c.shop) === shop);
+    if (!cart) return;
+    const who = this.label(payer);
+    if (cart.paidBy) return void (await this.say(`${cart.shop} is already paid (${cart.paidBy})`));
+    const running = Number(this.getMeta(`pay_running:${shop}`) || 0);
+    if (Date.now() - running < 11 * 60_000) return void this.note("info", "pay.ignored", { reason: "already paying this cart", shop });
+    this.note("info", "pay.asked", { shop, who: mask(payer), source });
+
+    // The wallet: Linq is the authority, the profile flag only a cache of it.
+    const store = peopleStore(this.env);
+    const profile = (await store.getMany([payer]))[payer];
+    const wallet: PaymentConnection = await paymentConnection(this.env, this.name, payer).catch(() => ({ status: "not_connected" }));
+    if (wallet.status !== "connected" && !(wallet.simulated && profile?.payments === "connected")) {
+      this.note("info", "pay.needs_wallet", { who: mask(payer) });
+      await this.say(`${who}, you haven't set up payments yet. text me "set up payments" in a direct message (takes a minute), then thumbs up the cart again`);
+      return;
+    }
+    if (!profile?.shipTo) {
+      // Asked for on their own private page, and the payment picks itself back up when it is saved.
+      this.setMeta(`pay_waiting:${payer}`, shop);
+      const token = await store.tokenFor(payer);
+      this.note("info", "pay.needs_address", { who: mask(payer) });
+      await sendLinkCard(this.env, this.name, {
+        title: "Where should it ship?",
+        subtitle: `${who}: one time only. I'll pay for ${cart.shop} as soon as it's saved.`,
+        button: "Add address",
+        url: `${this.env.PUBLIC_BASE_URL}/p/${token}/ship?chat=${encodeURIComponent(this.name)}`,
+      }).catch((err: unknown) => this.note("warn", "pay.address_card_failed", errorFields(err)));
+      return;
+    }
+
+    this.setMeta(`pay_running:${shop}`, String(Date.now()));
+    const params: PayParams = {
+      pay: true,
+      chat: this.name,
+      shop,
+      checkoutUrl: cart.checkoutUrl,
+      payer,
+      shipTo: profile.shipTo,
+      capCents: Number(this.env.PAY_CAP_CENTS) || 6000,
+      key: crypto.randomUUID(),
+    };
+    const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+    this.note("info", "pay.started", { workflowId: short(workflowId), shop, who: mask(payer), live: this.env.PAYMENTS_LIVE === "true" });
+    await this.say(`on it, ${who}. checking out at ${cart.shop}`);
+  }
+
+  /** Called from the address page once the person has saved where to ship. */
+  async payResume(payer: string) {
+    const shop = this.getMeta(`pay_waiting:${payer}`);
+    if (!shop) return;
+    this.setMeta(`pay_waiting:${payer}`, "");
+    await this.startPay(shop, payer, "resume");
+  }
+
+  /** Called over RPC by the pay workflow. */
+  async payProgress(stage: string, fields: Fields = {}) {
+    if (stage === "browser" && typeof fields.liveUrl === "string") this.setMeta("live_url", fields.liveUrl);
+    const { liveUrl: _live, ...rest } = fields;
+    this.note("info", `pay.${stage}`, rest);
+  }
+
+  /** The person has to do something in their wallet before the card can be minted. */
+  async payNeedsAction(payer: string, kind: "needs_card" | "needs_approval", url: string, total: string, shop: string) {
+    this.note("info", `pay.${kind}`, { who: mask(payer), shop, total });
+    await sendLinkCard(this.env, this.name, {
+      title: kind === "needs_approval" ? `Approve ${total}` : "Add a card to pay",
+      subtitle: `${this.label(payer)}: ${shop}. ${kind === "needs_approval" ? "One tap with your passkey." : "Then it goes through on its own."}`,
+      button: kind === "needs_approval" ? "Approve" : "Add card",
+      url,
+    }).catch((err: unknown) => this.note("warn", "pay.action_card_failed", errorFields(err)));
+  }
+
+  async payFinished(result: PayResult) {
+    this.setMeta(`pay_running:${result.shop}`, "");
+    const who = this.label(result.payer);
+    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId });
+    const carts = this.carts();
+    const cart = carts.find((c) => shopKey(c.shop) === result.shop);
+
+    if (result.status === "paid" && cart) {
+      const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
+      this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
+      await this.postTicket("cart", cartTicket(paid, this.headcount()));
+      await this.say(`paid. ${who} covered ${result.shop}: ${result.total ?? cart.total} with shipping and tax${result.confirmation ? `, order ${result.confirmation}` : ""}. ${result.detail ?? "the receipt goes to their email"}`, { screenEffect: "confetti" });
+      return;
+    }
+    const cap = `$${((Number(this.env.PAY_CAP_CENTS) || 6000) / 100).toFixed(0)}`;
+    const line: Record<Exclude<PayResult["status"], "paid">, string> = {
+      dry_run: `dry run: ${result.shop} comes to ${result.total} with shipping and tax, and the card form is ready. nothing was charged (payments are switched off)`,
+      over_cap: `${result.shop} comes to ${result.total}, over my ${cap} limit per purchase, so i didn't pay. here's the checkout: ${cart?.checkoutUrl ?? ""}`,
+      needs_connection: `${who}, your wallet isn't connected. text me "set up payments" in a direct message`,
+      not_approved: `${who}, i didn't get your approval in time so nothing was charged. thumbs up the cart to try again`,
+      no_card_form: `${result.shop} doesn't take a card on its checkout page, so i can't pay there. here's the checkout: ${cart?.checkoutUrl ?? ""}`,
+      failed: result.unsure
+        ? `${who}, i pressed pay at ${result.shop} but ${result.detail ?? "the store never confirmed"}. don't retry until you've checked your email for a receipt`
+        : `couldn't finish at ${result.shop}: ${result.detail ?? "something went wrong"}. nothing was charged. here's the checkout: ${cart?.checkoutUrl ?? ""}`,
+    };
+    await this.say(line[result.status as Exclude<PayResult["status"], "paid">]);
   }
 
   /**
@@ -780,6 +923,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
         const caption = `[photo: ${mine.lines.filter((l) => l.imageUrl && fresh.includes(l.imageUrl)).map((l) => l.title).join(", ")}]`;
         this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${caption}, ${Date.now()})`;
         this.setMeta(`cart_photos:${shop}`, JSON.stringify([...shown, ...fresh].slice(-20)));
+        this.rememberCartMessage(shop, id); // a thumbs up on the photo counts as one on the cart
       }
     } else if (!photos.length) {
       // A store with no product images still gets something to look at.
@@ -793,10 +937,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
         updateCard(this.env, messageId, this.name, this.state, 0, "cart", shop),
         this.note,
       ).catch(() => undefined);
-      if (newId) this.setMeta(`cart_message_id:${shop}`, newId);
+      if (newId) {
+        this.setMeta(`cart_message_id:${shop}`, newId);
+        this.rememberCartMessage(shop, newId);
+      }
     } else {
       const id = await sendCard(this.env, this.name, this.name, this.state, 0, "cart", shop);
       this.setMeta(`cart_message_id:${shop}`, id);
+      this.rememberCartMessage(shop, id);
     }
     // Empty the first time round: the caller uses it to say "posted" vs "redrawn".
     return messageId || undefined;
@@ -1772,6 +1920,19 @@ this.rememberCardId(id);
   }
 
   /** Simulator only: the open Who's in ticket's message id. */
+  /** Dev only: a cart that exists nowhere but here, so the pay guards can be tested offline. */
+  async devSeedCart(shop: string, total: string) {
+    const key = shopKey(shop);
+    this.saveCarts([...this.carts().filter((c) => shopKey(c.shop) !== key), { shop: key, checkoutUrl: `https://${key}/cart/c/dev`, total, lines: [{ title: "Test item", quantity: 1, price: total }] }]);
+    this.rememberCartMessage(key, `dry-cart-${key}`);
+  }
+
+  /** Dev only: the newest message a cart has in the thread, for the simulator to react to. */
+  async currentCartMessageId(shop?: string) {
+    const cart = this.carts().find((c) => !shop || shopKey(c.shop) === shopKey(shop));
+    return cart ? this.cartMessages(shopKey(cart.shop)).at(-1) : undefined;
+  }
+
   async currentRsvpId() {
     return this.sql<{ message_id: string }>`
       SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;

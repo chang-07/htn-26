@@ -34,13 +34,14 @@ function page(body: string, done = false) {
 }
 
 export async function handleProfile(request: Request, url: URL, env: Env): Promise<Response> {
-  const token = url.pathname.slice("/p/".length);
+  const [token, rest] = url.pathname.slice("/p/".length).split("/");
   const found = token ? await people(env).byToken(token) : null;
   if (!found) {
     return page(`<div class="tk-meta">Profile</div><h1 class="tk-title">This link isn't valid</h1>
       <hr class="tk-perf"><p style="margin:0">Text the planner "profile" and it will send you a fresh one.</p>`);
   }
   const { handle, profile } = found;
+  if (rest === "ship") return handleShipTo(request, url, env, handle, profile);
 
   if (request.method === "POST") {
     const form = await request.formData();
@@ -98,5 +99,59 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
         <span>Count me in for matching. The planner may introduce me to someone here with similar interests.</span></label>
       <button class="tk-action" type="submit">Save</button>
       <p class="tk-small" style="margin:0">Only you have this link. Text the planner "forget me" and all of it is deleted.</p>
+    </form>`);
+}
+
+const SHIP_FIELDS = [
+  { key: "name", label: "Full name", hint: "As it should appear on the parcel", auto: "name" },
+  { key: "email", label: "Email", hint: "The store sends the receipt here", auto: "email" },
+  { key: "line1", label: "Address", hint: "Street and number", auto: "address-line1" },
+  { key: "line2", label: "Apartment, unit", hint: "Optional", auto: "address-line2" },
+  { key: "city", label: "City", hint: "", auto: "address-level2" },
+  { key: "region", label: "State or province", hint: "Two letters: ON, CA, NY", auto: "address-level1" },
+  { key: "postal", label: "Postal or ZIP code", hint: "", auto: "postal-code" },
+  { key: "country", label: "Country", hint: "Two letters: CA or US", auto: "country" },
+] as const;
+
+/**
+ * /p/<token>/ship — where this person's orders go. Its own page, not part of
+ * the profile: it is asked for only when they first offer to pay for something,
+ * and it never reaches the model. Saving it resumes the payment that asked.
+ */
+async function handleShipTo(request: Request, url: URL, env: Env, handle: string, profile: Profile): Promise<Response> {
+  let problem = "";
+  if (request.method === "POST") {
+    const form = await request.formData();
+    const v = (k: string, max: number) => String(form.get(k) ?? "").trim().slice(0, max);
+    const shipTo = { name: v("name", 60), email: v("email", 120), line1: v("line1", 120), line2: v("line2", 60) || undefined, city: v("city", 60), region: v("region", 3).toUpperCase(), postal: v("postal", 12).toUpperCase(), country: v("country", 2).toUpperCase() };
+    if (!shipTo.name || !shipTo.line1 || !shipTo.city || !shipTo.postal) problem = "Name, address, city and postal code are all needed.";
+    else if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(shipTo.email)) problem = "That email doesn't look right.";
+    else if (!/^[A-Z]{2}$/.test(shipTo.country) || !/^[A-Z]{2,3}$/.test(shipTo.region)) problem = "Use two-letter codes for the country and the state or province.";
+    else {
+      await people(env).save(handle, { shipTo });
+      log("info", "people", "ship_to.saved", { who: mask(handle), country: shipTo.country });
+      const chat = url.searchParams.get("chat");
+      if (chat) {
+        const agent = await getAgentByName<Env, PlanAgent>(env.PlanAgent, chat);
+        // Only resumes if that chat really is waiting on this person: the agent checks.
+        await agent.payResume(handle).catch((err) => log("warn", "people", "pay.resume_failed", { error: String(err).slice(0, 200) }));
+      }
+      return page(`<div class="tk-meta">Saved</div><h1 class="tk-title">That's where it ships</h1>
+        <hr class="tk-perf"><p style="margin:0">Back to the chat: the planner carries on from here. Open this link again to change the address, or text "forget me" to delete it.</p>`, true);
+    }
+    profile = { ...profile, shipTo };
+  }
+  const inputs = SHIP_FIELDS.map(
+    (f) => `<label class="tk-field"><span class="tk-meta">${f.label}</span><input id="${f.key}" type="text" name="${f.key}" autocomplete="${f.auto}" value="${esc(String(profile.shipTo?.[f.key] ?? ""))}" placeholder="${esc(f.hint)}"></label>`,
+  ).join("");
+  return page(`<div class="tk-meta">Delivery</div>
+    <h1 class="tk-title">Where should it ship?</h1>
+    <p style="margin:14px 0 0">Asked once. Used only to fill in a store's checkout when you offer to pay for something.</p>
+    <hr class="tk-perf">
+    <form class="tk-form" method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving';">
+      ${inputs}
+      ${problem ? `<p class="tk-error" style="margin:0">${esc(problem)}</p>` : ""}
+      <button class="tk-action" type="submit">Save</button>
+      <p class="tk-small" style="margin:0">No card details here, ever: those stay in your wallet. Only you have this link.</p>
     </form>`);
 }

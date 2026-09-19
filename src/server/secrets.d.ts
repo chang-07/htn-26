@@ -19,6 +19,10 @@ interface SecretBindings {
   BROWSERBASE_PROJECT_ID?: string;
   /** Persistent context holding the bot account's Instagram login. */
   BROWSERBASE_CONTEXT_ID?: string;
+  /** "true" lets the agent really pay. Anything else prices the order and stops. */
+  PAYMENTS_LIVE?: string;
+  /** The most one purchase may cost, in cents. Defaults to 6000. */
+  PAY_CAP_CENTS?: string;
 }
 
 interface Env extends SecretBindings {}

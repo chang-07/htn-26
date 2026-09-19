@@ -322,8 +322,56 @@ accept card details. Verification codes are replaced with `[verification code]`
 in the transcript before the model can read them. Simulator chats use a stub
 (`000000` is the right code) so tests never touch a real wallet.
 
-Spending — `payments.create`, the passkey approval, and handing a virtual card
-to a checkout — is deliberately not built yet.
+### Paying — one tapback
+
+A 👍 or ❤️ on a cart (its card or its product photo), or a message that is only
+"i'll pay" / "charge me" / "pay", means *that person covers that cart*. Linq
+says who reacted, so identity needs no extra step. Everything after that is
+code — `startPay` in `agent.ts`, the `pay` branch of `BookingWorkflow`, and
+`checkout.ts` — and the model is never involved:
+
+1. **Guards.** Cart unpaid and not already being paid · the payer's wallet is
+   connected (else: "text me set up payments") · a delivery address is on file
+   (else a link card to `/p/<token>/ship`; saving it resumes the payment by
+   itself).
+2. **Price it.** A browser opens the store's checkout and fills contact and
+   shipping by rote (every Shopify checkout has the same field names, so no
+   model and no tokens). The store prices shipping and tax; the real total is
+   read off the page. Over `PAY_CAP_CENTS` (default 6000) → stop.
+3. **Mint a card.** `payments.create` for exactly that total at exactly that
+   merchant, with an idempotency key per attempt. If Linq wants the person to
+   add a card or approve with their passkey, a link card is sent once and the
+   workflow polls with the same key for up to four minutes.
+4. **Pay.** The card is fetched from the provider (never through Linq), typed
+   into Shopify's card iframes, each field verified from inside its frame, the
+   total re-checked against the minted amount, then Pay. On confirmation the
+   cart flips to the green PAID ticket with "paid by <name>".
+
+`PAYMENTS_LIVE` must be the string `"true"` for step 3 onward to run. Anything
+else prices the order, confirms the card form is reachable, reports the total,
+and stops — which is also what every simulator chat does.
+
+Card details exist only as local variables inside one workflow step: never
+logged, never stored, never returned from a step (step results are persisted),
+never in a prompt. If Pay was pressed and the store never confirmed, the agent
+says so instead of "nothing was charged", and leaves the card open rather than
+risk voiding a real order. A failure before that closes the card.
+
+Try the no-money half against a real store:
+
+```sh
+curl -G localhost:5173/api/dev/checkout --data-urlencode "url=<a cart's checkout url>" \
+  --data-urlencode "line1=1600 Amphitheatre Pkwy" --data-urlencode "city=Mountain View" \
+  -d region=CA -d postal=94043 -d country=US -d card=test   # types Stripe's test number, never presses Pay
+```
+
+Not yet proven, because it needs a real connected wallet: the shape of the
+provider's card response (`paymentCard` searches for the four values by common
+names and fails loudly, listing the keys it saw), whether every purchase needs a
+passkey approval, non-USD totals, and whether stores' fraud checks accept an
+order placed from a datacenter browser. Shopify's own checkout API is no use
+here: `create_checkout` is listed by stores but answers "Tool not found" for
+this agent, and its card field wants a pre-tokenized credential.
 
 ### Booking and availability — the browser pilot
 
