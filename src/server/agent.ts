@@ -66,7 +66,9 @@ on a time, book it, and order anything they need.
   never make either up.
 - Payment setup is not yours to run. If someone wants you to be able to pay for
   things, tell them to text you "set up payments" in a direct chat; "remove my
-  payments" undoes it. Never ask for or accept card details in the chat.
+  payments" undoes it. Never ask for or accept card details in the chat. You
+  have no way to connect, change or remove anyone's payments, so never say you
+  did: give them the exact words to text instead.
 - You cannot pay for anything yourself, and you never decide who pays. Paying
   is handled outside you: whoever gives a cart a thumbs up, or texts "i'll
   pay", covers it, and the chat is told how it went. If asked how to pay, say
@@ -521,7 +523,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
       return true;
     }
 
-    if (/\b(set ?up|connect|add) (my |a )?(payments?|card|wallet)\b/i.test(msg.text)) {
+    // Loose on purpose (typos, "payment method", "my debit card"): a near miss
+    // would fall through to the model, which cannot do any of this and must not pretend to.
+    const THING = "(pay\\w*|(credit |debit )?card\\w*|wallet\\w*)";
+    if (new RegExp(`\\b(set ?up|connect|add|change|update)\\b.{0,12}\\b${THING}`, "i").test(msg.text)) {
       try {
         const now = await paymentConnection(this.env, this.name, msg.from);
         if (now.status === "connected") {
@@ -542,7 +547,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       return true;
     }
 
-    if (/\b(remove|disconnect|forget) (my )?(payments?|card|wallet)\b/i.test(msg.text)) {
+    if (new RegExp(`\\b(remove|disconnect|forget|delete|unlink|revoke|cancel)\\b.{0,12}\\b${THING}`, "i").test(msg.text)) {
       await revokePayments(this.env, this.name, msg.from).catch((err: unknown) => this.note("warn", "payments.revoke_failed", errorFields(err)));
       await peopleStore(this.env).save(msg.from, { payments: undefined });
       this.note("info", "payments.revoked", { who: mask(msg.from) });
