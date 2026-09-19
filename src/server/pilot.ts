@@ -212,8 +212,12 @@ function collectInFrame(frameIndex: number, limit: number) {
 /** Frames that never hold a booking form; skipping them leaves room for the ones that do. */
 const JUNK_FRAME = /doubleclick|googletagmanager|google\.com\/recaptcha|googlesyndication|facebook\.|hotjar|intercom|hubspot|analytics|about:blank|^$/i;
 
-/** Frame handles from the latest observation, addressed by the id prefix shown to the model. */
-let lastFrames = new Map<string, Frame>();
+/**
+ * Frame handles from each page's latest observation, addressed by the id prefix
+ * shown to the model. Per page: several pilots share one browser, a tab each,
+ * and "0.4" on one tab must never resolve to a frame on another.
+ */
+const lastFrames = new WeakMap<Page, Map<string, Frame>>();
 
 export async function observe(page: Page): Promise<Observed> {
   const elements: string[] = [];
@@ -225,10 +229,11 @@ export async function observe(page: Page): Promise<Observed> {
   // the first few in document order.
   const all = page.frames();
   const chosen = [all[0], ...all.slice(1).filter((f) => !JUNK_FRAME.test(f.url())).slice(-7)];
-  lastFrames = new Map();
+  const frames = new Map<string, Frame>();
+  lastFrames.set(page, frames);
 
   for (let i = 0; i < chosen.length; i++) {
-    lastFrames.set(String(i), chosen[i]);
+    frames.set(String(i), chosen[i]);
     try {
       const found = await chosen[i].evaluate(collectInFrame, i, i === 0 ? 120 : 70);
       elements.push(...found.lines);
@@ -242,8 +247,8 @@ export async function observe(page: Page): Promise<Observed> {
   return { url: page.url(), title: await page.title().catch(() => ""), text, elements: elements.slice(0, 160), hasPayment };
 }
 
-function frameFor(_page: Page, id: string): { frame: Frame; selector: string } {
-  const frame = lastFrames.get(id.split(".")[0]);
+function frameFor(page: Page, id: string): { frame: Frame; selector: string } {
+  const frame = lastFrames.get(page)?.get(id.split(".")[0]);
   if (!frame) throw new Error(`no frame for element ${id}`);
   return { frame, selector: `[data-pilot="${id}"]` };
 }

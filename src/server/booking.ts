@@ -1,6 +1,6 @@
 import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "agents/workflows";
 import type { PlanAgent } from "./agent";
-import { openBrowser } from "./browser";
+import { openBrowser, pooled, TABS } from "./browser";
 import { errorFields, log } from "./log";
 import { runPilot, type PilotStatus } from "./pilot";
 
@@ -51,7 +51,8 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
   async run(event: AgentWorkflowEvent<BookingParams | AvailabilityParams>, step: AgentWorkflowStep) {
     if ("mode" in event.payload) {
       const checks = event.payload;
-      // Sequential on purpose: the free Browserbase plan allows one browser at a time.
+      // One browser, a tab per venue: the free Browserbase plan allows one
+      // session at a time, but the checks have nothing to do with each other.
       const results = await step.do("availability", { retries: { limit: 0, delay: "1 second" }, timeout: "12 minutes" }, () =>
         this.checkAll(checks),
       );
@@ -78,33 +79,51 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       : when.toLocaleDateString("en-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
     const around = Number.isNaN(when.getTime()) ? "" : ` around ${when.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })}`;
 
-    const results: AvailabilityResult[] = [];
-    for (const check of params.checks) {
-      let session;
-      try {
-        session = await openBrowser(this.env, { timeoutSeconds: 240 });
-        const page = await session.browser.newPage();
-        const found = await runPilot(
-          this.env,
-          page,
-          {
-            mode: "availability",
-            dryRun: true,
-            startUrl: check.url,
-            maxSteps: 12,
-            task: `Find which start times are available at "${check.title}" for ${params.partySize} people on ${day}${around}. Today is ${new Date().toISOString().slice(0, 10)}.`,
-          },
-          (n, line) => this.agent.bookingProgress("availability_step", { option: check.title.slice(0, 40), n, line: line.slice(0, 160) }),
-        );
-        results.push({ optionId: check.optionId, title: check.title, ok: found.status === "found", slots: found.slots ?? [], summary: found.summary });
-      } catch (err) {
-        log("warn", "book", "availability.failed", { option: check.title, ...errorFields(err) });
-        results.push({ optionId: check.optionId, title: check.title, ok: false, slots: [], summary: "couldn't open the booking page" });
-      } finally {
-        await session?.close();
-      }
+    const failed = (check: AvailabilityParams["checks"][number]): AvailabilityResult => ({
+      optionId: check.optionId,
+      title: check.title,
+      ok: false,
+      slots: [],
+      summary: "couldn't open the booking page",
+    });
+
+    let session: Awaited<ReturnType<typeof openBrowser>>;
+    try {
+      session = await openBrowser(this.env, { timeoutSeconds: 420 });
+    } catch (err) {
+      log("warn", "book", "availability.failed", { option: "(all)", ...errorFields(err) });
+      return params.checks.map(failed);
     }
-    return results;
+    try {
+      return await pooled(params.checks, TABS, async (check) => {
+        let page;
+        try {
+          page = await session.browser.newPage();
+          const found = await runPilot(
+            this.env,
+            page,
+            {
+              mode: "availability",
+              dryRun: true,
+              startUrl: check.url,
+              maxSteps: 12,
+              task: `Find which start times are available at "${check.title}" for ${params.partySize} people on ${day}${around}. Today is ${new Date().toISOString().slice(0, 10)}.`,
+            },
+            (n, line) => this.agent.bookingProgress("availability_step", { option: check.title.slice(0, 40), n, line: line.slice(0, 160) }),
+          );
+          return { optionId: check.optionId, title: check.title, ok: found.status === "found", slots: found.slots ?? [], summary: found.summary };
+        } catch (err) {
+          log("warn", "book", "availability.failed", { option: check.title, ...errorFields(err) });
+          // Into the chat's own event log too: the console is gone by the time anyone asks why.
+          await this.agent.bookingProgress("availability_failed", { option: check.title.slice(0, 40), ...errorFields(err) }).catch(() => {});
+          return failed(check);
+        } finally {
+          await page?.close().catch(() => {});
+        }
+      });
+    } finally {
+      await session.close();
+    }
   }
 
   private async reserve(params: BookingParams, dryRun: boolean): Promise<BookingResult> {

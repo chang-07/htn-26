@@ -1,7 +1,7 @@
 import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "agents/workflows";
 import { z } from "zod";
 import type { PlanAgent } from "./agent";
-import { openBrowser, readPage, searchWeb, type SearchHit } from "./browser";
+import { openBrowser, pooled, readPage, searchWeb, TABS, type SearchHit } from "./browser";
 import { askJson } from "./llm";
 import { errorFields, log } from "./log";
 
@@ -87,14 +87,16 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       const found = await step.do("search", STEP, async () => {
         const session = await openBrowser(this.env, { timeoutSeconds: 180 });
         try {
-          const hits = new Map<string, SearchHit>();
-          for (const q of plan.queries) {
-            const batch = await searchWeb(session.browser, q).catch((err) => {
+          // A tab per query. Merged in query order afterwards, so the hit
+          // list does not depend on which search came back first.
+          const batches = await pooled(plan.queries, TABS, (q) =>
+            searchWeb(session.browser, q).catch((err) => {
               log("warn", "research", "search.failed", { q, ...errorFields(err) });
-              return [];
-            });
-            for (const h of batch) if (!hits.has(h.url)) hits.set(h.url, h);
-          }
+              return [] as SearchHit[];
+            }),
+          );
+          const hits = new Map<string, SearchHit>();
+          for (const h of batches.flat()) if (!hits.has(h.url)) hits.set(h.url, h);
           return { hits: [...hits.values()], session: session.sessionId };
         } finally {
           await session.close();
@@ -122,11 +124,11 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       //    so that each prompt stays small enough for a local dev model.
       const read = await step.do("read", { ...STEP, timeout: "8 minutes" }, async () => {
         const session = await openBrowser(this.env, { timeoutSeconds: 420 });
-        const out: { url: string; candidates: z.infer<typeof Candidate>[] }[] = [];
-        let failed = 0;
         let used = 0;
         try {
-          for (const url of picked.urls) {
+          // A tab per page, each followed straight away by its own extraction,
+          // so the model is reading page one while the browser loads page two.
+          const pages = await pooled(picked.urls, TABS, async (url) => {
             try {
               const page = await readPage(session.browser, url, budget.pageChars, true);
               const r = await askJson(
@@ -136,17 +138,18 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
                 `Brief: ${ask}\n\nPage: ${page.title} (${page.url})\n\n${page.text}\n\nLinks on the page:\n${page.links.slice(0, 40).map((l) => `${l.text} -> ${l.href}`).join("\n")}`,
               );
               used += r.tokens;
-              out.push({ url: page.url, candidates: r.value.candidates });
               // Kept on the chat agent and served from /shot, so the run viewer
               // can show what the browser actually landed on.
               const shotId = page.shot ? await this.agent.saveShot(page.shot).catch(() => undefined) : undefined;
               await progress("read", { host: new URL(url).host, candidates: r.value.candidates.length, shotId, url: page.url });
+              return { url: page.url, candidates: r.value.candidates };
             } catch (err) {
-              failed++;
               log("warn", "research", "page.failed", { url, ...errorFields(err) });
+              return null;
             }
-          }
-          return { pages: out, failed, tokens: used, session: session.sessionId };
+          });
+          const out = pages.filter((pg) => pg !== null);
+          return { pages: out, failed: pages.length - out.length, tokens: used, session: session.sessionId };
         } finally {
           await session.close();
         }

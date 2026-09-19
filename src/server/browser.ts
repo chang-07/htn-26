@@ -106,6 +106,27 @@ function nativeSocket(url: string): Promise<ConnectionTransport> {
   });
 }
 
+/**
+ * Runs `fn` over `items` with at most `limit` in flight, results in input
+ * order. For tabs sharing one browser: the free Browserbase plan allows a
+ * single session, but a session holds as many pages as it has memory for.
+ */
+export async function pooled<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** Tabs open at once in one session. Past this, pages start timing each other out. */
+export const TABS = 4;
+
 export type PageText = {
   url: string;
   title: string;

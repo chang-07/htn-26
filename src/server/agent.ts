@@ -83,6 +83,12 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   exactly NOOP and nothing else.`;
 
 const MAX_STEPS = 8;
+/**
+ * Tools that only fetch over the network and do not care what ran before them
+ * in the same step. Anything that speaks, posts a card or edits the plan stays
+ * out: those are read in order by the group and guarded in order by the turn.
+ */
+const CONCURRENT_TOOLS = new Set<string>(["shop_search", "find_matches"]);
 /** The bubble lasts ~85s per call; Linq says to refresh every 60. */
 const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
@@ -889,6 +895,29 @@ ${transcript}`,
         return;
       }
 
+      const run = (call: (typeof calls)[number]) =>
+        timed(
+          "agent",
+          "tool",
+          // Arguments are useful for every tool except the one carrying message text.
+          { tool: call.function.name, args: call.function.name === "send_message" ? "(text)" : call.function.arguments.slice(0, 300) },
+          () => this.runTool(call.function.name, call.function.arguments),
+          this.note,
+        );
+      // Lookups the model asked for together are fetched together: two stores
+      // searched in one step should cost one wait, not two. Everything else
+      // keeps its turn in the loop below, where order is the point.
+      const early = new Map<string, Promise<string>>();
+      if (calls.filter((c) => CONCURRENT_TOOLS.has(c.function.name)).length > 1) {
+        for (const call of calls) {
+          if (!CONCURRENT_TOOLS.has(call.function.name)) continue;
+          const started = run(call);
+          // The loop can end the turn before reaching this call; awaited or not, it must not go unhandled.
+          started.catch(() => {});
+          early.set(call.id, started);
+        }
+      }
+
       for (const call of calls) {
         let output: string;
         const tool = call.function.name;
@@ -914,14 +943,7 @@ ${transcript}`,
         }
 
         try {
-          output = await timed(
-            "agent",
-            "tool",
-            // Arguments are useful for every tool except the one carrying message text.
-            { tool, args: tool === "send_message" ? "(text)" : call.function.arguments.slice(0, 300) },
-            () => this.runTool(tool, call.function.arguments),
-            this.note,
-          );
+          output = await (early.get(call.id) ?? run(call));
           if (tool === "send_message") {
             spoke = true;
             // A question hands the conversation to the humans. There is nothing
