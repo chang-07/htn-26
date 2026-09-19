@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useAgent } from "agents/react";
 import { TICKET_CSS, TICKET_FONTS } from "../theme";
 import { SLOT_EMOJI, cartsOf, cartsTotal, type PlanState } from "../types";
+import { fmtMoney, invoiceFor } from "../invoice";
 
 // The same words the ticket image uses, so the page reads as the card opened up.
 const STATUS_META: Record<PlanState["status"], string> = {
@@ -128,6 +129,7 @@ export function Widget({ agentName }: { agentName: string }) {
         ) : null}
 
         <ShoppingList plan={plan} />
+        <InvoiceSection plan={plan} />
 
         {error ? <p className="tk-error">{error}</p> : null}
       </div>
@@ -191,6 +193,99 @@ function ShoppingList({ plan }: { plan: PlanState }) {
           </div>
         );
       })}
+    </section>
+  );
+}
+
+/**
+ * The running invoice: who paid what and who owes whom, worked out here from
+ * the same state the ticket is drawn from, so it is current the moment a cart
+ * is paid, an expense is logged or the headcount changes. The carts are
+ * itemised in the shopping list above; this section is the balances, the
+ * payments that square them, and anything paid outside a cart.
+ */
+function InvoiceSection({ plan }: { plan: PlanState }) {
+  const inv = invoiceFor(cartsOf(plan), plan.expenses ?? [], plan.going ?? []);
+  if (!inv.ok) return null;
+  const lines = inv.lines.filter((l) => l.paid || l.share);
+  if (!lines.length) return null; // nothing paid yet: the shopping list says it all
+  const money = (cents: number) => fmtMoney(inv.symbol, cents);
+  const square = lines.every((l) => l.net === 0);
+  const expenses = inv.entries.filter((e) => e.kind === "expense");
+
+  return (
+    <section>
+      <hr className="tk-perf" />
+      <header className="tk-head">
+        <div>
+          <div className="tk-meta">{inv.settled ? "Settle up" : "Running tab"}</div>
+          <div style={{ marginTop: 6 }}>
+            {inv.settled
+              ? square
+                ? "All square"
+                : "Who owes what"
+              : `${money(inv.paid)} paid so far, ${inv.unpaid.length} ${inv.unpaid.length === 1 ? "store" : "stores"} left to pay`}
+          </div>
+        </div>
+        <div className="tk-stub">
+          <b style={{ fontSize: 24 }}>
+            {inv.symbol}
+            {Math.round(inv.total / 100)}
+          </b>
+          <span className="tk-meta">total</span>
+        </div>
+      </header>
+
+      <ul className="tk-rows" style={{ marginTop: 14 }}>
+        {lines.map((l) => (
+          <li key={l.name} className={`tk-row${l.net === 0 ? " is-dim" : ""}`}>
+            <span className="tk-grow">
+              <span className="tk-name">{l.name}</span>
+              {l.paid ? <span className="tk-sub">paid {money(l.paid)}</span> : null}
+            </span>
+            <span className="tk-num">{l.net > 0 ? `gets ${money(l.net)}` : l.net < 0 ? `owes ${money(-l.net)}` : "even"}</span>
+          </li>
+        ))}
+      </ul>
+
+      {inv.transfers.length ? (
+        <>
+          <div className="tk-meta" style={{ marginTop: 22 }}>
+            To settle up
+          </div>
+          <ul className="tk-rows" style={{ marginTop: 6 }}>
+            {inv.transfers.map((t) => (
+              <li key={`${t.from}>${t.to}`} className="tk-row" style={{ fontSize: 15, padding: "5px 0" }}>
+                <span className="tk-grow">
+                  {t.from} → {t.to}
+                </span>
+                <span className="tk-num">{money(t.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
+      {expenses.length ? (
+        <>
+          <div className="tk-meta" style={{ marginTop: 22 }}>
+            Outside the carts
+          </div>
+          <ul className="tk-rows" style={{ marginTop: 6 }}>
+            {expenses.map((e) => (
+              <li key={e.id} className="tk-row" style={{ fontSize: 15, padding: "5px 0" }}>
+                <span className="tk-grow">
+                  {e.what}
+                  <span className="tk-sub">
+                    {e.who} paid{e.among.length !== inv.people.length ? ` · for ${e.among.join(", ")}` : ""}
+                  </span>
+                </span>
+                <span className="tk-num">{money(e.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
     </section>
   );
 }

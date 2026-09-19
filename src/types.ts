@@ -1,5 +1,7 @@
 /** Shapes shared by the Worker and the React vote page. */
 
+import type { Expense } from "./invoice";
+
 /** "handoff": the agent took the booking as far as it may (payment, or a dry run) and a person finishes it. */
 export type PlanStatus = "idle" | "voting" | "booking" | "booked" | "handoff" | "failed";
 
@@ -44,6 +46,16 @@ export type PlanState = {
   /** @deprecated Pre-multi-store state. Read through cartsOf(); never written. */
   cart?: CartSummary;
   bookingNote?: string;
+  /**
+   * Money paid outside any cart and logged from the conversation (the bill,
+   * a deposit, paying someone back). With the carts, the whole invoice.
+   */
+  expenses?: Expense[];
+  /**
+   * Display names every cost is split across: those who said they are in, or
+   * everyone in the chat until anyone has answered. Same footing as `awaiting`.
+   */
+  going?: string[];
   /** Bumped on every change; used to bust the card image cache. */
   version: number;
 };
@@ -55,6 +67,8 @@ export const EMPTY_PLAN: PlanState = {
   counts: {},
   awaiting: [],
   carts: [],
+  expenses: [],
+  going: [],
   version: 0,
 };
 

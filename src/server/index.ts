@@ -10,10 +10,11 @@ import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
 import { parseLinks, readInstagram, readLinks } from "./social";
-import { renderAvatar, cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { renderAvatar, cartTicket, invoiceTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
+import { invoiceFor } from "../invoice";
 
 export { PlanAgent } from "./agent";
 export { BookingWorkflow } from "./booking";
@@ -170,7 +171,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
- *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
+ *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
@@ -255,8 +256,18 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
         { emoji: "🍜", text: "Will travel for ramen" },
         { emoji: "🎞", text: "Shoot film cameras" },
       ]),
+      // state=open: the last store still unpaid · done: everything bought, Maya owed by the rest
+      invoice: invoiceTicket(
+        invoiceFor(
+          plan.carts!.map((c, i) => ({ ...c, paidBy: i === 0 ? "Maya" : i === 1 ? "Sam" : done ? "Jordan" : undefined })),
+          [{ id: "e1", who: "Maya", amount: "$86.40", what: "dinner" }],
+          [...people, "Alex"],
+        ),
+      ),
     };
-    const img = await renderTicket(tickets[url.searchParams.get("kind") ?? "plan"] ?? tickets.plan);
+    const kind = url.searchParams.get("kind") ?? "plan";
+    if (!(kind in tickets)) return new Response(`kind must be one of ${Object.keys(tickets).join(", ")}`, { status: 404 });
+    const img = await renderTicket(tickets[kind]);
     return new Response(await img.arrayBuffer(), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }
   const body = request.method === "POST" ? ((await request.json()) as Record<string, string>) : {};

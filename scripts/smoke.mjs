@@ -85,7 +85,7 @@ await check("a voter's latest tapback replaces their earlier one", async () => {
 });
 await check("plan card renders as a PNG", async () => expect((await get(`/card/${a}?v=1`)).headers.get("content-type") === "image/png", "not a PNG"));
 await check("every ticket design renders", async () => {
-  for (const kind of ["plan", "cart", "venue", "rsvp", "match"]) {
+  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice"]) {
     const res = await get(`/api/dev/card?kind=${kind}`);
     expect(res.headers.get("content-type") === "image/png", `${kind}: ${res.status}`);
   }
@@ -173,6 +173,63 @@ await check("\"i'll pay\" with no cart in the chat is ordinary conversation", as
   await post("/api/dev/message", { chat: c, group: true, from: "+15550007777", text: "i'll pay" });
   await sleep(500);
   expect(!(await logs(c)).includes("pay.asked"), "treated as a payment with nothing to pay for");
+});
+
+console.log("\ninvoice (who owes whom; no model involved)");
+const inv = chat("invoice");
+await check("the invoice ticket renders in both states", async () => {
+  for (const state of ["open", "done"]) {
+    const res = await get(`/api/dev/card?kind=invoice&state=${state}`);
+    expect(res.headers.get("content-type") === "image/png", `${state}: ${res.status}`);
+  }
+});
+await check("paying the last cart posts the invoice ticket once, not before", async () => {
+  // Three in the chat; two have names. Carts are seeded, not shopped, so nothing leaves the laptop.
+  for (const from of ["+15550000001", "+15550000002", "+15550000003"]) await post("/api/dev/message", { chat: inv, group: true, from, text: "in" });
+  await tool(inv, "remember_name", { who: "…0001", name: "Maya" });
+  await tool(inv, "remember_name", { who: "…0002", name: "Sam" });
+  await post("/api/dev/seedcart", { chat: inv, shop: "levainbakery.com", total: "$128.00" });
+  await post("/api/dev/seedcart", { chat: inv, shop: "partycity.com", total: "$41.50" });
+  await tool(inv, "mark_paid", { who: "Maya", shop: "levainbakery.com" });
+  expect(!(await logs(inv)).includes('"kind":"invoice"'), "invoice posted while a cart was still unpaid");
+  await tool(inv, "mark_paid", { who: "Sam", shop: "partycity.com" });
+  const text = await logs(inv);
+  expect(count(text, '"kind":"invoice"') === 1, `invoice ticket posted ${count(text, '"kind":"invoice"')} times`);
+  expect(text.indexOf('"kind":"cart","tone":"done"') < text.indexOf('"kind":"invoice"'), "the invoice came before the PAID ticket");
+});
+await check("the invoice splits every cart across the chat and nets the two payers", async () => {
+  const { invoice, state } = await dump(inv);
+  expect(invoice?.ok && invoice.settled, `invoice: ${JSON.stringify(invoice).slice(0, 120)}`);
+  const line = (n) => invoice.lines.find((l) => l.name === n);
+  // 128.00/3 and 41.50/3, odd cents to the first names, in cents.
+  expect(line("Maya")?.net === 7149, `Maya net ${line("Maya")?.net}`);
+  expect(line("Sam")?.net === -1500, `Sam net ${line("Sam")?.net}`);
+  expect(line("…0003")?.net === -5649, `…0003 net ${line("…0003")?.net}`);
+  expect(invoice.transfers.length === 2 && invoice.transfers.every((t) => t.to === "Maya"), JSON.stringify(invoice.transfers));
+  expect(state.going.includes("Maya") && state.going.length === 3, `state.going = ${JSON.stringify(state.going)}`);
+});
+await check("add_expense for one person is a transfer, and it settles that debt", async () => {
+  await tool(inv, "add_expense", { who: "Sam", amount: "$15", what: "paid Maya back", for: ["Maya"] });
+  const { invoice, state } = await dump(inv);
+  expect(state.expenses?.length === 1, `${state.expenses?.length} expenses in state`);
+  expect(invoice.lines.find((l) => l.name === "Sam").net === 0, "Sam still owes after paying Maya back");
+  expect(invoice.transfers.length === 1, `${invoice.transfers.length} transfers left`);
+});
+await check("show_invoice posts the ticket; drop_expense takes the entry back out", async () => {
+  await tool(inv, "show_invoice", {});
+  expect(count(await logs(inv), '"kind":"invoice"') === 2, "show_invoice did not post a ticket");
+  const id = (await dump(inv)).state.expenses[0].id;
+  await tool(inv, "drop_expense", { id });
+  const { invoice, state } = await dump(inv);
+  expect(state.expenses.length === 0, "expense still in state");
+  expect(invoice.transfers.length === 2, "the debt did not come back");
+});
+await check("nothing to split: no invoice for a chat of one", async () => {
+  const c = chat("invoice1");
+  await post("/api/dev/message", { chat: c, from: "+15550000009", text: "hi" });
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await tool(c, "mark_paid", { who: "…0009", shop: "example-store.com" });
+  expect(!(await logs(c)).includes('"kind":"invoice"'), "an invoice was posted with nobody to split with");
 });
 
 console.log("\nrun history");

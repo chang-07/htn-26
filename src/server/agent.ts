@@ -6,7 +6,8 @@ import { llmFor, modelExtras } from "./llm";
 import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
 import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
@@ -81,6 +82,14 @@ on a time, book it, and order anything they need.
   store at a time, and never put one store's variantId in another store's cart.
   The "Shopping list" below is every cart so far. Once the shopping is settled,
   or when someone asks what it all comes to, call show_shopping_list once.
+- The Invoice below is who paid what and who owes whom, worked out from the
+  carts and every logged expense, split across everyone going. When someone
+  says they paid for something outside a cart (the bill, a deposit, the cab),
+  call add_expense with the amount they gave; when someone paid another person
+  back, add_expense with "for" naming that one person. Asked what they owe or
+  how to split it, answer from the Invoice in one line or call show_invoice to
+  post it. It posts itself once every cart is paid, so do not post it after
+  every change, and never do the arithmetic yourself.
 - Size quantities to the headcount below, not to the number of people talking:
   if 6 are in, order for 6. If nobody has been asked yet and the amount depends
   on it, ask who is in (ask_rsvp) before building a cart. When the headcount
@@ -147,6 +156,9 @@ const RESEARCH_SILENCE_LIMIT_MS = 3 * 60 * 1000;
 const RESEARCH_WATCHDOG_SECONDS = 60;
 
 type Row = Record<string, string | number | boolean | null>;
+
+/** What an invoice ticket showed: the same entries, amounts and payers mean the same ticket. */
+const invoiceKey = (inv: Extract<Invoice, { ok: true }>) => JSON.stringify(inv.entries.map((e) => [e.id, e.amount, e.who]));
 
 /**
  * One instance per iMessage group chat, named by the Linq chat id. Public plan
@@ -415,6 +427,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
         next.status === "voting"
           ? people.filter((p) => !voted.has(p.handle)).map((p) => this.label(p.handle, people))
           : [],
+      going: this.splitNames(),
       version: this.state.version + 1,
     });
   }
@@ -678,6 +691,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
       const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
       this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
       await this.postTicket("cart", cartTicket(paid, this.headcount()));
+      // The store's receipt first, then — if that was the last one — the split.
+      await this.invoiceIfSettled();
       await this.say(`paid. ${who} covered ${result.shop}: ${result.total ?? cart.total} with shipping and tax${result.confirmation ? `, order ${result.confirmation}` : ""}. ${result.detail ?? "the receipt goes to their email"}`, { screenEffect: "confetti" });
       return;
     }
@@ -1007,8 +1022,72 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * has; until then everyone in the chat.
    */
   private headcount(): number {
-    const going = this.rsvps().going.length;
-    return going || this.participants().length;
+    return this.splitNames().length;
+  }
+
+  /** The same people, by display name, in the order they joined. */
+  private splitNames(): string[] {
+    const people = this.participants();
+    const going = this.rsvps().going;
+    return going.length ? going : people.map((p) => this.label(p.handle, people));
+  }
+
+  /**
+   * A person as the model names them, resolved to the name the invoice uses.
+   * The model may say "…0001" for someone the chat knows as Maya, or the name
+   * outright; either way one person gets one line, not two.
+   */
+  private nameOf(who: string): string {
+    const people = this.participants();
+    const person = people.find((p) => this.label(p.handle, people) === who || `…${p.handle.slice(-4)}` === who);
+    return person ? this.label(person.handle, people) : who;
+  }
+
+  // ------------------------------------------------------------------ invoice
+  // Who paid what and who owes whom. Nothing is stored for it beyond the
+  // expenses people log in the chat: the rest is read off the carts and the
+  // headcount every time, so it can never disagree with them (src/invoice.ts).
+
+  private expenses(): Expense[] {
+    return this.state.expenses ?? [];
+  }
+
+  private invoice(): Invoice {
+    return invoiceFor(this.carts(), this.expenses(), this.splitNames());
+  }
+
+  /** The whole picture for the model, so "what do I owe?" is read, not worked out. */
+  private invoiceContext(): string {
+    const inv = this.invoice();
+    if (!inv.ok) return inv.reason === "mixed" ? "the carts are in different currencies, so it cannot be added up; quote the amounts as they are" : "nothing yet: no carts and no expenses";
+    const money = (c: number) => fmtMoney(inv.symbol, c);
+    const balance = (l: (typeof inv.lines)[number]) =>
+      `${l.name}${l.paid ? ` paid ${money(l.paid)},` : ""} ${l.net > 0 ? `gets ${money(l.net)}` : l.net < 0 ? `owes ${money(-l.net)}` : "even"}`;
+    const entries = inv.entries
+      .map((e) => `[${e.kind === "cart" ? "cart" : e.id}] ${e.what} ${money(e.amount)} ${e.who ? `paid by ${e.who}` : "UNPAID"}${e.among.length && e.among.length !== inv.people.length ? ` for ${e.among.join(", ")}` : ""}`)
+      .join("; ");
+    return `${money(inv.total)} total across ${inv.people.length} (${inv.people.join(", ")}), ${money(inv.paid)} paid${inv.unpaid.length ? `, ${inv.unpaid.length} cart${inv.unpaid.length === 1 ? "" : "s"} still unpaid` : ""}. Balances: ${inv.lines.map(balance).join("; ")}.${
+      inv.transfers.length ? ` Settle up: ${inv.transfers.map((t) => `${t.from} → ${t.to} ${money(t.amount)}`).join("; ")}.` : ""
+    } Entries: ${entries}.`;
+  }
+
+  /**
+   * The invoice goes out on its own the moment the last cart is paid: that is
+   * when "so what do I owe?" gets asked. Once per state of the books, and never
+   * for one person alone, who has nobody to split with.
+   */
+  private async invoiceIfSettled() {
+    const inv = this.invoice();
+    if (!inv.ok || !inv.settled || !this.carts().length) return;
+    if (inv.lines.filter((l) => l.paid || l.share).length < 2) return;
+    if (this.getMeta("invoice_key") === invoiceKey(inv)) return;
+    await this.postInvoice(inv);
+  }
+
+  /** Posts the ticket and remembers what it showed, so the books are not posted twice unchanged. */
+  private async postInvoice(inv: Extract<Invoice, { ok: true }>) {
+    this.setMeta("invoice_key", invoiceKey(inv));
+    await this.postTicket("invoice", invoiceTicket(inv));
   }
 
   /** One line for tool results: what the whole list looks like now. */
@@ -1059,6 +1138,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO rsvps (handle, answer) VALUES (${handle}, ${answer})
              ON CONFLICT(handle) DO UPDATE SET answer = excluded.answer`;
     this.note("info", "rsvp", { from: mask(handle), answer, source });
+    // Who is going is who the invoice splits across, and the page shows it live.
+    this.publish({});
     // Photos cannot redraw, so nothing is posted per answer — only the close.
     if (this.rsvps().waiting.length === 0) await this.lockHeadcount();
   }
@@ -1163,6 +1244,7 @@ Where the group is based: ${this.getMeta("area") || "UNKNOWN — nobody has said
 Current plan: ${plan}
 Shopping list: ${this.shoppingListContext()}
 Headcount: ${this.headcountContext()}
+Invoice: ${this.invoiceContext()}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
@@ -1632,10 +1714,50 @@ this.rememberCardId(id);
         if (!cart) return `Which store? "${named}" does not pick out one cart. ${this.shoppingListLine()}`;
         if (cart.paidBy) return `${cart.shop} is already marked paid by ${cart.paidBy}.`;
 
-        const paid = { ...cart, paidBy: who };
+        const paid = { ...cart, paidBy: this.nameOf(who) };
         this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
         await this.postTicket("cart", cartTicket(paid, this.headcount()));
-        return `PAID ticket posted for ${cart.shop}. ${this.shoppingListLine()}`;
+        await this.invoiceIfSettled();
+        const inv = this.invoice();
+        return `PAID ticket posted for ${cart.shop}. ${this.shoppingListLine()}${inv.ok && inv.settled ? " Every cart is paid, so the invoice ticket went out too: do not post it again." : ""}`;
+      }
+
+      case "add_expense": {
+        const args = parseToolArgs("add_expense", rawArgs);
+        const { cents } = parseMoney(args.amount);
+        if (!cents) return `"${args.amount}" is not an amount. Ask how much it was; never guess.`;
+        // "for everyone" is the default, not a person.
+        const among = (args.for ?? []).filter((n) => !/^(everyone|everybody|all|us)$/i.test(n.trim())).map((n) => this.nameOf(n));
+        const taken = new Set(this.expenses().map((e) => e.id));
+        let id = "";
+        do id = `e${crypto.randomUUID().slice(0, 4)}`;
+        while (taken.has(id));
+        const expense: Expense = {
+          id,
+          who: this.nameOf(args.who),
+          amount: args.amount.trim(),
+          what: args.what.trim().slice(0, 60),
+          ...(among.length ? { for: among } : {}),
+        };
+        this.publish({ expenses: [...this.expenses(), expense] });
+        this.note("info", "expense.added", { id: expense.id, amount: expense.amount, what: expense.what, for: expense.for?.length ?? "everyone" });
+        return `Logged ${expense.id}: ${expense.who} paid ${expense.amount} for ${expense.what}${expense.for ? ` (${expense.for.join(", ")} only)` : ""}. Invoice now: ${this.invoiceContext()}`;
+      }
+
+      case "drop_expense": {
+        const { id } = parseToolArgs("drop_expense", rawArgs);
+        const before = this.expenses();
+        if (!before.some((e) => e.id === id)) return `No expense ${id}. Invoice: ${this.invoiceContext()}`;
+        this.publish({ expenses: before.filter((e) => e.id !== id) });
+        this.note("info", "expense.dropped", { id });
+        return `Dropped ${id}. Invoice now: ${this.invoiceContext()}`;
+      }
+
+      case "show_invoice": {
+        const inv = this.invoice();
+        if (!inv.ok) return inv.reason === "empty" ? "There is nothing on the invoice yet: no carts and no logged expenses." : "The carts are in different currencies, so there is no single invoice to draw. Quote the amounts as they are.";
+        await this.postInvoice(inv);
+        return `Invoice ticket posted; it speaks for itself. The itemised version is at ${this.env.PUBLIC_BASE_URL}/w/${encodeURIComponent(this.name)} if anyone wants the detail. ${this.invoiceContext()}`;
       }
 
       case "show_venue": {
@@ -1667,6 +1789,7 @@ this.rememberCardId(id);
         this.setMeta("rsvp_open", "1");
         this.setMeta("rsvp_title", args.title ?? "");
         this.setMeta("rsvp_when", args.when ?? "");
+        this.publish({}); // a fresh headcount: the split is everyone again until people answer
         await this.postTicket("rsvp", rsvpTicket(this.rsvps()));
         return "Who's in ticket posted. People answer with a thumbs up or down on it; record_rsvp covers anyone who answers in words.";
       }
@@ -1926,6 +2049,7 @@ this.rememberCardId(id);
   async dump() {
     return {
       state: this.state,
+      invoice: this.invoice(),
       research: this.sql<{ report: string }>`SELECT report FROM research ORDER BY id DESC LIMIT 1`.map((r) => JSON.parse(r.report))[0],
       transcript: this.sql<Row>`SELECT direction, author, body FROM messages ORDER BY id`,
       votes: this.sql<Row>`SELECT voter, option_id, source FROM votes`,

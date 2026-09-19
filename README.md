@@ -373,6 +373,50 @@ order placed from a datacenter browser. Shopify's own checkout API is no use
 here: `create_checkout` is listed by stores but answers "Tool not found" for
 this agent, and its card field wants a pre-tokenized credential.
 
+### The invoice — who paid what, who owes whom
+
+Once things get bought, the question is "so what do I owe?". The invoice
+answers it, and it is **derived, never kept**: worked out fresh, every time,
+from the carts (with the real post-tax total once one is paid), who paid each,
+and the headcount — so it cannot drift from them. Pay a cart, resize one, or
+change who is going, and the invoice is already different. The one thing that
+is stored is money that never went through a cart, logged from the chat.
+
+```
+carts + paidBy ─┐
+expenses        ├─▶ src/invoice.ts ─▶ per-person paid / share / net, and the fewest
+who's going ────┘   (pure, shared)      transfers that square everyone up
+```
+
+It shows in three places, from the same function:
+
+| Where | When |
+|---|---|
+| **Invoice ticket** in the chat (cream while a store is still unpaid, green once everything is bought) | on its own the moment the last cart is paid, and on `show_invoice` when someone asks |
+| **Live section on `/w/<chat>`** — balances, "to settle up", anything paid outside the carts | always current over the vote page's WebSocket |
+| **`Invoice:` line in the model's context** | every turn, so "what do I owe?" is read off, never worked out by the model |
+
+Money outside a cart — the bill, a deposit, the cab — is `add_expense`, called
+only when a person in the chat says so with an amount. Paying someone back is
+the same tool with `for` naming that one person: "Jordan paid Maya back $32"
+is Jordan paying $32 for Maya alone, which is exactly what settles the debt.
+`drop_expense` takes a wrong one out. Everything is in integer cents; odd cents
+go one each to the first people in the split, so the nets always sum to zero.
+Stores in different currencies cannot be added, so then there is no invoice —
+the same rule the shopping list uses.
+
+```sh
+npm test                                            # the math, on its own (node --test, no server)
+open 'http://localhost:5173/api/dev/card?kind=invoice&state=open'   # the ticket, from sample data
+curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
+  -d '{"chat":"demo","tool":"add_expense","args":{"who":"Maya","amount":"$86.40","what":"dinner"}}'
+curl 'localhost:5173/api/dev/dump?chat=demo'        # .invoice is the whole thing, .state.expenses the log
+```
+
+Not tracked: whether the transfers actually happened. The agent's job ends at
+"here is who owes whom"; if that needs a green tick per person one day, it is
+one more `for`-one-person expense, not a new ledger.
+
 ### Booking and availability — the browser pilot
 
 `src/server/pilot.ts` drives a venue's own booking page: it lists what a person
