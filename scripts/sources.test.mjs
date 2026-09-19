@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { proxiedFetch, SourceError, pageTitle } from "../src/server/sources/fetch.ts";
 import { icaoIdent, parseFlightStatus, flightStatus, describeFlight, fmtLocal } from "../src/server/sources/flight-status.ts";
 import { parseOrderStatus } from "../src/server/sources/order-status.ts";
+import { tripKind } from "../src/server/sources/kind.ts";
 
 const env = { BROWSERBASE_API_KEY: "bb-test" };
 
@@ -359,4 +360,14 @@ test("parseOrderStatus reads a Shopify order page's text", () => {
   assert.deepEqual(shipped, { fulfilled: true, delivered: false, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor=7023210000000001", eta: "Tuesday, September 22" });
   assert.equal(parseOrderStatus("<html><body><h2>Delivered</h2><p>Your package was delivered.</p></body></html>").delivered, true);
   assert.equal(parseOrderStatus("<html><body><p>Your order hasn't shipped yet</p></body></html>").fulfilled, false);
+});
+
+test("tripKind reads a booking link's kind from its host and path", () => {
+  assert.equal(tripKind("https://www.google.com/travel/flights?q=x"), "flight");
+  assert.equal(tripKind("https://www.google.com/travel/search?q=x"), "stay");
+  assert.equal(tripKind("https://www.ticketmaster.ca/event/123"), "event");
+  assert.equal(tripKind("https://luma.com/abc123"), "event");
+  assert.equal(tripKind("https://example.com/book"), undefined);
+  assert.equal(tripKind("not a url"), undefined);
+  assert.equal(tripKind(undefined), undefined);
 });

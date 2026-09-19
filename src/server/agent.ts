@@ -17,6 +17,7 @@ import { describeFlight, flightStatus } from "./sources/flight-status";
 import { orderStatus } from "./sources/order-status";
 import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "./sources/watch";
 import type { FlightStatus, OrderStatus } from "./sources/types";
+import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
 import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
@@ -85,6 +86,8 @@ on a time, book it, and order anything they need.
   (with what they paid and who paid, so the split is right); when they give a
   flight number, call watch_flight. Never say a flight, room or ticket is
   booked until a person says so. The Itinerary below is the trip so far.
+  When the group says "go ahead" or "book it" about a flight, stay or event,
+  that means add_to_itinerary.
 - When someone comes back to a plan after a while, call propose_plan again
   with the options that still apply: that puts the card back in front of them
   instead of pointing at one far up the thread.
@@ -1561,6 +1564,24 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined, itinerary: undefined });
     const research = this.researchContext();
 
+    // The generic votes-in nudge just names the winner and asks whether to book
+    // it — right for a restaurant or venue, which does need book_option. A
+    // flight, stay or event never does: when the vote settled on exactly one
+    // winner and its link says which kind it is, tell the model to call
+    // add_to_itinerary directly so it cannot go fish for a name and email.
+    let votesInText =
+      "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else.";
+    if (votesIn) {
+      const tally = this.state.options.map((o) => ({ option: o, count: this.state.counts[o.id] ?? 0 }));
+      const top = Math.max(0, ...tally.map((t) => t.count));
+      const winners = tally.filter((t) => t.count === top);
+      const winner = winners.length === 1 ? winners[0].option : undefined;
+      const kind = winner ? tripKind(winner.bookingUrl) : undefined;
+      if (winner && kind) {
+        votesInText = `You were woken because everyone has now voted, not because of a new message. The winner is "${winner.title}" (optionId ${winner.id}), a ${kind} from the trip sources. Call add_to_itinerary with that optionId and kind "${kind}" now — no name, email or booking step is needed, and never call book_option for it — then say one line and stop.`;
+      }
+    }
+
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: SYSTEM },
       {
@@ -1580,7 +1601,7 @@ ${
   availabilityIn
     ? `You were woken because the availability check just finished; each ballot option's real open times are in its availability field in the plan above, read from the venue's own booking page. Tell the group in one or two lines which options have which times, plainly, including any that have nothing open or could not be checked. Say nothing else.${this.getMeta("side_availability") ? ` Venues not on the ballot: ${this.getMeta("side_availability")}.` : ""}`
     : votesIn
-    ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
+    ? votesInText
     : this.getMeta("is_group") === "0"
       ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}${this.pendingIntroContext()}`
       : ""
@@ -1992,8 +2013,9 @@ this.rememberCardId(id);
         if (args.optionId) {
           const option = this.state.options.find((o) => o.id === args.optionId);
           if (!option) return "No such option";
-          if (!args.kind) return "Say what kind of stop the winner is: flight, stay, event or venue.";
-          item = { kind: args.kind, title: option.title, subtitle: option.subtitle, url: option.bookingUrl, price: option.subtitle?.match(/(?:CA|US)?\$[\d,]+(?:\.\d\d)?/)?.[0], status: option.bookingUrl ? "handoff" : "confirmed" };
+          const kind = args.kind ?? tripKind(option.bookingUrl);
+          if (!kind) return "Say what kind of stop the winner is: flight, stay, event or venue.";
+          item = { kind, title: option.title, subtitle: option.subtitle, url: option.bookingUrl, price: option.subtitle?.match(/(?:CA|US)?\$[\d,]+(?:\.\d\d)?/)?.[0], status: option.bookingUrl ? "handoff" : "confirmed" };
         } else if (args.item) {
           item = { ...args.item, status: args.item.url ? "handoff" : "confirmed" };
         } else {
@@ -2092,10 +2114,27 @@ this.rememberCardId(id);
         if (args.optionId && !onBallot) return "No such option";
         if (!onBallot && !args.venue) return "Say what to book: an optionId from the ballot, or a venue from the Research findings.";
         const option: { id?: string; title: string; bookingUrl?: string } = onBallot ?? { title: args.venue!.title, bookingUrl: args.venue!.bookingUrl };
+
+        // A flight, stay or event never goes through the pilot — a haiku
+        // model that has just been told "book it" will otherwise ask for a
+        // name and email nobody needs to give it. Send it to add_to_itinerary
+        // instead of driving a browser.
+        const kind = tripKind(option.bookingUrl);
+        if (kind) {
+          this.note("info", "booking.redirected", { kind });
+          return onBallot
+            ? this.runTool("add_to_itinerary", JSON.stringify({ optionId: args.optionId, kind }))
+            : this.runTool("add_to_itinerary", JSON.stringify({ item: { kind, title: option.title, url: option.bookingUrl } }));
+        }
+
         if (onBallot && (this.state.status === "booking" || this.state.status === "booked" || this.state.status === "handoff")) {
           return `Already ${this.state.status}`;
         }
         if (this.getMeta("booking_running") === "1") return "A booking is already running; one browser at a time. Wait for it to finish.";
+
+        // A restaurant or venue reservation genuinely needs a name and email —
+        // ask rather than invent either.
+        if (!args.contactName || !args.contactEmail) return "Ask who is booking and for their email; never make either up.";
 
         // Validate before touching state: a refused call must leave the plan as it was.
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {

@@ -63,8 +63,8 @@ export const toolSchemas = {
       .describe("A place that is part of the outing but not on the ballot, from the Research findings"),
     partySize: z.number().int().min(1),
     isoTime: z.string().describe("ISO 8601 local time of the reservation"),
-    contactName: z.string().describe("Full name the reservation goes under — a real person in the chat, as they gave it"),
-    contactEmail: z.string().describe("That person's email, exactly as they typed it. Never invent one."),
+    contactName: z.string().optional().describe("Full name the reservation goes under — a real person in the chat, as they gave it. Required for a restaurant or venue reservation only."),
+    contactEmail: z.string().optional().describe("That person's email, exactly as they typed it. Never invent one. Required for a restaurant or venue reservation only."),
     contactPhone: z.string().optional().describe("Their phone number, only if they gave one in the chat. Never invent one."),
   }),
   shop_search: z.object({
@@ -218,7 +218,7 @@ export const toolSchemas = {
       })
       .optional()
       .describe("Something settled without a vote, e.g. the one flight everyone agreed on in text"),
-    kind: z.enum(["flight", "stay", "event", "venue"]).optional().describe("What the winning option is, when it is a ballot option"),
+    kind: z.enum(["flight", "stay", "event", "venue"]).optional().describe("What the winning option is, when it is a ballot option. Inferred from the option's link when omitted; only a plain venue link needs it said."),
   }),
   watch_flight: z.object({
     ident: z.string().min(3).max(8).describe("Airline code and number, e.g. AC123"),

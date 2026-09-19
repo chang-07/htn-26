@@ -366,6 +366,36 @@ await check("add_to_itinerary refuses a ballot option without a kind", async () 
   const out = await tool(it, "add_to_itinerary", { optionId: state.options[0].id });
   expect(/Say what kind/.test(out), out);
 });
+await check("book_option on a flight redirects to add_to_itinerary, never the pilot", async () => {
+  const c = chat("it-flight-redirect");
+  await tool(c, "propose_plan", { title: "Vancouver weekend", options: [{ title: "Flair", bookingUrl: "https://www.google.com/travel/flights?q=a" }, { title: "WestJet", bookingUrl: "https://www.google.com/travel/flights?q=b" }] });
+  const { state } = await dump(c);
+  const out = await tool(c, "book_option", { optionId: state.options[0].id, partySize: 4, isoTime: "2026-10-10T19:00:00" });
+  expect(/^Added i[0-9a-f]{4}\./.test(out), `unexpected reply: ${out}`);
+  const after = await dump(c);
+  expect(after.state.itinerary.length === 1 && after.state.itinerary[0].kind === "flight" && after.state.itinerary[0].status === "handoff", JSON.stringify(after.state.itinerary));
+  expect(after.state.options.length === 0 && after.state.status === "idle", "ballot not cleared");
+  const text = await logs(c);
+  expect(text.includes("booking.redirected"), "booking.redirected not logged");
+  expect(!text.includes("booking.started"), "the pilot's booking.started fired for a flight");
+});
+await check("add_to_itinerary infers stay from a Google Hotels link with no kind given", async () => {
+  const c = chat("it-stay-infer");
+  await tool(c, "propose_plan", { title: "Where to stay", options: [{ title: "Rosewood", bookingUrl: "https://www.google.com/travel/search?q=x" }, { title: "Fairmont" }] });
+  const { state } = await dump(c);
+  const out = await tool(c, "add_to_itinerary", { optionId: state.options[0].id });
+  expect(/^Added i[0-9a-f]{4}\./.test(out), `unexpected reply: ${out}`);
+  const after = await dump(c);
+  expect(after.state.itinerary.length === 1 && after.state.itinerary[0].kind === "stay", JSON.stringify(after.state.itinerary));
+});
+await check("book_option on a plain venue link without contact fields asks who is booking", async () => {
+  const c = chat("it-venue-guard");
+  await tool(c, "propose_plan", { title: "Dinner", options: [{ title: "Room A", bookingUrl: "https://example.com/book" }, { title: "Room B" }] });
+  const { state } = await dump(c);
+  const out = await tool(c, "book_option", { optionId: state.options[0].id, partySize: 4, isoTime: "2026-10-14T19:00:00" });
+  expect(/ask who is booking/i.test(out), `unexpected reply: ${out}`);
+  expect((await dump(c)).state.status === "voting", "plan left in a booking state by a refused call");
+});
 await check("search_flights refuses a date in the past without calling anything", async () => {
   const out = await tool(it, "search_flights", { from: "YYZ", to: "YVR", depart: "2020-01-01" });
   expect(/in the past/.test(out), out);
