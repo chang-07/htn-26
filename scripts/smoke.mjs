@@ -46,7 +46,13 @@ const post = (path, body) =>
   fetch(BASE + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 const tool = async (c, name, args) => (await (await post("/api/dev/tool", { chat: c, tool: name, args })).json()).result;
 const dump = async (c) => (await get(`/api/dev/dump?chat=${c}`)).json();
-const logs = async (c) => (await get(`/api/dev/logs?chat=${c}&limit=200`)).text();
+// Trace spans repeat the fields of the event they wrap, so they are left out:
+// counting a needle would otherwise see every event three times.
+const logs = async (c) =>
+  (await (await get(`/api/dev/logs?chat=${c}&limit=400`)).text())
+    .split("\n")
+    .filter((line) => !/^\S+\s+\S+\s+trace\.(start|end)\s/.test(line))
+    .join("\n");
 const count = (text, needle) => text.split(needle).length - 1;
 async function waitFor(c, needle, seconds) {
   for (let i = 0; i < seconds * 2; i++) {
@@ -344,6 +350,18 @@ if (flags.has("--net")) {
     const title = (await dump(c)).state.carts?.[0]?.lines?.[0]?.title ?? "";
     expect(title && !/default title|^item$/i.test(title), `cart line is titled "${title}"`);
     return title;
+  });
+}
+
+if (flags.has("--net")) {
+  console.log("\nworkflows (starts one real research run)");
+  await check("a workflow can be launched at all", async () => {
+    // Broke in production once: wrapping the agent class (Sentry) hid its name
+    // from the SDK, and every launch failed with "Could not detect Agent binding".
+    const c = chat("workflow");
+    const out = await tool(c, "research", { brief: "one ramen place", near: "Waterloo, ON", depth: "quick" });
+    expect(/research started/i.test(out), `unexpected reply: ${String(out).slice(0, 200)}`);
+    expect(!(await logs(c)).includes("tool.failed"), "the research tool failed to launch");
   });
 }
 
