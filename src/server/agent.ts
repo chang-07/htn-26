@@ -20,8 +20,20 @@ group brainstorm a hangout and then actually make it happen: pick a place, agree
 on a time, book it, and order anything they need.
 
 - Write like a friend texting: one or two short lines, no markdown, no lists.
-- Send at most one message per turn. After send_message you are done talking:
-  reply NOOP unless you still have a non-message tool to call.
+- Do the work first and speak last: make every tool call the request needs,
+  then send ONE message covering all of it. A second message is only for
+  results you got after the first. After your last message reply NOOP.
+- A request often has several parts ("dinner, a spa after, and order a purse").
+  Handle every part, in this turn where you can. Only true alternatives go on
+  the ballot; for each other part, say what you found and offer the next step
+  (check times, book it, build the cart). Never quietly drop a part: if you
+  cannot do one, say so plainly and why.
+- You only act when a message or a result arrives, so never promise to "keep
+  trying" or "come back on that" unless a tool is actually running in the
+  background (research, an availability check, a booking). Otherwise do it now
+  or say you could not.
+- In a one-to-one chat there is nobody to out-vote: recommend one option, and
+  ask directly whether to book it. Post a ballot only if they want to compare.
 - Do not announce what you are about to do. Do it, then report the result.
 - "In the area" and "nearby" mean the group's own area, shown below. When
   someone states where they are, call remember_area; pass that area as the
@@ -93,6 +105,7 @@ const CONCURRENT_TOOLS = new Set<string>(["shop_search", "find_matches"]);
 const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
+const MAX_SENDS_PER_TURN = 3;
 const EVENT_HISTORY = 300;
 /** A run that has not reported back by now is treated as lost, so the chat is not stuck. */
 /**
@@ -835,7 +848,7 @@ Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
   availabilityIn
-    ? "You were woken because the availability check just finished; each option's real open times are in its availability field in the plan above, read from the venue's own booking page. Tell the group in one or two lines which options have which times, plainly, including any that have nothing open or could not be checked. Say nothing else."
+    ? `You were woken because the availability check just finished; each ballot option's real open times are in its availability field in the plan above, read from the venue's own booking page. Tell the group in one or two lines which options have which times, plainly, including any that have nothing open or could not be checked. Say nothing else.${this.getMeta("side_availability") ? ` Venues not on the ballot: ${this.getMeta("side_availability")}.` : ""}`
     : votesIn
     ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
     : this.getMeta("is_group") === "0"
@@ -858,6 +871,8 @@ ${transcript}`,
     let spoke = false;
     let reminded = false;
     let askedQuestion = false;
+    let workSinceSend = 0;
+    let sendsThisTurn = 0;
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
@@ -925,10 +940,14 @@ ${transcript}`,
 
         // A model that loses track can send the same line twice in one turn;
         // in a group chat that reads as a glitch, so the repeat is swallowed.
-        // One text per turn. A model that keeps rephrasing its reply sent eight
-        // messages in twenty seconds; a second attempt ends the turn instead.
-        if (tool === "send_message" && spoke) {
-          end("warn", "replied", { steps: step + 1, extraSendBlocked: true });
+        // A model that keeps rephrasing its reply once sent eight messages in
+        // twenty seconds, so a second text with NOTHING DONE since the first
+        // ends the turn. But a text, then real work, then a text about that work
+        // is legitimate — blocking it silently threw away a finished purse
+        // search. So the test is whether any other tool ran in between, with a
+        // ceiling on texts per turn as the backstop.
+        if (tool === "send_message" && spoke && (workSinceSend === 0 || sendsThisTurn >= MAX_SENDS_PER_TURN)) {
+          end("warn", "replied", { steps: step + 1, extraSendBlocked: true, reason: workSinceSend === 0 ? "nothing new to report" : "send ceiling" });
           if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
           return;
         }
@@ -944,8 +963,11 @@ ${transcript}`,
 
         try {
           output = await (early.get(call.id) ?? run(call));
+          if (tool !== "send_message") workSinceSend++;
           if (tool === "send_message") {
             spoke = true;
+            sendsThisTurn++;
+            workSinceSend = 0;
             // A question hands the conversation to the humans. There is nothing
             // left to do until they answer, so don't ask the model again — that
             // is exactly where it started rephrasing itself.
@@ -1134,10 +1156,17 @@ ${transcript}`,
 
       case "check_availability": {
         const args = parseToolArgs("check_availability", rawArgs);
-        const checks = args.optionIds
-          .map((id) => this.state.options.find((o) => o.id === id))
-          .filter((o): o is PlanOption => Boolean(o?.bookingUrl))
-          .map((o) => ({ optionId: o.id, title: o.title, url: o.bookingUrl! }));
+        const checks = [
+          ...(args.optionIds ?? [])
+            .map((id) => this.state.options.find((o) => o.id === id))
+            .filter((o): o is PlanOption => Boolean(o?.bookingUrl))
+            .map((o) => ({ optionId: o.id, title: o.title, url: o.bookingUrl! })),
+          // Not everything in an outing is up for a vote: the spa after dinner is
+          // checked by its own link, under an id the ballot will never use.
+          ...(args.venues ?? [])
+            .filter((v) => /^https?:\/\//.test(v.bookingUrl))
+            .map((v, i) => ({ optionId: `venue:${i}`, title: v.title, url: v.bookingUrl })),
+        ].slice(0, 3);
         if (!checks.length) return "None of those options has an online booking link, so there is nothing to check. Say so.";
 
         const params: AvailabilityParams = { mode: "availability", partySize: args.partySize, isoTime: args.isoTime, checks };
@@ -1148,11 +1177,16 @@ ${transcript}`,
 
       case "book_option": {
         const args = parseToolArgs("book_option", rawArgs);
-        const option = this.state.options.find((o) => o.id === args.optionId);
-        if (!option) return "No such option";
-        if (this.state.status === "booking" || this.state.status === "booked" || this.state.status === "handoff") {
+        // Either a ballot option, or a venue that is part of the outing without
+        // being voted on (the spa after dinner). Only the first kind moves the plan.
+        const onBallot = args.optionId ? this.state.options.find((o) => o.id === args.optionId) : undefined;
+        if (args.optionId && !onBallot) return "No such option";
+        if (!onBallot && !args.venue) return "Say what to book: an optionId from the ballot, or a venue from the Research findings.";
+        const option: { id?: string; title: string; bookingUrl?: string } = onBallot ?? { title: args.venue!.title, bookingUrl: args.venue!.bookingUrl };
+        if (onBallot && (this.state.status === "booking" || this.state.status === "booked" || this.state.status === "handoff")) {
           return `Already ${this.state.status}`;
         }
+        if (this.getMeta("booking_running") === "1") return "A booking is already running; one browser at a time. Wait for it to finish.";
 
         // Validate before touching state: a refused call must leave the plan as it was.
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {
@@ -1160,8 +1194,12 @@ ${transcript}`,
         }
         if (!option.bookingUrl) return "This option has no online booking link, so there is nothing to drive. Tell the group they will need to call or book it themselves.";
 
-        this.publish({ status: "booking", chosenOptionId: option.id });
-        await this.syncCard();
+        this.setMeta("booking_running", "1");
+        this.setMeta("booking_for", JSON.stringify({ title: option.title, onBallot: Boolean(onBallot) }));
+        if (onBallot) {
+          this.publish({ status: "booking", chosenOptionId: onBallot.id });
+          await this.syncCard();
+        }
 
         // The booker's own number, from whoever spoke last: venues ask for one.
         const lastSpeaker = this.sql<{ author: string | null }>`
@@ -1516,6 +1554,8 @@ ${transcript}`,
   async onWorkflowError(workflowName: string, workflowId: string, error: string) {
     this.note("error", "workflow.crashed", { workflow: workflowName, id: short(workflowId), error: String(error).slice(0, 400) });
     if (workflowName === "BOOKING_WORKFLOW") {
+      this.setMeta("booking_running", "");
+      this.setMeta("booking_for", "");
       if (this.state.status === "booking") this.publish({ status: "failed", bookingNote: "the booking run crashed" });
       await this.say("that didn't work on my end, sorry. something broke while I was on the booking site.");
     }
@@ -1532,6 +1572,13 @@ ${transcript}`,
         return { ...o, availability: r.ok ? (r.slots.length ? `open: ${r.slots.join(", ")}` : "nothing open that day") : `couldn't check (${r.summary.slice(0, 80)})` };
       }),
     });
+    // Venues outside the ballot have no option to hang the result on, so their
+    // times travel to the model in the wake-up note instead.
+    const offBallot = results.filter((r) => r.optionId.startsWith("venue:"));
+    this.setMeta(
+      "side_availability",
+      offBallot.map((r) => `${r.title}: ${r.ok ? (r.slots.length ? `open ${r.slots.join(", ")}` : "nothing open that day") : `could not check (${r.summary.slice(0, 80)})`}`).join("; "),
+    );
     // Nobody texted, but there is news: give the model a turn to share it.
     this.setMeta("turn_reason", "availability_in");
     await this.schedule(1, "runTurn");
@@ -1568,8 +1615,14 @@ ${transcript}`,
 
   /** Called over RPC by BookingWorkflow when it finishes, whatever the outcome. */
   async bookingFinished(result: BookingResult) {
+    // What was being booked is recorded when the run starts: it may be a venue
+    // that was never on the ballot, in which case the plan's status is not its to change.
+    const inFlight = JSON.parse(this.getMeta("booking_for") || "{}") as { title?: string; onBallot?: boolean };
+    const onBallot = inFlight.onBallot !== false;
     const option = this.state.options.find((o) => o.id === this.state.chosenOptionId);
-    const name = option?.title ?? "it";
+    const name = inFlight.title ?? option?.title ?? "it";
+    this.setMeta("booking_running", "");
+    this.setMeta("booking_for", "");
     this.setMeta("live_url", "");
     this.note(result.ok ? "info" : "warn", "booking.finished", {
       status: result.status,
@@ -1584,12 +1637,14 @@ ${transcript}`,
     // Three outcomes, not two: confirmed, taken as far as the agent is allowed
     // to go (a person finishes it), or genuinely failed.
     const handedOff = result.status === "ready" || result.status === "needs_payment";
-    this.publish({
-      status: result.ok ? "booked" : handedOff ? "handoff" : "failed",
-      bookingNote: result.ok ? result.confirmation : result.detail,
-    });
-    await this.syncCard();
-    if (result.ok) await this.planTicketIfNew();
+    if (onBallot) {
+      this.publish({
+        status: result.ok ? "booked" : handedOff ? "handoff" : "failed",
+        bookingNote: result.ok ? result.confirmation : result.detail,
+      });
+      await this.syncCard();
+      if (result.ok) await this.planTicketIfNew();
+    }
 
     if (result.ok) {
       await this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" });

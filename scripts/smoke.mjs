@@ -12,6 +12,7 @@
  * Linq transport, so nothing here can text a real person.
  */
 import fs from "node:fs";
+import http from "node:http";
 
 const BASE = process.env.SMOKE_BASE ?? "http://127.0.0.1:5173";
 const flags = new Set(process.argv.slice(2));
@@ -131,10 +132,21 @@ await check("availability check refuses options with no link", async () => {
 });
 
 console.log("\nrun history");
-await check("run history is locked without the token and open with it", async () => {
+await check("run history is locked for anyone arriving by a public hostname", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";
-  expect((await get("/api/runs")).status === 401, "readable without a token");
-  expect((await get(`/api/runs?token=${env.RUNS_TOKEN}`)).status === 200, "rejected the right token");
+  // Localhost is deliberately open (the dev routes are too). What must hold is
+  // that the SAME server, reached through the tunnel or in production, asks for
+  // the token — so the request is made under a public Host header.
+  const asPublic = (path) =>
+    new Promise((resolve, reject) => {
+      const u = new URL(BASE + path);
+      http.get({ host: u.hostname, port: u.port, path: u.pathname + u.search, headers: { host: "smoke.trycloudflare.com" } }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      }).on("error", reject);
+    });
+  expect((await asPublic("/api/runs")) === 401, "readable without a token from a public hostname");
+  expect((await asPublic(`/api/runs?token=${env.RUNS_TOKEN}`)) === 200, "rejected the right token");
 });
 await check("out-of-turn events become a run of their own", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";

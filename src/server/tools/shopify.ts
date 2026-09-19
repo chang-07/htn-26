@@ -9,6 +9,19 @@
  * and PUBLIC_BASE_URL points at it. See /.well-known/ucp-agent.json in index.ts.
  */
 
+/**
+ * The store is not on Shopify's agent API, so no retry will ever work. The
+ * wording is for the model: it once tried the same dead domain in four turns
+ * running while telling the person it would "keep trying".
+ */
+export class NotShoppable extends Error {
+  constructor(host: string) {
+    super(
+      `${host} cannot be shopped through this tool, and never will be: do not try it again. Use one of the known stores listed in your instructions, or tell the person this item is not something you can order and suggest they buy it themselves.`,
+    );
+  }
+}
+
 type UcpManifest = {
   ucp: {
     services?: Record<string, { transport: string; endpoint?: string }[]>;
@@ -40,12 +53,12 @@ async function endpointFor(shop: string): Promise<string> {
   const host = shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   // Some storefronts 403 a request with no User-Agent, which is what a Worker sends.
   const res = await fetch(`https://${host}/.well-known/ucp`, { headers: { "user-agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`${host} does not publish a UCP manifest (${res.status})`);
+  if (!res.ok) throw new NotShoppable(host);
   const manifest = (await res.json()) as UcpManifest;
   const mcp = manifest.ucp.services?.["dev.ucp.shopping"]?.find(
     (s) => s.transport === "mcp" && s.endpoint,
   );
-  if (!mcp?.endpoint) throw new Error(`${host} has no UCP MCP endpoint`);
+  if (!mcp?.endpoint) throw new NotShoppable(host);
   return mcp.endpoint;
 }
 
@@ -94,6 +107,16 @@ export const KNOWN_SHOPS: { shop: string; sells: string }[] = [
   { shop: "drinkolipop.com", sells: "soda" },
   { shop: "explodingkittens.com", sells: "card games" },
   { shop: "whatdoyoumeme.com", sells: "party games" },
+  // Gifts. Each was checked with a real search, not just for a manifest.
+  { shop: "cuyana.com", sells: "leather handbags, purses, wallets" },
+  { shop: "dagnedover.com", sells: "tote bags, backpacks" },
+  { shop: "herschel.com", sells: "backpacks, bags" },
+  { shop: "burga.com", sells: "phone cases, including current iPhones" },
+  { shop: "wildflowercases.com", sells: "patterned and cute phone cases" },
+  { shop: "velvetcaviar.com", sells: "phone cases" },
+  { shop: "pelacase.com", sells: "plain phone cases" },
+  { shop: "glossier.com", sells: "skincare, makeup" },
+  { shop: "brooklinen.com", sells: "candles, robes, bedding" },
 ];
 
 /** Minor units to a display string: (1800, "USD") -> "$18.00". */

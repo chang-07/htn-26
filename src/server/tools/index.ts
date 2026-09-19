@@ -40,12 +40,21 @@ export const toolSchemas = {
   }),
   get_votes: z.object({}),
   check_availability: z.object({
-    optionIds: z.array(z.string()).min(1).max(3).describe("Options from the current plan that have a booking link"),
+    optionIds: z.array(z.string()).max(3).optional().describe("Ballot options to check, by id"),
+    venues: z
+      .array(z.object({ title: z.string(), bookingUrl: z.string().describe("The venue's bookingUrl exactly as research returned it") }))
+      .max(3)
+      .optional()
+      .describe("Places that are part of the outing but not on the ballot (the spa after dinner), from the Research findings"),
     partySize: z.number().int().min(1),
     isoTime: z.string().describe("ISO 8601 local date and time the group wants"),
   }),
   book_option: z.object({
-    optionId: z.string(),
+    optionId: z.string().optional().describe("The ballot option to book. Omit when booking a venue that is not on the ballot."),
+    venue: z
+      .object({ title: z.string(), bookingUrl: z.string().describe("Exactly as research returned it") })
+      .optional()
+      .describe("A place that is part of the outing but not on the ballot, from the Research findings"),
     partySize: z.number().int().min(1),
     isoTime: z.string().describe("ISO 8601 local time of the reservation"),
     contactName: z.string().describe("Full name the reservation goes under — a real person in the chat, as they gave it"),
