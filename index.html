@@ -9,15 +9,14 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script>
       // Paint the right ground before React mounts, so nothing flashes white.
-      // The ticket pages are always cream; the run viewer is cream by day and
-      // ink by night, and remembers which it was last set to.
+      // The ticket pages are always cream; the run viewer is white unless it was
+      // last set to night.
       (function () {
-        var paper = "#efe7d6", ink = "#241f17", ground = paper;
+        var ground = "#efe7d6";
         if (location.pathname.startsWith("/runs")) {
           var saved = null;
           try { saved = localStorage.getItem("runs.theme"); } catch (e) {}
-          var dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-          ground = dark ? ink : paper;
+          ground = saved === "dark" ? "#0b1013" : "#ffffff";
         }
         document.documentElement.style.background = ground;
       })();
