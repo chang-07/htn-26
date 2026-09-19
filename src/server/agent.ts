@@ -463,6 +463,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
   // Every card the agent shows is a ticket (see card.ts). It is stored here,
   // rendered on demand at /card/<chat>?t=<id>, and sent as a photo.
 
+  /**
+   * Called over RPC by /api/widget. The stub does not proxy the `state`
+   * property, so the native widget reads it through this method instead.
+   */
+  async widgetState(): Promise<PlanState> {
+    return this.state;
+  }
+
   /** Called over RPC by the /card route. */
   async getTicket(id: string): Promise<Ticket | null> {
     const row = this.sql<{ json: string }>`SELECT json FROM tickets WHERE id = ${id}`[0];
