@@ -1,26 +1,29 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RunSummary } from "../server/runs";
-import { FieldList, MONO, SERVICES, btn, dur, type ServiceId } from "./ui";
+import { FieldList, SERVICES, dur, type ServiceId } from "./ui";
 
 /**
- * A run as a page of cards rather than a timeline.
+ * A run as a tape: one row per step, printed top to bottom in the order it
+ * happened, the way a till prints a receipt. The margin carries the service
+ * mark — iMessage, the model, tools, the browser, bookings, the shop — so the
+ * shape of a turn is visible without reading anything, and whatever a step
+ * produced (a page capture, the text it sent, the cart it built, the live
+ * browser) is printed under its row at a width you can actually read.
  *
- * Every event becomes a card belonging to a service — iMessage, the model,
- * tools, the browser, bookings, the shop — carrying whatever that step actually
- * produced: a page capture, the text it sent, the cart it built. Cards wrap like
- * text and the wires carry the order, so the shape of a turn is visible without
- * reading anything, and a long run grows downward instead of off the side.
- *
- * Some cards are editable. A cart's quantities can be changed here and pushed
+ * Some rows are editable. A cart's quantities can be changed here and pushed
  * back to the chat, which rewrites the store cart and redraws the card in the
  * thread — see editCart on the agent.
+ *
+ * <StepDetail> is the plain-English side of a row: what this kind of step is
+ * for and what this one's numbers say. The page puts it beside the tape when
+ * there is room and in a sheet when there is not.
  */
 
-type GraphEvent = { seq: number; ts: number; level: string; event: string; fields: Record<string, unknown> };
+export type TapeEvent = { seq: number; ts: number; level: string; event: string; fields: Record<string, unknown> };
 
 type CartItem = { variantId?: string; title: string; quantity: number; price: string; imageUrl?: string };
 
-type Node = {
+export type Node = {
   seq: number;
   svc: ServiceId;
   title: string;
@@ -45,18 +48,14 @@ const TOOL_SVC: Record<string, ServiceId> = {
 /** A browser session older than this is long gone, whatever the events say. */
 const LIVE_MAX_AGE = 10 * 60 * 1000;
 
-const CARD_W = 236;
-const GAP_X = 34;
-const GAP_Y = 30;
-
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 const num = (v: unknown) => (typeof v === "number" ? v : undefined);
 
-function classify(e: GraphEvent): { svc: ServiceId; title: string; sub: string } {
+function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } {
   const f = e.fields;
-  if (e.event === "tool" || e.event === "tool.failed") {
+  if (e.event === "tool") {
     const tool = str(f.tool) ?? "tool";
-    return { svc: TOOL_SVC[tool] ?? "tool", title: tool, sub: e.event === "tool.failed" ? "failed" : "tool call" };
+    return { svc: TOOL_SVC[tool] ?? "tool", title: tool, sub: TOOL_SVC[tool] ? "handed off" : "tool call" };
   }
   if (e.event.startsWith("research.")) {
     const st = e.event.slice("research.".length);
@@ -225,7 +224,7 @@ function explain(n: Node): string[] {
       break;
     case "research.read":
       out.push(`The browser opened ${s_("host") ?? "a page"} and a model read the visible text, pulling out anything that looked like a real venue. It found ${n_("candidates") ?? 0}.`);
-      out.push("The capture above is what the page looked like when it loaded, so you can tell a good result from a cookie wall or a blocked page.");
+      out.push("The capture is what the page looked like when it loaded, so you can tell a good result from a cookie wall or a blocked page.");
       break;
     case "research.finished":
       out.push(`${n_("candidates") ?? 0} venue${n_("candidates") === 1 ? "" : "s"} came back from ${n_("pagesRead") ?? 0} page${n_("pagesRead") === 1 ? "" : "s"}. From here on the agent may only propose places that appear in this list — it cannot make one up.`);
@@ -252,7 +251,7 @@ function explain(n: Node): string[] {
       break;
     case "cart.updated":
       out.push("The cart was created at the store and a checkout link came back. The agent cannot pay — the card in the chat carries the link so a person finishes it.");
-      out.push("Quantities here are editable: changing them rewrites the cart at the store and redraws the card in the thread.");
+      out.push("Quantities on the tape are editable: changing them rewrites the cart at the store and redraws the card in the thread.");
       break;
     case "cart.edited":
       out.push("Someone changed the quantities from this page rather than through the chat. The store cart was rewritten and the card in the thread redrawn, so the checkout link now points at the new contents.");
@@ -286,95 +285,32 @@ const itemsOf = (fields: Record<string, unknown>): CartItem[] | null =>
 /** "$32.00" -> 32. Prices arrive already formatted by the store. */
 const priceNum = (p: string) => Number(String(p).replace(/[^0-9.]/g, "")) || 0;
 
-export function RunGraph({ run, events, token }: { run: RunSummary; events: GraphEvent[]; token: string }) {
-  const nodes = useMemo<Node[]>(
-    () => events.map((e) => ({
-      seq: e.seq, ts: e.ts, level: e.level, event: e.event, fields: e.fields,
-      ms: num(e.fields.ms) ?? null, ...classify(e),
-    })),
-    [events],
-  );
+export function toNodes(events: TapeEvent[]): Node[] {
+  return events.map((e) => ({
+    seq: e.seq, ts: e.ts, level: e.level, event: e.event, fields: e.fields,
+    ms: num(e.fields.ms) ?? null, ...classify(e),
+  }));
+}
 
-  const [picked, setPicked] = useState<number | null>(null);
-  const [cols, setCols] = useState(1);
-  const wrap = useRef<HTMLDivElement>(null);
-  const flow = useRef<HTMLDivElement>(null);
-  const [boxes, setBoxes] = useState<{ x: number; y: number; w: number; h: number; row: number }[]>([]);
+export function RunTape({
+  run, nodes, token, picked, onPick, raw,
+}: {
+  run: RunSummary;
+  nodes: Node[];
+  token: string;
+  picked: number | null;
+  onPick: (seq: number | null) => void;
+  /** Print every event's fields under its row, for reading the tape field by field. */
+  raw: boolean;
+}) {
   // Quantity edits, keyed by "<seq>:<line>", until they are pushed to the chat.
   const [edits, setEdits] = useState<Record<string, number>>({});
   const [pushing, setPushing] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
-    setPicked(null);
     setEdits({});
   }, [run.runId]);
-
-  // How many cards fit across. Everything else follows from it.
-  useLayoutEffect(() => {
-    const measure = () => {
-      const w = (wrap.current?.clientWidth ?? CARD_W) - 48;
-      setCols(Math.max(1, Math.floor((w + GAP_X) / (CARD_W + GAP_X))));
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, []);
-
-  /**
-   * Cards wrap like text, left to right and top to bottom. A snaking layout
-   * follows the wire more neatly but puts the earliest card of a reversed row
-   * on the right, which reads backwards; arrowheads carry direction instead.
-   *
-   * Heights vary with content, so positions are measured from the DOM after
-   * paint rather than guessed.
-   */
-  const place = useCallback(() => {
-    const el = flow.current;
-    if (!el) return;
-    const cards = [...el.querySelectorAll<HTMLElement>("[data-card]")];
-    const next: { x: number; y: number; w: number; h: number; row: number }[] = [];
-    let y = 0;
-    for (let i = 0; i < cards.length; i += cols) {
-      const row = cards.slice(i, i + cols);
-      const h = Math.max(...row.map((c) => c.offsetHeight), 0);
-      row.forEach((c, ci) => {
-        const x = ci * (CARD_W + GAP_X);
-        c.style.left = `${x}px`;
-        c.style.top = `${y}px`;
-        next[i + ci] = { x, y, w: CARD_W, h: c.offsetHeight, row: i / cols };
-      });
-      y += h + GAP_Y;
-    }
-    el.style.height = `${Math.max(0, y - GAP_Y)}px`;
-    el.style.width = `${cols * CARD_W + (cols - 1) * GAP_X}px`;
-    setBoxes(next);
-  }, [cols]);
-
-  useLayoutEffect(() => {
-    place();
-  }, [place, nodes, edits]);
-
-  const wires = useMemo(() => {
-    const paths: { d: string; cross: boolean }[] = [];
-    for (let i = 1; i < boxes.length; i++) {
-      const a = boxes[i - 1], b = boxes[i];
-      if (!a || !b) continue;
-      const cross = nodes[i - 1]?.svc !== nodes[i]?.svc;
-      if (a.row === b.row) {
-        const x1 = a.x + a.w, x2 = b.x;
-        const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2;
-        const bend = Math.max(16, (x2 - x1) * 0.45);
-        paths.push({ d: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`, cross });
-      } else {
-        // Row return: out of the bottom, sweeping back to the top of the next.
-        const x1 = a.x + a.w / 2, y1 = a.y + a.h;
-        const x2 = b.x + b.w / 2, y2 = b.y;
-        const mid = (y1 + y2) / 2;
-        paths.push({ d: `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`, cross });
-      }
-    }
-    return paths;
-  }, [boxes, nodes]);
 
   const qtyOf = useCallback(
     (n: Node, li: number, items: CartItem[]) => edits[`${n.seq}:${li}`] ?? items[li].quantity,
@@ -384,8 +320,6 @@ export function RunGraph({ run, events, token }: { run: RunSummary; events: Grap
     (n: Node, items: CartItem[]) => items.some((_, li) => `${n.seq}:${li}` in edits),
     [edits],
   );
-
-  const [problem, setProblem] = useState<string | null>(null);
 
   async function pushCart(n: Node, items: CartItem[]) {
     const lines = items
@@ -414,10 +348,10 @@ export function RunGraph({ run, events, token }: { run: RunSummary; events: Grap
   const t0 = nodes[0]?.ts ?? run.started;
 
   /**
-   * Which card, if any, should hold the live browser. The session opens at a
+   * Which row, if any, should hold the live browser. The session opens at a
    * `*.browser` step and is closed by the matching `*.finished`, so the view
    * belongs to the browser step for as long as nothing has closed it — not to
-   * whichever card happens to be last, which changes every few seconds.
+   * whichever row happens to be last, which changes every few seconds.
    *
    * Deliberately not tied to the run being open: a research workflow's browser
    * outlives the short run that records its callbacks, so keying off run.ended
@@ -433,73 +367,69 @@ export function RunGraph({ run, events, token }: { run: RunSummary; events: Grap
     }
     return open !== null && Date.now() - at < LIVE_MAX_AGE ? open : null;
   }, [nodes]);
-  const pickedNode = picked === null ? null : nodes.find((n) => n.seq === picked) ?? null;
+
+  // Rows that arrived while watching get one reveal; everything already on the
+  // tape when it was opened is simply there.
+  const seen = useRef<{ runId: string; seqs: Set<number> } | null>(null);
+  if (seen.current?.runId !== run.runId) seen.current = { runId: run.runId, seqs: new Set(running ? [] : nodes.map((n) => n.seq)) };
+  const fresh = seen.current.seqs;
+  useEffect(() => {
+    for (const n of nodes) fresh.add(n.seq);
+  });
 
   return (
-    <div ref={wrap} style={{ height: "100%", overflow: "auto", padding: "26px 24px 60px", background: "var(--paper)" }}>
+    <div style={{ padding: "6px 0 60px" }}>
       {problem && (
-        <p style={{ margin: "0 0 16px", fontFamily: MONO, fontSize: 11, color: "var(--error)" }}>
+        <p style={{ margin: "0 0 12px 4px", fontFamily: "var(--mono)", fontSize: 12, color: "var(--error)" }}>
           Couldn't update the cart: {problem}
         </p>
       )}
 
-      <div ref={flow} style={{ position: "relative", margin: "0 auto" }}>
-        <svg style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }} width="100%" height="100%">
-          <defs>
-            <marker id="rg-tip" viewBox="0 0 8 8" refX={7} refY={4} markerWidth={6} markerHeight={6} orient="auto-start-reverse">
-              <path d="M 0 1 L 7 4 L 0 7 z" fill="var(--wire)" />
-            </marker>
-          </defs>
-          {wires.map((w, i) => (
-            <path
-              key={i}
-              d={w.d}
-              fill="none"
-              stroke="var(--wire)"
-              strokeWidth={w.cross ? 1.6 : 1.2}
-              strokeDasharray={w.cross ? "4 4" : undefined}
-              markerEnd="url(#rg-tip)"
-            />
-          ))}
-        </svg>
+      {nodes.map((n) => (
+        <Row
+          key={n.seq}
+          node={n}
+          t0={t0}
+          chat={run.chat}
+          isNew={running && !fresh.has(n.seq)}
+          showLive={n.seq === liveSeq}
+          selected={picked === n.seq}
+          onPick={() => onPick(picked === n.seq ? null : n.seq)}
+          raw={raw}
+          qtyOf={qtyOf}
+          dirty={dirty}
+          pushing={pushing}
+          onStep={(li, by, items) =>
+            setEdits((e) => ({ ...e, [`${n.seq}:${li}`]: Math.max(0, qtyOf(n, li, items) + by) }))
+          }
+          onPush={(items) => pushCart(n, items)}
+        />
+      ))}
 
-        {nodes.map((n, i) => (
-          <Card
-            key={n.seq}
-            node={n}
-            t0={t0}
-            chat={run.chat}
-            turnMs={run.ms}
-            live={running && i === nodes.length - 1}
-            showLive={n.seq === liveSeq}
-            selected={picked === n.seq}
-            onPick={() => setPicked((p) => (p === n.seq ? null : n.seq))}
-            qtyOf={qtyOf}
-            dirty={dirty}
-            pushing={pushing}
-            onStep={(li, by, items) =>
-              setEdits((e) => ({ ...e, [`${n.seq}:${li}`]: Math.max(0, qtyOf(n, li, items) + by) }))
-            }
-            onPush={(items) => pushCart(n, items)}
-          />
-        ))}
-      </div>
-
-      {!nodes.length && (
-        <p style={{ color: "var(--muted)", fontSize: 13 }}>
-          {running ? "waiting for the first step…" : "no events recorded for this run"}
-        </p>
+      {running && (
+        <div className="rv-row is-static" aria-live="polite">
+          <span style={timeStyle}>…</span>
+          <i className="rv-mark rv-live" style={{ background: "var(--soft)" }} />
+          <span style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--soft)" }}>
+            {nodes.length ? "still going" : "waiting for the first step"}
+          </span>
+        </div>
       )}
-
-      {pickedNode && <Sheet node={pickedNode} t0={t0} chat={run.chat} onClose={() => setPicked(null)} />}
+      {!nodes.length && !running && (
+        <p style={{ margin: 0, padding: "12px 4px", color: "var(--soft)", fontSize: 13.5 }}>Nothing was recorded for this run.</p>
+      )}
     </div>
   );
 }
 
-function Card({
-  node, t0, chat, turnMs, live, showLive, selected, onPick, qtyOf, dirty, pushing, onStep, onPush,
+const timeStyle: React.CSSProperties = {
+  fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)", fontVariantNumeric: "tabular-nums", textAlign: "right", whiteSpace: "nowrap",
+};
+
+function Row({
+  node, t0, chat, isNew, showLive, selected, onPick, raw, qtyOf, dirty, pushing, onStep, onPush,
 }: {
-  node: Node; t0: number; chat: string; turnMs: number | null; live: boolean; showLive: boolean; selected: boolean; onPick: () => void;
+  node: Node; t0: number; chat: string; isNew: boolean; showLive: boolean; selected: boolean; onPick: () => void; raw: boolean;
   qtyOf: (n: Node, li: number, items: CartItem[]) => number;
   dirty: (n: Node, items: CartItem[]) => boolean;
   pushing: boolean;
@@ -510,90 +440,82 @@ function Card({
   const shot = shotFor(node.fields, chat);
   const items = itemsOf(node.fields);
   const text = str(node.fields.text);
-  const share = turnMs && node.ms ? Math.min(1, node.ms / turnMs) : 0;
+  const thinking = str(node.fields.thinking);
   const stats = [
-    node.ms != null ? dur(node.ms) : null,
+    node.ms != null && node.ms > 0 ? dur(node.ms) : null,
     num(node.fields.tokens) ? `${num(node.fields.tokens)!.toLocaleString()} tok` : null,
     num(node.fields.candidates) != null ? `${num(node.fields.candidates)} found` : null,
   ].filter(Boolean);
-
   const total = items ? items.reduce((s, it, li) => s + qtyOf(node, li, items) * priceNum(it.price), 0) : 0;
   const changed = items ? dirty(node, items) : false;
-  const border = selected || live ? "var(--accent)" : node.level === "error" ? "var(--error)" : "var(--rule)";
+  const hasMedia = Boolean(shot || showLive || thinking || text || items || raw);
 
   return (
     <div
-      data-card
-      className="rg-card"
-      style={{
-        position: "absolute", width: CARD_W, background: "var(--card)",
-        border: `1px solid ${border}`, borderRadius: 11,
-        boxShadow: selected ? "var(--shadow-lift)" : "var(--shadow)",
-        display: "flex", flexDirection: "column", overflow: "hidden",
-        transition: "box-shadow .18s, border-color .18s, transform .18s",
-      }}
+      className={`rv-row${selected ? " is-selected" : ""}${node.level === "error" ? " is-error" : ""}${isNew ? " is-new" : ""}`}
+      style={{ paddingBottom: hasMedia ? 12 : 9 }}
+      data-seq={node.seq}
+      onClick={onPick}
     >
+      <span style={timeStyle}>+{dur(node.ts - t0)}</span>
+      <i className="rv-mark" style={{ background: `var(${svc.v})` }} title={svc.label} />
       <button
-        onClick={onPick}
-        style={{ all: "unset", cursor: "pointer", display: "block", font: "inherit" }}
-        aria-label={`${node.event} — open details`}
+        aria-pressed={selected}
+        aria-label={`${svc.label}: ${node.title}${node.sub ? `, ${node.sub}` : ""}. Show what this step means`}
+        style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0, margin: 0, padding: 0, background: "none", border: 0, cursor: "pointer", font: "inherit", color: "inherit", textAlign: "left" }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 11px 0", fontFamily: MONO, fontSize: 9, letterSpacing: "0.1em" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 5, flex: 1, textTransform: "uppercase", color: `var(${svc.v})` }}>
-            <i style={{ width: 7, height: 7, borderRadius: 2, background: `var(${svc.v})`, flex: "none" }} />
-            {svc.label}
+        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 600, fontSize: 14.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>{node.title}</span>
+        {node.sub && (
+          <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{node.sub}</span>
+        )}
+        {stats.length > 0 && (
+          <span style={{ marginLeft: "auto", paddingLeft: 12, fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+            {stats.join("  ")}
           </span>
-          <span style={{ color: "var(--faint)", fontVariantNumeric: "tabular-nums" }}>+{dur(node.ts - t0)}</span>
-        </div>
-        <div style={{ padding: "5px 11px 0", fontSize: 14, fontWeight: 600, letterSpacing: "-0.012em", color: "var(--ink)" }}>{node.title}</div>
-        <div style={{ padding: "2px 11px 0", fontFamily: MONO, fontSize: 10.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {node.sub}
-        </div>
-        {shot && !items && (
-          <div style={{ margin: "9px 11px 0", border: "1px solid var(--rule)", borderRadius: 6, overflow: "hidden", height: 92, background: "var(--card-2)" }}>
-            <img src={shot} alt={`What the agent saw at ${node.event}`} loading="lazy" style={{ display: "block", width: "100%", height: "100%", objectFit: "cover", objectPosition: "top" }} />
-          </div>
-        )}
-        {showLive && (
-          <span style={{ display: "block", margin: "9px 11px 0", border: "1px solid var(--accent)", borderRadius: 6, overflow: "hidden", height: 132, background: "var(--card-2)" }}>
-            <iframe
-              src={`/live/${encodeURIComponent(chat)}`}
-              title="The agent's browser, live"
-              style={{ width: "100%", height: "100%", border: 0, display: "block" }}
-              sandbox="allow-scripts allow-same-origin"
-            />
-          </span>
-        )}
-        {str(node.fields.thinking) && (
-          <p style={{ margin: "9px 11px 0", padding: "8px 10px", background: "var(--card-2)", border: "1px dashed var(--rule-2)", borderRadius: 10, fontSize: 11.5, lineHeight: 1.45, color: "var(--muted)", fontStyle: "italic" }}>
-            {str(node.fields.thinking)!.length > 120 ? `${str(node.fields.thinking)!.slice(0, 120)}…` : str(node.fields.thinking)}
-          </p>
-        )}
-        {text && !items && (
-          <p style={{ margin: "9px 11px 0", padding: "8px 10px", background: "var(--card-2)", border: "1px solid var(--rule)", borderRadius: 10, fontSize: 12, lineHeight: 1.45, color: "var(--ink)" }}>
-            {text.length > 96 ? `${text.slice(0, 96)}…` : text}
-          </p>
         )}
       </button>
 
-      {items && (
-        <CartLines
-          node={node} items={items} total={total} changed={changed} pushing={pushing}
-          qtyOf={qtyOf} onStep={onStep} onPush={onPush}
-        />
+      {thinking && (
+        <p className="rv-media rv-quote is-thinking">{thinking.length > 280 && !selected ? `${thinking.slice(0, 280)}…` : thinking}</p>
       )}
-
-      <div style={{ marginTop: "auto", padding: "9px 11px 10px", display: "flex", alignItems: "center", gap: 8, fontFamily: MONO, fontSize: 9.5, color: "var(--faint)" }}>
-        <span style={{ flex: 1, height: 3, borderRadius: 2, background: "var(--rule)", overflow: "hidden" }}>
-          <i style={{ display: "block", height: "100%", width: `${Math.round(share * 100)}%`, borderRadius: 2, background: `var(${svc.v})` }} />
+      {text && !items && <p className="rv-media rv-quote">{text}</p>}
+      {shot && !items && (
+        <span className="rv-media rv-frame" style={{ maxWidth: 460 }}>
+          <img src={shot} alt={`What the agent saw at ${node.event}`} loading="lazy" style={{ maxHeight: 260, objectFit: "cover", objectPosition: "top" }} />
         </span>
-        {stats.join(" · ")}
-      </div>
+      )}
+      {showLive && (
+        <span className="rv-media rv-frame" style={{ maxWidth: 640, borderColor: "var(--ink)" }} onClick={(e) => e.stopPropagation()}>
+          <span className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", color: "var(--ink)" }}>
+            <i className="rv-live" style={{ width: 8, height: 8, background: "var(--s-browser)" }} />
+            The agent's browser, live
+          </span>
+          <iframe
+            src={`/live/${encodeURIComponent(chat)}`}
+            title="The agent's browser, live"
+            style={{ height: 360 }}
+            sandbox="allow-scripts allow-same-origin"
+          />
+        </span>
+      )}
+      {items && (
+        <div className="rv-media" onClick={(e) => e.stopPropagation()}>
+          <CartLines
+            node={node} items={items} total={total} changed={changed} pushing={pushing}
+            qtyOf={qtyOf} onStep={onStep} onPush={onPush}
+          />
+        </div>
+      )}
+      {raw && Object.keys(node.fields).length > 0 && (
+        <div className="rv-media" onClick={(e) => e.stopPropagation()}>
+          <FieldList fields={node.fields} lines={4} />
+        </div>
+      )}
     </div>
   );
 }
 
-/** Quantities are editable on the card itself — no panel, no modal. */
+/** Quantities are editable on the tape itself — no panel, no modal. */
 function CartLines({
   node, items, total, changed, pushing, qtyOf, onStep, onPush,
 }: {
@@ -605,70 +527,48 @@ function CartLines({
   // Without variant ids the store cannot be told what changed, so the steppers
   // would be decoration. Events recorded before they were logged show counts.
   const editable = items.length > 0 && items.every((it) => it.variantId);
+  const mono: React.CSSProperties = { fontFamily: "var(--mono)", fontSize: 12.5, fontVariantNumeric: "tabular-nums" };
   return (
-    <>
-      <div style={{ padding: "8px 11px 0", display: "flex", flexDirection: "column", gap: 6 }}>
-        {items.map((it, li) => (
-          <div key={li} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--ink)" }}>
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</span>
-            {editable ? (
-              <span style={{ display: "flex", alignItems: "center", gap: 1, border: "1px solid var(--rule)", borderRadius: 6, overflow: "hidden" }}>
-                <button className="rg-step" onClick={() => onStep(li, -1, items)} aria-label={`One fewer ${it.title}`} style={stepStyle}>−</button>
-                <span style={{ minWidth: 20, textAlign: "center", fontFamily: MONO, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
-                  {qtyOf(node, li, items)}
-                </span>
-                <button className="rg-step" onClick={() => onStep(li, 1, items)} aria-label={`One more ${it.title}`} style={stepStyle}>+</button>
-              </span>
-            ) : (
-              <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)" }}>×{it.quantity}</span>
-            )}
-            <span style={{ fontFamily: MONO, fontSize: 11, minWidth: 50, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-              ${(qtyOf(node, li, items) * priceNum(it.price)).toFixed(2)}
+    <div style={{ display: "flex", flexDirection: "column", gap: 0, maxWidth: 460 }}>
+      {items.map((it, li) => (
+        <div key={li} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderTop: li ? "1px solid var(--hair)" : 0, fontSize: 13.5 }}>
+          {it.imageUrl && (
+            <img src={it.imageUrl} alt="" loading="lazy" style={{ width: 34, height: 34, objectFit: "cover", flex: "none", background: "var(--paper2)" }} />
+          )}
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--sans)" }}>{it.title}</span>
+          {editable ? (
+            <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <button className="rv-step" onClick={() => onStep(li, -1, items)} aria-label={`One fewer ${it.title}`}>−</button>
+              <span style={{ ...mono, minWidth: 26, textAlign: "center" }}>{qtyOf(node, li, items)}</span>
+              <button className="rv-step" onClick={() => onStep(li, 1, items)} aria-label={`One more ${it.title}`}>+</button>
             </span>
-          </div>
-        ))}
-      </div>
-      <div style={{ margin: "9px 11px 0", paddingTop: 8, borderTop: "1px solid var(--rule)", display: "flex", alignItems: "center", fontFamily: MONO, fontSize: 11, color: "var(--ink)" }}>
-        total <b style={{ marginLeft: "auto", fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>${total.toFixed(2)}</b>
+          ) : (
+            <span style={{ ...mono, color: "var(--soft)" }}>{it.quantity}×</span>
+          )}
+          <span style={{ ...mono, minWidth: 64, textAlign: "right" }}>${(qtyOf(node, li, items) * priceNum(it.price)).toFixed(2)}</span>
+        </div>
+      ))}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 8, marginTop: 2, borderTop: "2px dotted var(--rule)", ...mono }}>
+        <span className="rv-meta">total</span>
+        <b style={{ marginLeft: "auto", fontWeight: 500 }}>${total.toFixed(2)}</b>
       </div>
       {editable && (
-        <div style={{ padding: "9px 11px 0", display: "flex", gap: 6, alignItems: "center" }}>
-          {changed && <span style={{ fontFamily: MONO, fontSize: 9, color: "var(--warn)" }}>edited</span>}
-          <button
-            onClick={() => onPush(items)}
-            disabled={!changed || pushing}
-            style={{
-              ...btn, marginLeft: "auto",
-              cursor: changed && !pushing ? "pointer" : "default",
-              opacity: changed ? 1 : 0.5,
-              ...(changed ? { background: "var(--accent)", borderColor: "var(--accent)", color: "#fff" } : {}),
-            }}
-          >
-            {pushing ? "pushing…" : "push to chat"}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+          {changed && <span className="rv-meta" style={{ color: "var(--warn)" }}>edited</span>}
+          <button className={`rv-btn${changed ? " is-go" : ""}`} onClick={() => onPush(items)} disabled={!changed || pushing} style={{ marginLeft: "auto" }}>
+            {pushing ? "Pushing…" : "Push to chat"}
           </button>
         </div>
       )}
-    </>
+    </div>
   );
 }
 
-const stepStyle: React.CSSProperties = {
-  width: 20, height: 20, background: "var(--card-2)", border: 0, cursor: "pointer",
-  color: "var(--muted)", fontSize: 13, lineHeight: 1, padding: 0,
-};
-
-/** The step's detail, centred over the page. */
-function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: string; onClose: () => void }) {
+/** The step's plain-English side. Rendered by the page beside the tape, or in a sheet. */
+export function StepDetail({ node, t0, chat, onClose }: { node: Node; t0: number; chat: string; onClose?: () => void }) {
   const f = node.fields;
   const shot = shotFor(f, chat);
-  const closeRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const svc = SERVICES[node.svc];
 
   const replays = Array.isArray(f.replays) ? (f.replays as string[]) : str(f.replay) ? [str(f.replay)!] : [];
   const plan = Array.isArray(f.plan) ? (f.plan as string[]) : null;
@@ -684,101 +584,89 @@ function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: stri
 
   const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId", "thinking"]);
   const raw = Object.fromEntries(Object.entries(f).filter(([k]) => !skip.has(k)));
+  const paras = explain(node);
 
   return (
-    <div
-      className="rg-scrim"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-      style={{ position: "fixed", inset: 0, zIndex: 30, display: "grid", placeItems: "center", padding: "28px 20px", background: "var(--scrim)" }}
-    >
-      <div
-        className="rg-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Step detail"
-        style={{
-          width: "min(580px, 100%)", maxHeight: "min(82vh, 780px)", background: "var(--card)",
-          border: "1px solid var(--rule)", borderRadius: 14, boxShadow: "var(--shadow-lift)",
-          display: "flex", flexDirection: "column", overflow: "hidden",
-        }}
-      >
-        <div style={{ padding: "15px 17px 13px", borderBottom: "1px solid var(--rule)", display: "flex", gap: 10, alignItems: "flex-start" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <span style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--accent)" }}>{node.event}</span>
-            <h2 style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.35, textWrap: "balance", color: "var(--ink)" }}>
-              {describe(node)}
-            </h2>
-            <span style={{ display: "block", marginTop: 7, fontFamily: MONO, fontSize: 10, color: "var(--faint)" }}>
-              +{dur(node.ts - t0)} into the run{node.ms != null && ` · took ${dur(node.ms)}`}
-            </span>
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
+      <div style={{ padding: "18px 22px 14px", display: "flex", gap: 12, alignItems: "flex-start", flex: "none" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="rv-meta" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <i style={{ width: 9, height: 9, background: `var(${svc.v})`, flex: "none" }} />
+            <span style={{ color: `var(${svc.v})` }}>{svc.label}</span>
+            <span>{node.event}</span>
           </div>
-          <button ref={closeRef} onClick={onClose} style={btn} aria-label="Close">×</button>
+          <h2 style={{ margin: "8px 0 0", fontFamily: "var(--sans)", fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.15, textWrap: "balance" }}>
+            {describe(node) || node.title}
+          </h2>
+          <p style={{ margin: "8px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
+            +{dur(node.ts - t0)} into the run{node.ms != null && `, took ${dur(node.ms)}`}
+          </p>
         </div>
+        {onClose && (
+          <button className="rv-btn is-quiet" onClick={onClose} aria-label="Close">Close</button>
+        )}
+      </div>
+      <hr className="rv-perf" style={{ margin: "0 22px" }} />
 
-        <div style={{ overflowY: "auto", padding: "15px 17px 28px", display: "flex", flexDirection: "column", gap: 17 }}>
-          {!!explain(node).length && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-              {explain(node).map((para, i) => (
-                <p key={i} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.55, color: "var(--muted)" }}>{para}</p>
-              ))}
-            </div>
-          )}
-          {str(f.thinking) && (
-            <Section label="What the model was thinking">
-              <p style={{ margin: 0, background: "var(--card-2)", border: "1px dashed var(--rule-2)", borderRadius: 12, padding: "10px 13px", fontSize: 13, lineHeight: 1.55, color: "var(--muted)", fontStyle: "italic", whiteSpace: "pre-wrap" }}>
-                {str(f.thinking)}
-              </p>
-            </Section>
-          )}
-          {str(f.text) && (
-            <Section label={node.event === "message.in" ? "The message" : "What it sent"}>
-              <p style={{ margin: 0, background: "var(--card-2)", border: "1px solid var(--rule)", borderRadius: 12, padding: "10px 13px", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink)" }}>
-                {str(f.text)}
-              </p>
-            </Section>
-          )}
-          {shot && (
-            <Section label="What the browser saw">
-              <img src={shot} alt="Page capture" style={{ width: "100%", borderRadius: 9, border: "1px solid var(--rule)", display: "block" }} />
-            </Section>
-          )}
-          {plan && (
-            <Section label="Queries it wrote">
-              <pre style={codeStyle}>{plan.map((q) => `→ ${q}`).join("\n")}</pre>
-            </Section>
-          )}
-          {node.event === "research.finished" && (
-            <Section label="Result">
-              <Stats pairs={[
-                [String(num(f.candidates) ?? 0), "venues"],
-                [String(num(f.pagesRead) ?? 0), "pages read"],
-                [num(f.ms) != null ? dur(num(f.ms)!) : "—", "wall clock"],
-                [num(f.tokens)?.toLocaleString() ?? "—", "tokens"],
-              ]} />
-            </Section>
-          )}
-          {node.event === "turn.end" && (
-            <Section label="The turn">
-              <Stats pairs={[
-                [num(f.ms) != null ? dur(num(f.ms)!) : "—", "duration"],
-                [String(num(f.steps) ?? 0), "model steps"],
-                [num(f.tokens)?.toLocaleString() ?? "—", "tokens"],
-                [String(Array.isArray(f.tools) ? (f.tools as string[]).length : 0), "tool calls"],
-              ]} />
-            </Section>
-          )}
-          {pretty && <Section label="Arguments"><pre style={codeStyle}>{pretty}</pre></Section>}
-          {!!replays.length && (
-            <Section label="Session replay">
-              {replays.map((u) => (
-                <a key={u} href={u} target="_blank" rel="noreferrer" style={{ fontFamily: MONO, fontSize: 11, color: "var(--accent)", wordBreak: "break-all", display: "block" }}>
-                  {u}
-                </a>
-              ))}
-            </Section>
-          )}
-          {!!Object.keys(raw).length && <Section label="Raw event"><FieldList fields={raw} lines={6} /></Section>}
-        </div>
+      <div style={{ overflowY: "auto", padding: "16px 22px 32px", display: "flex", flexDirection: "column", gap: 20, minHeight: 0 }}>
+        {paras.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {paras.map((para, i) => (
+              <p key={i} style={{ margin: 0, fontFamily: "var(--sans)", fontSize: 14.5, lineHeight: 1.55, maxWidth: "58ch" }}>{para}</p>
+            ))}
+          </div>
+        )}
+        {str(f.thinking) && (
+          <Section label="What the model was thinking">
+            <p className="rv-quote is-thinking">{str(f.thinking)}</p>
+          </Section>
+        )}
+        {str(f.text) && (
+          <Section label={node.event === "message.in" ? "The message" : "What it sent"}>
+            <p className="rv-quote">{str(f.text)}</p>
+          </Section>
+        )}
+        {shot && (
+          <Section label="What the browser saw">
+            <span className="rv-frame"><img src={shot} alt="Page capture" /></span>
+          </Section>
+        )}
+        {plan && (
+          <Section label="Queries it wrote">
+            <pre className="rv-code">{plan.join("\n")}</pre>
+          </Section>
+        )}
+        {node.event === "research.finished" && (
+          <Section label="Result">
+            <Stats pairs={[
+              ["Venues", String(num(f.candidates) ?? 0)],
+              ["Pages read", String(num(f.pagesRead) ?? 0)],
+              ["Wall clock", num(f.ms) != null ? dur(num(f.ms)!) : "—"],
+              ["Tokens", num(f.tokens)?.toLocaleString() ?? "—"],
+            ]} />
+          </Section>
+        )}
+        {node.event === "turn.end" && (
+          <Section label="The turn">
+            <Stats pairs={[
+              ["Duration", num(f.ms) != null ? dur(num(f.ms)!) : "—"],
+              ["Model steps", String(num(f.steps) ?? 0)],
+              ["Tokens", num(f.tokens)?.toLocaleString() ?? "—"],
+              ["Tool calls", String(Array.isArray(f.tools) ? (f.tools as string[]).length : 0)],
+            ]} />
+          </Section>
+        )}
+        {pretty && <Section label="Arguments"><pre className="rv-code">{pretty}</pre></Section>}
+        {replays.length > 0 && (
+          <Section label="Session replay">
+            {replays.map((u) => (
+              <a key={u} href={u} target="_blank" rel="noreferrer" style={{ fontFamily: "var(--mono)", fontSize: 12, wordBreak: "break-all", display: "block" }}>
+                {u}
+              </a>
+            ))}
+          </Section>
+        )}
+        {Object.keys(raw).length > 0 && <Section label="Raw event"><FieldList fields={raw} lines={8} /></Section>}
       </div>
     </div>
   );
@@ -787,27 +675,22 @@ function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: stri
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <p style={{ margin: "0 0 7px", fontFamily: MONO, fontSize: 9, letterSpacing: "0.12em", color: "var(--faint)", textTransform: "uppercase" }}>{label}</p>
+      <p style={{ margin: "0 0 8px", fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>{label}</p>
       {children}
     </div>
   );
 }
 
+/** Figures as ticket rows: the label leads, the number sits at the right. */
 function Stats({ pairs }: { pairs: [string, string][] }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, background: "var(--rule)", border: "1px solid var(--rule)", borderRadius: 9, overflow: "hidden" }}>
-      {pairs.map(([v, k]) => (
-        <div key={k} style={{ background: "var(--card)", padding: "9px 11px" }}>
-          <b style={{ display: "block", fontFamily: MONO, fontSize: 14, fontWeight: 500, fontVariantNumeric: "tabular-nums", color: "var(--ink)" }}>{v}</b>
-          <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "0.09em", color: "var(--faint)", textTransform: "uppercase" }}>{k}</span>
+    <dl style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 13 }}>
+      {pairs.map(([k, v], i) => (
+        <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "6px 0", borderTop: i ? "1px solid var(--hair)" : 0 }}>
+          <dt style={{ color: "var(--soft)" }}>{k}</dt>
+          <dd style={{ margin: 0, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{v}</dd>
         </div>
       ))}
-    </div>
+    </dl>
   );
 }
-
-const codeStyle: React.CSSProperties = {
-  margin: 0, padding: "10px 12px", background: "var(--card-2)", border: "1px solid var(--rule)",
-  borderRadius: 9, fontFamily: MONO, fontSize: 11, lineHeight: 1.55, color: "var(--muted)",
-  whiteSpace: "pre-wrap", wordBreak: "break-word",
-};

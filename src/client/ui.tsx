@@ -1,81 +1,127 @@
 import { useState } from "react";
+import { PALETTE, TICKET_FONTS } from "../theme";
 
 /**
- * Shared look for the run viewer.
+ * Shared look for the run viewer: the ticket (src/theme.ts) turned into an
+ * instrument. Same paper, same ink, same two faces. Night mode is the ticket
+ * turned over — ink for the ground, paper for the type — rather than a grey
+ * dark theme, so the projector shows the same object the phones do.
  *
  * Colours are CSS custom properties rather than a JS object, because the page
  * has two themes and inline styles cannot answer a media query. Components read
- * them as `var(--ink)`; THEME_CSS below is mounted once by <Runs>.
+ * them as `var(--ink)`; THEME_CSS is mounted once by <Runs>.
  *
- * Light is the default. Neutrals carry a slight cyan bias toward the accent, so
- * nothing reads as unconsidered grey, and each service gets its own hue —
- * muted enough that a page of cards still reads as one system.
+ * Each service gets one ink — stamp colours that sit on cream and on ink — and
+ * that is the only colour on the page. State is carried by type and position.
  */
 export const THEME_CSS = `
 :root {
-  --paper:#EEF1F4; --card:#FFFFFF; --card-2:#F7F9FA;
-  --rule:#DCE2E7; --rule-2:#C5CED6;
-  --ink:#0C1418; --muted:#55636E; --faint:#8996A2;
-  --accent:#0E7490; --accent-soft:#D6EEF5;
-  --good:#047857; --warn:#B45309; --error:#BE123C; --wire:#B9C4CD;
-  --s-chat:#0E7490; --s-model:#6D28D9; --s-tool:#B45309;
-  --s-browser:#047857; --s-booking:#BE123C; --s-shop:#3730A3;
-  --scrim:rgba(12,20,24,.34);
-  --shadow:0 1px 2px rgba(12,20,24,.05), 0 6px 16px -8px rgba(12,20,24,.14);
-  --shadow-lift:0 2px 4px rgba(12,20,24,.07), 0 14px 32px -12px rgba(12,20,24,.26);
+  --sans:'Archivo', system-ui, -apple-system, sans-serif;
+  --mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ground:${PALETTE.paper}; --ink:${PALETTE.ink};
+  --soft:rgba(36,31,23,.64); --faint:rgba(36,31,23,.44); --rule:rgba(36,31,23,.34); --hair:rgba(36,31,23,.16);
+  --paper2:rgba(36,31,23,.05); --paper3:rgba(36,31,23,.1);
+  --s-chat:#2653a8; --s-model:#6a3ea1; --s-tool:#8f4d0e; --s-browser:${PALETTE.green}; --s-booking:#a8322f; --s-shop:#9a2d6c;
+  --good:${PALETTE.green}; --warn:#8f4d0e; --error:#a8322f;
+  --scrim:rgba(36,31,23,.55);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper:#0B1013; --card:#141B20; --card-2:#1A2228;
-    --rule:#263139; --rule-2:#35434D;
-    --ink:#E9EEF1; --muted:#9AA8B4; --faint:#6B7883;
-    --accent:#4FC3DE; --accent-soft:#10323D;
-    --good:#34D399; --warn:#FBBF24; --error:#FB7185; --wire:#33424D;
-    --s-chat:#4FC3DE; --s-model:#A78BFA; --s-tool:#FBBF24;
-    --s-browser:#34D399; --s-booking:#FB7185; --s-shop:#818CF8;
-    --scrim:rgba(0,0,0,.58);
-    --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
-    --shadow-lift:0 2px 4px rgba(0,0,0,.5), 0 14px 32px -12px rgba(0,0,0,.75);
+    --ground:${PALETTE.ink}; --ink:${PALETTE.paper};
+    --soft:rgba(239,231,214,.66); --faint:rgba(239,231,214,.46); --rule:rgba(239,231,214,.34); --hair:rgba(239,231,214,.16);
+    --paper2:rgba(239,231,214,.06); --paper3:rgba(239,231,214,.11);
+    --s-chat:#9db8ff; --s-model:#c9adf7; --s-tool:#f0b26a; --s-browser:#6fc9ad; --s-booking:#f28b86; --s-shop:#f09ad0;
+    --good:#6fc9ad; --warn:#f0b26a; --error:#f28b86;
+    --scrim:rgba(0,0,0,.6);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --paper:#0B1013; --card:#141B20; --card-2:#1A2228;
-  --rule:#263139; --rule-2:#35434D;
-  --ink:#E9EEF1; --muted:#9AA8B4; --faint:#6B7883;
-  --accent:#4FC3DE; --accent-soft:#10323D;
-  --good:#34D399; --warn:#FBBF24; --error:#FB7185; --wire:#33424D;
-  --s-chat:#4FC3DE; --s-model:#A78BFA; --s-tool:#FBBF24;
-  --s-browser:#34D399; --s-booking:#FB7185; --s-shop:#818CF8;
-  --scrim:rgba(0,0,0,.58);
-  --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
-  --shadow-lift:0 2px 4px rgba(0,0,0,.5), 0 14px 32px -12px rgba(0,0,0,.75);
+  --ground:${PALETTE.ink}; --ink:${PALETTE.paper};
+  --soft:rgba(239,231,214,.66); --faint:rgba(239,231,214,.46); --rule:rgba(239,231,214,.34); --hair:rgba(239,231,214,.16);
+  --paper2:rgba(239,231,214,.06); --paper3:rgba(239,231,214,.11);
+  --s-chat:#9db8ff; --s-model:#c9adf7; --s-tool:#f0b26a; --s-browser:#6fc9ad; --s-booking:#f28b86; --s-shop:#f09ad0;
+  --good:#6fc9ad; --warn:#f0b26a; --error:#f28b86;
+  --scrim:rgba(0,0,0,.6);
   color-scheme: dark;
 }
+html, body { margin:0; background:var(--ground); }
+.rv { min-height:100vh; min-height:100dvh; background:var(--ground); color:var(--ink); -webkit-text-size-adjust:100%; }
+.rv * { box-sizing:border-box; }
+.rv a { color:inherit; text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1.5px; }
+.rv :focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
 
-.rg-card { animation: rgIn .3s cubic-bezier(.2,.9,.3,1) both; }
-.rg-card:hover { box-shadow: var(--shadow-lift); transform: translateY(-1px); }
-.rg-scrim { animation: rgFade .16s ease-out both; }
-.rg-sheet { animation: rgPop .2s cubic-bezier(.2,.9,.3,1) both; }
-.rg-run:hover { background: var(--card-2); }
-.rg-btn:hover { color: var(--ink); border-color: var(--rule-2); }
-.rg-step:hover { background: var(--accent-soft); color: var(--accent); }
-/* A turn that is still going, visible without reading the row. */
-.rg-live { animation: rgPulse 1.4s ease-in-out infinite; }
-@keyframes rgPulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-soft) } 50% { opacity: .45; box-shadow: 0 0 0 4px transparent } }
-@keyframes rgIn { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
-@keyframes rgFade { from { opacity:0 } to { opacity:1 } }
-@keyframes rgPop { from { opacity:0; transform:translateY(8px) scale(.985) } to { opacity:1; transform:none } }
+/* The ticket's own devices, reused: meta row, perforation, stub. */
+.rv-meta { font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--soft); }
+.rv-perf { border:0; border-top:2px dotted var(--rule); margin:0; }
+.rv-stub { display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:96px; padding-left:18px; border-left:2px dotted var(--rule); text-align:center; }
+.rv-stub b { font-family:var(--sans); font-weight:800; font-size:30px; line-height:1; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
+.rv-stub span { margin-top:6px; }
+
+/* Controls: flat, square, ruled in ink. On = filled. */
+.rv-btn { display:inline-flex; align-items:center; gap:6px; margin:0; padding:6px 10px; background:transparent; color:var(--ink); border:0; border-radius:0; box-shadow:inset 0 0 0 1.5px var(--ink); font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; line-height:1.2; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.rv-btn.is-on, .rv-btn.is-go { background:var(--ink); color:var(--ground); }
+.rv-btn.is-quiet { box-shadow:inset 0 0 0 1.5px var(--rule); color:var(--soft); }
+.rv-btn:disabled { opacity:.45; cursor:default; }
+.rv-btn:active:not(:disabled) { opacity:.7; }
+.rv-select { position:relative; display:inline-flex; }
+.rv-select select { appearance:none; -webkit-appearance:none; margin:0; padding:6px 26px 6px 10px; background:transparent; color:var(--ink); border:0; border-radius:0; box-shadow:inset 0 0 0 1.5px var(--ink); font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; line-height:1.2; cursor:pointer; max-width:150px; text-overflow:ellipsis; }
+.rv-select::after { content:""; position:absolute; right:10px; top:50%; width:6px; height:6px; border-right:1.5px solid var(--ink); border-bottom:1.5px solid var(--ink); transform:translateY(-70%) rotate(45deg); pointer-events:none; }
+.rv-input { margin:0; padding:6px 0 7px; background:transparent; color:var(--ink); border:0; border-bottom:1.5px solid var(--ink); border-radius:0; font-family:var(--mono); font-size:13px; -webkit-appearance:none; appearance:none; min-width:0; }
+.rv-input:focus { outline:none; border-bottom-width:3px; padding-bottom:5.5px; }
+.rv-input::placeholder { color:var(--soft); }
+
+/* The rail: sessions torn apart by perforations, runs as rows beneath. */
+.rv-session { display:flex; align-items:center; gap:10px; width:100%; margin:0; padding:12px 18px 10px; background:none; border:0; border-radius:0; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.rv-session:hover { background:var(--paper2); }
+.rv-run { display:block; width:100%; margin:0; padding:9px 18px 10px 34px; background:none; border:0; border-radius:0; border-left:3px solid transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.rv-run:hover { background:var(--paper2); }
+.rv-run.is-selected { border-left-color:var(--ink); background:var(--paper2); }
+
+/* The tape: one row per step. The service mark is the margin. */
+.rv-row { display:grid; grid-template-columns:58px 14px minmax(0,1fr); column-gap:12px; align-items:baseline; width:100%; margin:0; padding:9px 0 9px 4px; background:none; border:0; border-radius:0; border-left:3px solid transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.rv-row:hover { background:var(--paper2); }
+.rv-row.is-selected { border-left-color:var(--ink); background:var(--paper2); }
+.rv-row.is-static, .rv-row.is-static:hover { cursor:default; background:none; }
+.rv-row .rv-mark { display:block; width:11px; height:11px; align-self:center; justify-self:center; background:currentColor; }
+.rv-row.is-error .rv-title { color:var(--error); }
+/* A step that has just printed: one short reveal, nothing slides. */
+.rv-row.is-new { animation:rvPrint .26s ease-out both; }
+@keyframes rvPrint { from { opacity:0 } to { opacity:1 } }
+.rv-live { animation:rvPulse 1.4s ease-in-out infinite; }
+@keyframes rvPulse { 0%,100% { opacity:1 } 50% { opacity:.3 } }
+
+/* What a step produced, printed under its row at a reading width. */
+.rv-media { grid-column:3; margin:6px 0 4px; max-width:560px; }
+.rv-quote { margin:0; padding:10px 14px; max-width:64ch; border-left:2px solid var(--rule); font-family:var(--sans); font-size:14px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.rv-quote.is-thinking { color:var(--soft); font-style:italic; border-left-style:dotted; }
+.rv-frame { display:block; width:100%; border:1.5px solid var(--rule); background:var(--paper2); }
+.rv-frame img, .rv-frame iframe { display:block; width:100%; border:0; }
+.rv-code { margin:0; padding:10px 12px; background:var(--paper2); font-family:var(--mono); font-size:11.5px; line-height:1.55; color:var(--soft); white-space:pre-wrap; overflow-wrap:anywhere; }
+.rv-code.is-clamped { display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; cursor:pointer; }
+
+/* Cart quantities are editable in place: a stepper drawn as a ruled cell. */
+.rv-step { width:22px; height:22px; margin:0; padding:0; background:transparent; color:var(--ink); border:0; box-shadow:inset 0 0 0 1.5px var(--rule); font-family:var(--mono); font-size:14px; line-height:1; cursor:pointer; }
+.rv-step:hover { box-shadow:inset 0 0 0 1.5px var(--ink); }
+
+/* The stage on narrow screens: a sheet over the tape. */
+.rv-scrim { position:fixed; inset:0; z-index:30; display:grid; align-items:end; background:var(--scrim); animation:rvFade .16s ease-out both; }
+.rv-sheet { max-height:88vh; max-height:88dvh; background:var(--ground); color:var(--ink); border-top:2px dotted var(--rule); display:flex; flex-direction:column; overflow:hidden; animation:rvRise .2s ease-out both; }
+@keyframes rvFade { from { opacity:0 } to { opacity:1 } }
+@keyframes rvRise { from { transform:translateY(12px) } to { transform:none } }
+
+@media (max-width: 759px) {
+  .rv-row { grid-template-columns:44px 11px minmax(0,1fr); column-gap:8px; }
+  .rv-stub { min-width:80px; padding-left:12px; }
+  .rv-stub b { font-size:26px; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .rg-card, .rg-scrim, .rg-sheet, .rg-live { animation: none; }
-  .rg-card:hover { transform: none; }
+  .rv-row.is-new, .rv-live, .rv-scrim, .rv-sheet { animation:none; }
 }
 `;
 
-export const UI_FONT = "'Archivo', -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
-export const MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace";
-export const FONT_LINK = "https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap";
+export const FONT_LINK = TICKET_FONTS;
 
 /** One hue per service. The key is the lane an event was classified into. */
 export const SERVICES = {
@@ -109,11 +155,6 @@ export const clock = (ts: number) =>
 export const dur = (ms: number) =>
   ms < 1000 ? `${Math.round(ms)}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`;
 
-export const btn: React.CSSProperties = {
-  fontFamily: MONO, fontSize: 11, background: "var(--card)", color: "var(--muted)",
-  border: "1px solid var(--rule)", borderRadius: 7, padding: "5px 10px", cursor: "pointer",
-};
-
 /**
  * One `k=v` line per field. Tool arguments and research reports run long, so it
  * clamps until clicked, and any URL — a Browserbase replay, a checkout link —
@@ -126,13 +167,10 @@ export function FieldList({ fields, lines = 3 }: { fields: Record<string, unknow
     .join("  ");
   return (
     <pre
+      className={`rv-code${open ? "" : " is-clamped"}`}
       onClick={() => setOpen((o) => !o)}
-      style={{
-        margin: 0, padding: "10px 12px", background: "var(--card-2)", border: "1px solid var(--rule)",
-        borderRadius: 9, fontFamily: MONO, fontSize: 11, lineHeight: 1.55, color: "var(--muted)",
-        whiteSpace: "pre-wrap", wordBreak: "break-word", cursor: "pointer",
-        ...(open ? {} : { display: "-webkit-box", WebkitLineClamp: lines, WebkitBoxOrient: "vertical", overflow: "hidden" }),
-      }}
+      style={open ? undefined : { WebkitLineClamp: lines }}
+      title={open ? undefined : "Show all"}
     >
       {linkify(text)}
     </pre>
@@ -143,7 +181,7 @@ export function FieldList({ fields, lines = 3 }: { fields: Record<string, unknow
 export function linkify(text: string) {
   return text.split(/(https?:\/\/[^\s"',\]}]+)/g).map((part, i) =>
     part.startsWith("http") ? (
-      <a key={i} href={part} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "var(--accent)" }}>
+      <a key={i} href={part} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
         {part}
       </a>
     ) : (
