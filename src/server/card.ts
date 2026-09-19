@@ -114,6 +114,24 @@ export async function renderTicket(t: Ticket): Promise<Response> {
   return new ImageResponse(html, { width: W, height: H, emoji: "twemoji", fonts: await loadFonts() });
 }
 
+/**
+ * The number's contact photo: a ticket stub in the "done" colours. Messages
+ * crops it to a circle, so everything that matters sits inside the middle 70%.
+ */
+export async function renderAvatar(initial = "P"): Promise<Response> {
+  const S = 1024;
+  const dot = `<div style="display:flex;width:14px;height:14px;border-radius:7px;margin-top:22px;background:#1f5f4f;"></div>`;
+  const html = `
+  <div style="display:flex;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:#1f5f4f;">
+    <div style="display:flex;align-items:center;width:600px;height:400px;border-radius:44px;background:#efe7d6;color:#241f17;overflow:hidden;">
+      <div style="display:flex;flex:1;align-items:center;justify-content:center;font-family:'Archivo';font-weight:800;font-size:300px;line-height:1;letter-spacing:-8px;">${esc(initial.slice(0, 1).toUpperCase())}</div>
+      <div style="display:flex;flex-direction:column;width:14px;height:400px;margin-top:-10px;opacity:0.55;">${dot.repeat(12)}</div>
+      <div style="display:flex;width:130px;"></div>
+    </div>
+  </div>`;
+  return new ImageResponse(html, { width: S, height: S, fonts: await loadFonts() });
+}
+
 // ------------------------------------------------------------------ builders
 
 const STATUS_META: Record<PlanState["status"], string> = {

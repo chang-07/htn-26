@@ -100,6 +100,23 @@ a sleeping message is `message.stored`; a waking one is `message.in` with a
 `wake` reason. Test the gate in the simulator with `"group": true` plus
 `"mention": true` or `"replyTo": "last"` on `/api/dev/message`.
 
+### Presence — read receipts, typing, a name and a face
+
+When a message wakes the agent it marks the chat read and raises the typing
+bubble at once (`presence` in the logs), seconds before the model answers. The
+bubble is refreshed through long turns and dropped if the turn ends in silence.
+A successful booking lands with confetti.
+
+The name and photo are a Linq contact card, set once per number:
+
+```sh
+node scripts/linq-contact-card.mjs set "Plan"   # photo: <PUBLIC_BASE_URL>/card/avatar.png
+node scripts/linq-contact-card.mjs show
+```
+
+The agent then offers the card to each chat the first time it is woken there.
+All of this is best-effort and iMessage-only; failures are logged, never thrown.
+
 ### Logging — "why didn't it reply?"
 
 Every hop logs one line in the same shape, `scope event {fields}`:

@@ -6,7 +6,7 @@ import { llmFor } from "./llm";
 import { people as peopleStore, profileLines, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { sendCard, sendPhoto, sendText, tapbackLegend, updateCard } from "./linq";
+import { markRead, sendCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
@@ -69,6 +69,8 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   exactly NOOP and nothing else.`;
 
 const MAX_STEPS = 8;
+/** The bubble lasts ~85s per call; Linq says to refresh every 60. */
+const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
 const EVENT_HISTORY = 300;
@@ -99,6 +101,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   private turnRunning = false;
   private turnRequested = false;
+  /** When the typing bubble was last raised; 0 once a send has cleared it. */
+  private typingAt = 0;
 
   /**
    * Mirrors this chat's events into the cross-chat run history, grouped into
@@ -187,6 +191,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
       ...(wake ? { wake } : {}),
     });
     if (!wake) return;
+
+    // Seen, and thinking: the model is seconds away, the bubble is not. Off the
+    // request path so Linq still gets its 200 at once.
+    this.ctx.waitUntil(this.acknowledge());
 
     // The profile link is private, so it only ever goes to a direct chat: on
     // request, or once on its own a little after the first reply.
@@ -449,9 +457,28 @@ export class PlanAgent extends Agent<Env, PlanState> {
     await this.postTicket("rsvp", rsvpTicket(this.rsvps()));
   }
 
-  private async say(text: string) {
+  /** Read receipt, typing bubble and — once per chat — the name and photo. */
+  private async acknowledge() {
+    const firstTime = this.getMeta("contact_card_shared") !== "1";
+    this.note("info", "presence", { read: true, typing: true, contactCard: firstTime });
+    await markRead(this.env, this.name);
+    await this.typing();
+    if (!firstTime) return;
+    this.setMeta("contact_card_shared", "1");
+    await shareContactCard(this.env, this.name);
+  }
+
+  /** Raises the bubble, or refreshes it before its ~85s runs out. */
+  private async typing() {
+    if (Date.now() - this.typingAt < TYPING_REFRESH_MS) return;
+    this.typingAt = Date.now();
+    await startTyping(this.env, this.name);
+  }
+
+  private async say(text: string, opts: SendOptions = {}) {
     this.setMeta("awaiting_answer_until", "0");
-    const id = await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text), this.note);
+    this.typingAt = 0; // a send clears the bubble
+    const id = await timed("agent", "message.out", { chars: text.length }, () => sendText(this.env, this.name, text, opts), this.note);
     this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${text}, ${Date.now()})`;
   }
 
@@ -479,6 +506,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
       this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
+      // A turn that ended in silence must not leave the bubble hanging.
+      if (this.typingAt) {
+        this.typingAt = 0;
+        await stopTyping(this.env, this.name);
+      }
     }
   }
 
@@ -538,6 +570,7 @@ ${transcript}`,
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
+      if (!spoke) await this.typing();
       try {
         res = await client.chat.completions.create({ model, messages, tools: openAiTools() });
       } catch (err) {
@@ -1061,6 +1094,7 @@ ${transcript}`,
       result.ok
         ? `booked ${option?.title ?? "it"}${result.confirmation ? ` — ${result.confirmation}` : ""}`
         : `couldn't book ${option?.title ?? "it"}: ${result.detail ?? "unknown error"}`,
+      result.ok ? { screenEffect: "confetti" } : {},
     );
   }
 }

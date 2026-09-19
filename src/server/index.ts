@@ -7,7 +7,7 @@ import type {
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
 import { openBrowser, readPage, searchWeb } from "./browser";
-import { cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, venueTicket, type Ticket } from "./card";
+import { renderAvatar, cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, venueTicket, type Ticket } from "./card";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
 import type { PlanState } from "../types";
@@ -40,6 +40,12 @@ export default {
 
     if (url.pathname.startsWith("/p/")) {
       return handleProfile(request, url, env);
+    }
+
+    // The contact photo (scripts/linq-contact-card.mjs points Linq at it).
+    if (url.pathname === "/card/avatar.png") {
+      const image = await renderAvatar(env.IMESSAGE_APP_NAME);
+      return new Response(image.body, { headers: { ...pngHeaders, "cache-control": "public, max-age=300" } });
     }
 
     if (url.pathname.startsWith("/card/")) {

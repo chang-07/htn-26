@@ -107,16 +107,65 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 const isDry = (env: Env, chatId: string) => !env.LINQ_API_KEY || !UUID.test(chatId);
 
-export async function sendText(env: Env, chatId: string, value: string): Promise<string> {
+export type SendOptions = {
+  /** Thread the text under this message, as an inline reply. */
+  replyTo?: string;
+  /** A full-screen iMessage effect: confetti, fireworks, balloons… */
+  screenEffect?: string;
+};
+
+export async function sendText(env: Env, chatId: string, value: string, opts: SendOptions = {}): Promise<string> {
   if (isDry(env, chatId)) {
-    log("info", "linq", "dry.text", { chat: short(chatId), text: value });
+    log("info", "linq", "dry.text", { chat: short(chatId), text: value, ...opts });
     return `dry-${crypto.randomUUID().slice(0, 8)}`;
   }
   const res = await linqClient(env).chats.messages.send(chatId, {
-    message: { parts: [{ type: "text", value }] },
+    message: {
+      parts: [{ type: "text", value }],
+      ...(opts.replyTo ? { reply_to: { message_id: opts.replyTo } } : {}),
+      ...(opts.screenEffect ? { effect: { type: "screen" as const, name: opts.screenEffect } } : {}),
+    },
   });
   return res.message.id;
 }
+
+// ------------------------------------------------------------------ presence
+// The small signals that make the number feel like a person: a read receipt,
+// the typing bubble, a name and photo. All are best-effort — Linq answers 204
+// without promising delivery — so a failure is logged and never thrown: none of
+// them is worth losing a turn over.
+
+async function quietly(env: Env, chatId: string, event: string, call: (linq: LinqAPIV3) => Promise<unknown>) {
+  if (isDry(env, chatId)) return void log("info", "linq", `dry.${event}`, { chat: short(chatId) });
+  try {
+    await call(linqClient(env));
+  } catch (err) {
+    log("warn", "linq", `${event}.failed`, { chat: short(chatId), error: String(err).slice(0, 200) });
+  }
+}
+
+export const markRead = (env: Env, chatId: string) => quietly(env, chatId, "read", (l) => l.chats.markAsRead(chatId));
+
+/**
+ * One call shows the bubble for ~85s and sending a message clears it, so a long
+ * turn must call this again about once a minute and after each text it sends.
+ */
+export const startTyping = (env: Env, chatId: string) => quietly(env, chatId, "typing", (l) => l.chats.typing.start(chatId));
+
+export const stopTyping = (env: Env, chatId: string) => quietly(env, chatId, "typing_stop", (l) => l.chats.typing.stop(chatId));
+
+/**
+ * Name and Photo Sharing: offers the number's contact card (set once with
+ * scripts/linq-contact-card.mjs) so the thread shows a name and face instead of
+ * digits. Fails harmlessly when no card has been set up.
+ */
+export const shareContactCard = (env: Env, chatId: string) =>
+  quietly(env, chatId, "contact_card", (l) => l.chats.shareContactCard(chatId));
+
+export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
+
+export const tapback = (env: Env, chatId: string, messageId: string, type: Tapback) =>
+  quietly(env, chatId, "tapback", (l) => l.messages.addReaction(messageId, { operation: "add", type }));
 
 /**
  * A ticket as an ordinary photo. Agent Apps draws the card bubble itself and
