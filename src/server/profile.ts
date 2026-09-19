@@ -119,6 +119,17 @@ const SHIP_FIELDS = [
  * and it never reaches the model. Saving it resumes the payment that asked.
  */
 async function handleShipTo(request: Request, url: URL, env: Env, handle: string, profile: Profile): Promise<Response> {
+  const chat = url.searchParams.get("chat");
+  const agent = chat ? await getAgentByName<Env, PlanAgent>(env.PlanAgent, chat) : null;
+  // An event's orders share one address, kept by the chat. It arrives filled in
+  // for this person to check; "?own=1" is them sending this order home instead.
+  const delivery = agent ? await agent.deliveryFor(handle).catch(() => null) : null;
+  const own = url.searchParams.get("own") === "1";
+  const toEvent = !!delivery && !own;
+
+  let filled: Record<string, string | undefined> = toEvent
+    ? { ...delivery.address, name: (profile.shipTo ?? profile.contact)?.name, email: (profile.shipTo ?? profile.contact)?.email }
+    : { ...profile.shipTo };
   let problem = "";
   if (request.method === "POST") {
     const form = await request.formData();
@@ -128,30 +139,50 @@ async function handleShipTo(request: Request, url: URL, env: Env, handle: string
     else if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(shipTo.email)) problem = "That email doesn't look right.";
     else if (!/^[A-Z]{2}$/.test(shipTo.country) || !/^[A-Z]{2,3}$/.test(shipTo.region)) problem = "Use two-letter codes for the country and the state or province.";
     else {
-      await people(env).save(handle, { shipTo });
-      log("info", "people", "ship_to.saved", { who: mask(handle), country: shipTo.country });
-      const chat = url.searchParams.get("chat");
-      if (chat) {
-        const agent = await getAgentByName<Env, PlanAgent>(env.PlanAgent, chat);
-        // Only resumes if that chat really is waiting on this person: the agent checks.
-        await agent.payResume(handle).catch((err) => log("warn", "people", "pay.resume_failed", { error: String(err).slice(0, 200) }));
+      if (toEvent) {
+        // The address is the event's, so it is saved to the chat; only who they are stays with them.
+        const { name, email, ...address } = shipTo;
+        await people(env).save(handle, { contact: { name, email } });
+        await agent!.deliverySaved(handle, address);
+      } else {
+        await people(env).save(handle, { shipTo });
+        if (delivery) await agent!.deliveryDeclined(handle);
       }
+      log("info", "people", "ship_to.saved", { who: mask(handle), country: shipTo.country, event: toEvent });
+      // Only resumes if that chat really is waiting on this person: the agent checks.
+      if (agent) await agent.payResume(handle).catch((err) => log("warn", "people", "pay.resume_failed", { error: String(err).slice(0, 200) }));
       return page(`<div class="tk-meta">Saved</div><h1 class="tk-title">That's where it ships</h1>
-        <hr class="tk-perf"><p style="margin:0">Back to the chat: the planner carries on from here. Open this link again to change the address, or text "forget me" to delete it.</p>`, true);
+        <hr class="tk-perf"><p style="margin:0">${
+          toEvent
+            ? "Back to the chat: the planner carries on from here. Anyone else who pays for this event gets the same address to check."
+            : 'Back to the chat: the planner carries on from here. Open this link again to change the address, or text "forget me" to delete it.'
+        }</p>`, true);
     }
-    profile = { ...profile, shipTo };
+    filled = shipTo;
   }
   const inputs = SHIP_FIELDS.map(
-    (f) => `<label class="tk-field"><span class="tk-meta">${f.label}</span><input id="${f.key}" type="${f.type}" name="${f.key}" autocomplete="${f.auto}" enterkeyhint="next"${"caps" in f && f.caps ? ' autocapitalize="characters"' : ""}${f.type === "email" ? ' inputmode="email" autocapitalize="off"' : ""} value="${esc(String(profile.shipTo?.[f.key] ?? ""))}" placeholder="${esc(f.hint)}"></label>`,
+    // The event's address must survive the keyboard's autofill, which would swap in their own.
+    (f) => `<label class="tk-field"><span class="tk-meta">${f.label}</span><input id="${f.key}" type="${f.type}" name="${f.key}" autocomplete="${toEvent && f.key !== "name" && f.key !== "email" ? "off" : f.auto}" enterkeyhint="next"${"caps" in f && f.caps ? ' autocapitalize="characters"' : ""}${f.type === "email" ? ' inputmode="email" autocapitalize="off"' : ""} value="${esc(String(filled[f.key] ?? ""))}" placeholder="${esc(f.hint)}"></label>`,
   ).join("");
+  const at = delivery?.label ? esc(delivery.label) : "the event";
+  const ownUrl = `${url.pathname}?chat=${encodeURIComponent(chat ?? "")}&own=1`;
   return page(`<div class="tk-meta">Delivery</div>
-    <h1 class="tk-title">Where should it ship?</h1>
-    <p class="tk-lede">Asked once. Used only to fill in a store's checkout when you offer to pay for something.</p>
+    <h1 class="tk-title">${toEvent ? (delivery.confirmed || delivery.address ? `Ship it to ${at}?` : "Where is the event?") : "Where should it ship?"}</h1>
+    <p class="tk-lede">${
+      toEvent
+        ? delivery.confirmed
+          ? "Everything for this event goes to one place. Check it, fix anything that's off, and save."
+          : delivery.address
+            ? "Filled in from what the venue's own page says, so check every line before you save. Tell the venue to expect a parcel."
+            : "Everything for this event goes to one place. Type it once and everyone else who pays gets it filled in."
+        : "Asked once. Used only to fill in a store's checkout when you offer to pay for something."
+    }</p>
     <hr class="tk-perf">
     <form class="tk-form" method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving';">
       ${inputs}
       ${problem ? `<p class="tk-error" style="margin:0">${esc(problem)}</p>` : ""}
-      <button class="tk-action" type="submit">Save</button>
+      <button class="tk-action" type="submit">${toEvent ? "Ship here" : "Save"}</button>
+      ${toEvent ? `<p class="tk-small" style="margin:0"><a href="${esc(ownUrl)}">Send this order to my own address instead</a></p>` : ""}
       <p class="tk-small" style="margin:0">No card details here, ever: those stay in your wallet. Only you have this link.</p>
     </form>`);
 }
