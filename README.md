@@ -85,7 +85,7 @@ delivered. These routes are localhost-only and 404 on the deployed Worker.
 curl -X POST localhost:5173/api/dev/message -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","text":"dinner friday? ramen downtown"}'
 
-# tapback on the plan card
+# tapback on the plan card ("on":"photo" for the ticket photo above it — both count)
 curl -X POST localhost:5173/api/dev/react -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","reaction":"like"}'
 

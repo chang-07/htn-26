@@ -356,7 +356,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** True for anything the agent posted: texts, and every id a card has had. */
   private isOwnMessage(id: string) {
-    if (this.cardIds().includes(id)) return true;
+    if (this.cardIds().includes(id) || this.planPhotoIds().includes(id)) return true;
     // Each store's pay card has its own id, kept under that store's key.
     if (this.carts().some((c) => id === this.getMeta(`cart_message_id:${shopKey(c.shop)}`))) return true;
     return this.sql<Row>`SELECT 1 FROM messages WHERE linq_id = ${id} AND direction = 'out'`.length > 0;
@@ -381,7 +381,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.startPay(shopKey(cart.shop), r.from, "reaction");
       return;
     }
-    if (!this.cardIds().includes(r.messageId)) {
+    if (!this.cardIds().includes(r.messageId) && !this.planPhotoIds().includes(r.messageId)) {
       this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
       return;
     }
@@ -475,6 +475,21 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.setMeta("card_message_ids", JSON.stringify([...this.cardIds().filter((x) => x !== id), id].slice(-30)));
   }
 
+  /**
+   * Message ids of the open ballot's ticket photos, newest last. The ballot is
+   * two messages, the photo and the card under it, and a phone reacts to or
+   * replies to the photo far more often than to the card: both belong to it.
+   * The list starts over with each ballot, so a tapback on the previous
+   * ballot's photo, still visible up the thread, never lands in this one.
+   */
+  private planPhotoIds(): string[] {
+    return JSON.parse(this.getMeta("plan_photo_ids") ?? "[]");
+  }
+
+  private rememberPlanPhoto(id: string) {
+    this.setMeta("plan_photo_ids", JSON.stringify([...this.planPhotoIds().filter((x) => x !== id), id].slice(-10)));
+  }
+
   private async syncCard() {
     const messageId = this.getMeta("card_message_id");
     if (!messageId) return;
@@ -519,9 +534,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // ago is far up the thread by now, and re-proposing it means "show me again".
     const fresh = Date.now() - Number(this.getMeta("plan_ticket_at") ?? 0) < CARD_STALE_MS;
     if (this.getMeta("plan_ticket_key") === key && fresh) return;
+    // A different ballot, or the confirmation once booked, starts the photo
+    // list over: only this ballot's photos take votes.
+    if (this.getMeta("plan_ticket_key") !== key) this.setMeta("plan_photo_ids", "[]");
     this.setMeta("plan_ticket_key", key);
     this.setMeta("plan_ticket_at", String(Date.now()));
-    await this.postTicket("plan", planTicket(this.state));
+    const id = await this.postTicket("plan", planTicket(this.state));
+    if (id && this.state.status === "voting") this.rememberPlanPhoto(id);
   }
 
   /**
@@ -2300,6 +2319,7 @@ this.rememberCardId(id);
       research: this.sql<{ report: string }>`SELECT report FROM research ORDER BY id DESC LIMIT 1`.map((r) => JSON.parse(r.report))[0],
       transcript: this.sql<Row>`SELECT direction, author, body FROM messages ORDER BY id`,
       votes: this.sql<Row>`SELECT voter, option_id, source FROM votes`,
+      planPhotos: this.planPhotoIds(),
     };
   }
 
@@ -2347,6 +2367,11 @@ this.rememberCardId(id);
   async currentRsvpId() {
     return this.sql<{ message_id: string }>`
       SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
+  }
+
+  /** Simulator only: the open ballot's latest ticket photo, which is what a phone most often tapbacks. */
+  async currentPlanPhotoId() {
+    return this.planPhotoIds().at(-1);
   }
 
   /** Simulator only: the open ballot's id, so its nudge can be fired on demand. */

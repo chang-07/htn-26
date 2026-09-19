@@ -191,8 +191,8 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
- *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
- *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
+ *                          + "group": true, and "mention": true or "replyTo": "last" | "photo", to test the wake gate
+ *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", or "cart"+"shop"
  *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
  *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
@@ -312,7 +312,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/message") {
     // Defaults to a direct chat (always answered). Pass "group": true to test the
-    // wake gate, with "mention": true or "replyTo": "last" | "<message id>".
+    // wake gate, with "mention": true or "replyTo": "last" | "photo" | "<message id>".
     const opts = body as unknown as { group?: boolean; mention?: boolean; replyTo?: string };
     await agent.ingestMessage({
       linqId: crypto.randomUUID(),
@@ -320,7 +320,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
       text: body.text,
       isGroup: opts.group === true,
       mentionsMe: opts.mention === true,
-      replyToId: opts.replyTo === "last" ? await agent.lastOwnMessageId() : opts.replyTo,
+      replyToId: opts.replyTo === "last" ? await agent.lastOwnMessageId() : opts.replyTo === "photo" ? await agent.currentPlanPhotoId() : opts.replyTo,
     });
     return Response.json({ ok: true });
   }
@@ -328,8 +328,18 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     // Reacts to whatever the plan card's id currently is, real or dry.
     // {"on":"rsvp"} reacts to the open Who's in ticket instead.
     // {"on":"cart","shop":"…"} reacts to a cart instead: a thumbs up there means "I'll pay".
-    const messageId = (body.on === "rsvp" ? await agent.currentRsvpId() : body.on === "cart" ? await agent.currentCartMessageId(body.shop) : await agent.currentCardId()) ?? "dry-plan";
-    await agent.ingestReaction({ messageId, from: body.from, reactionType: body.reaction });
+    // {"on":"photo"} reacts to the ballot's ticket photo rather than the card under it.
+    const targets: Record<string, () => Promise<string | undefined>> = {
+      card: () => agent.currentCardId(),
+      photo: () => agent.currentPlanPhotoId(),
+      rsvp: () => agent.currentRsvpId(),
+      cart: () => agent.currentCartMessageId(body.shop),
+    };
+    const on = String(body.on ?? "card");
+    const messageId = await (targets[on] ?? targets.card)();
+    // The card has a dry stand-in; a photo that was never posted is a test bug, not a vote to ignore.
+    if (!messageId && on === "photo") return Response.json({ error: "no ballot photo posted yet" }, { status: 404 });
+    await agent.ingestReaction({ messageId: messageId ?? "dry-plan", from: body.from, reactionType: body.reaction });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/seedcart") {
