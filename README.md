@@ -149,13 +149,43 @@ to Cloudflare Browser Rendering, which search engines tend to block.
 
 | Profile | Provider | Use for |
 |---|---|---|
-| `dev` (default) | `DEV_LLM_BASE_URL` — any OpenAI-compatible endpoint | Everyday testing. Free. |
-| `demo` | OpenAI (`OPENAI_API_KEY`, `OPENAI_MODEL`) | The demo and final prompt tuning |
+| `dev` (default) | `DEV_LLM_BASE_URL` — any OpenAI-compatible endpoint | Everyday testing. Spends no OpenAI credits. |
+| `demo` | OpenAI (`OPENAI_API_KEY`, `OPENAI_MODEL`) | The deployed Worker, and final prompt tuning |
 
-`.env` currently points `dev` at local Ollama (`gpt-oss:20b`). Workers AI's
-OpenAI-compatible endpoint works too — see `.dev.vars.example`. Small models are
-chattier and miss instructions (e.g. `remember_name`); judge prompt quality on
-the `demo` profile only.
+**Recommended dev provider: your Claude plan.** `npm run llm` starts
+`scripts/claude-llm-proxy.mjs`, an OpenAI-compatible endpoint on
+`127.0.0.1:11435` that answers each request with headless Claude Code
+(`claude -p`), signed in with your Claude subscription:
+
+```sh
+npm run llm                 # terminal 1 — leave running
+npm run dev                 # terminal 2
+# .env:
+DEV_LLM_BASE_URL=http://127.0.0.1:11435/v1
+DEV_LLM_API_KEY=unused
+DEV_LLM_MODEL=haiku         # or sonnet / opus — heavier on your plan's limits
+```
+
+A model call takes about 1.5s and a whole agent turn a few seconds. Things to
+know:
+
+- **It spends your plan's usage limits** — the same pool your interactive Claude
+  Code sessions use. A conversation with a research run is ~25 model calls.
+  Prefer `haiku`, and drive cards with `/api/dev/tool` (no LLM at all).
+- **Laptop only.** It cannot serve the deployed Worker, and it listens on
+  loopback only: anyone who can reach the port can spend your plan.
+- The proxy removes `ANTHROPIC_API_KEY` from the child's environment. With that
+  variable set, `claude -p` silently bills the API key instead of the plan.
+- The agent's tools reach Claude Code as real MCP tools, and the proxy stops the
+  run at the model's first tool call. Describing the tools in the prompt instead
+  does not work — the model attempts a native call, finds nothing, and reports
+  the tool as broken.
+- **Claude is not the demo model.** It follows the prompt more carefully than
+  `gpt-5-mini` will. Do a final pass of any prompt change on the `demo` profile.
+
+Alternatives for `dev`: a local Ollama (`http://localhost:11434/v1`, free, slow,
+and small models leak reasoning and skip tools) or Workers AI's
+OpenAI-compatible endpoint — see `.dev.vars.example`.
 
 ## Deploy
 

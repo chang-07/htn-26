@@ -16,6 +16,7 @@ OPENAI_API_KEY=
 # --- LLM: dev profile (any OpenAI-compatible endpoint; spends nothing of OpenAI's) ---
 # Workers AI:  https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1
 #              key = a Cloudflare API token, model = @cf/meta/llama-3.3-70b-instruct-fp8-fast
+# Claude plan: http://127.0.0.1:11435/v1  key = unused  model = haiku   (run `npm run llm` first)
 # Ollama:      http://localhost:11434/v1   key = ollama   model = qwen3:8b
 DEV_LLM_BASE_URL=
 DEV_LLM_API_KEY=

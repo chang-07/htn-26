@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "llm": "node scripts/claude-llm-proxy.mjs",
     "build": "vite build",
     "deploy": "vite build && wrangler deploy --var LLM_PROFILE:demo",
     "types": "wrangler types --strict-vars false",
