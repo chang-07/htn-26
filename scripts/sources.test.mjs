@@ -123,3 +123,49 @@ test("flightOption is one ballot line", () => {
   assert.deepEqual(flightOption(f), { title: "Flair Airlines 1:55 PM → 4:05 PM, nonstop", subtitle: "CA$254 · 5 hr 10 min · Sat Oct 10", bookingUrl: "https://g" });
   assert.equal(flightOption({ ...f, stops: 1, layover: "1 hr 5 min at Calgary International Airport", nextDay: true }).title, "Flair Airlines 1:55 PM → 4:05 PM +1, 1 stop (Calgary International Airport)");
 });
+
+import { staysUrl, parseStays, searchStays, stayOption } from "../src/server/sources/stays.ts";
+
+const stayQ = { where: "Vancouver", checkin: "2026-10-10", checkout: "2026-10-12", adults: 4 };
+
+test("staysUrl uses the search page that does not redirect", () => {
+  assert.equal(
+    staysUrl(stayQ),
+    "https://www.google.com/travel/search?q=hotels%20in%20Vancouver&dates=2026-10-10,2026-10-12&adults=4&curr=CAD&hl=en&gl=ca",
+  );
+});
+
+test("parseStays reads name, nightly price, rating and reviews from the data blob", () => {
+  const stays = parseStays(fixture("google-hotels.html"), stayQ);
+  assert.ok(stays.length >= 5, `only ${stays.length} stays`);
+  const rosewood = stays.find((s) => s.name === "Rosewood Hotel Georgia");
+  assert.deepEqual(rosewood, {
+    name: "Rosewood Hotel Georgia",
+    nightly: "$467",
+    rating: 4.6,
+    reviews: 2631,
+    url: "https://www.google.com/travel/search?q=Rosewood%20Hotel%20Georgia%20Vancouver&dates=2026-10-10,2026-10-12&adults=4&curr=CAD&hl=en&gl=ca",
+  });
+  const dollars = (s) => Number(s.nightly.replace(/[^\d]/g, ""));
+  for (let i = 1; i < stays.length; i++) assert.ok(dollars(stays[i]) >= dollars(stays[i - 1]), "not sorted by price");
+  assert.equal(new Set(stays.map((s) => s.name)).size, stays.length, "duplicate names");
+});
+
+test("parseStays returns nothing without the blob", () => {
+  assert.deepEqual(parseStays("<html><title>x</title></html>", stayQ), []);
+});
+
+test("searchStays caps at 10", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ statusCode: 200, content: fixture("google-hotels.html") }), { headers: { "content-type": "application/json" } }));
+  const stays = await searchStays(env, stayQ);
+  assert.ok(stays.length <= 10 && stays.length >= 5);
+});
+
+test("stayOption is one ballot line", () => {
+  assert.deepEqual(stayOption({ name: "JW Marriott Parq Vancouver", nightly: "$277", rating: 4.2, reviews: 5186, url: "https://g" }), {
+    title: "JW Marriott Parq Vancouver",
+    subtitle: "$277/night · 4.2★ (5,186 reviews)",
+    bookingUrl: "https://g",
+  });
+  assert.equal(stayOption({ name: "Inn", nightly: "$99", url: "https://g" }).subtitle, "$99/night");
+});
