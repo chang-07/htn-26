@@ -46,6 +46,8 @@ export type RunSummary = {
   steps: number | null;
   tools: string[];
   events: number;
+  /** The text that woke it, so the rail can name a run by what was asked. */
+  said?: string | null;
 };
 
 /** Sent to the viewer over the hub's WebSocket. */
@@ -385,6 +387,10 @@ export class RunHub extends Agent<Env, Record<string, never>> {
 
 type RunRow = Omit<RunSummary, "tools" | "runId"> & { run_id: string; tools: string };
 
+/** The first thing anyone said in the run. (run_id, seq) is the primary key, so this is one seek. */
+const SAID = `(SELECT json_extract(e.fields, '$.text') FROM run_events e
+  WHERE e.run_id = runs.run_id AND e.event IN ('message.in', 'message.stored') ORDER BY e.seq LIMIT 1) AS said`;
+
 const toSummary = (r: RunRow): RunSummary => ({
   runId: r.run_id,
   chat: r.chat,
@@ -398,6 +404,7 @@ const toSummary = (r: RunRow): RunSummary => ({
   steps: r.steps,
   tools: JSON.parse(r.tools || "[]"),
   events: r.events,
+  said: r.said ?? null,
 });
 
 export async function listRuns(
@@ -413,7 +420,7 @@ export async function listRuns(
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
 
   const { results } = await env.RUNS_DB.prepare(
-    `SELECT * FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    `SELECT *, ${SAID} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY started DESC LIMIT ?`,
   )
     .bind(...binds, limit)
@@ -422,7 +429,7 @@ export async function listRuns(
 }
 
 export async function getRun(env: Env, runId: string) {
-  const run = await env.RUNS_DB.prepare(`SELECT * FROM runs WHERE run_id = ?`).bind(runId).first<RunRow>();
+  const run = await env.RUNS_DB.prepare(`SELECT *, ${SAID} FROM runs WHERE run_id = ?`).bind(runId).first<RunRow>();
   if (!run) return null;
   const { results } = await env.RUNS_DB.prepare(
     `SELECT seq, ts, level, event, fields FROM run_events WHERE run_id = ? ORDER BY seq`,
