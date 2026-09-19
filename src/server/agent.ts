@@ -9,7 +9,7 @@ import { errorFields, log, mask, short, timed, type Fields, type Level } from ".
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { markRead, sendCard, sendLinkCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
-import { KNOWN_SHOPS, cancelCart, searchCatalog, setCart } from "./tools/shopify";
+import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
@@ -148,6 +148,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       ok INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, report TEXT NOT NULL
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS product_names (variant_id TEXT PRIMARY KEY, name TEXT NOT NULL)`;
     this.sql`CREATE TABLE IF NOT EXISTS shots (id TEXT PRIMARY KEY, jpeg TEXT NOT NULL, ts INTEGER NOT NULL)`;
     this.sql`CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, json TEXT NOT NULL, message_id TEXT, ts INTEGER NOT NULL
@@ -1144,6 +1145,13 @@ ${transcript}`,
       case "shop_search": {
         const { shop, query } = parseToolArgs("shop_search", rawArgs);
         const found = await searchCatalog(this.env, shop, query);
+        // Remembered because the cart will not tell us: it names lines by variant.
+        for (const p of found) {
+          for (const v of p.variants) {
+            this.sql`INSERT INTO product_names (variant_id, name) VALUES (${v.variantId}, ${productName(p.title, v.label)})
+                     ON CONFLICT(variant_id) DO UPDATE SET name = excluded.name`;
+          }
+        }
         return found.length ? JSON.stringify(found) : `Nothing at ${shop} matches "${query}".`;
       }
 
@@ -1152,7 +1160,10 @@ ${transcript}`,
         const shop = shopKey(args.shop);
         // One cart and one card per shop; a second call edits both. The id holds
         // the cart's secret key, so it lives in meta rather than the public state.
-        const cart = await setCart(this.env, shop, args.lines, this.getMeta(`cart_id:${shop}`) || undefined);
+        const names = Object.fromEntries(
+          this.sql<{ variant_id: string; name: string }>`SELECT variant_id, name FROM product_names`.map((r) => [r.variant_id, r.name]),
+        );
+        const cart = await setCart(this.env, shop, args.lines, this.getMeta(`cart_id:${shop}`) || undefined, names);
         this.setMeta(`cart_id:${shop}`, cart.id);
         if (!cart.lines.length) {
           return `Nothing could be added, so no card was posted. Store says: ${cart.messages.join("; ") || "no reason given"}. Choose a different variant from shop_search.`;

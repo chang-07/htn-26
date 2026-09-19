@@ -126,12 +126,21 @@ export async function searchCatalog(env: Env, shop: string, query: string, limit
       url: p.url,
       variants: variants.slice(0, 4).map((v) => ({
         variantId: v.id,
-        label: v.title,
+        // A product with no options has one variant, which Shopify names
+        // "Default Title". It is a placeholder, not something to show anyone.
+        label: isPlaceholder(v.title) ? "" : v.title,
         price: v.price ? money(v.price.amount, v.price.currency) : "",
       })),
     };
   });
 }
+
+/** Shopify's name for the only variant of a product that has no options. */
+export const isPlaceholder = (title: unknown) => /^default title$/i.test(String(title ?? "").trim());
+
+/** "The Sorbet", or "Exploding Kittens - English Version" when the variant says something. */
+export const productName = (product: string, variantLabel?: string) =>
+  variantLabel && !isPlaceholder(variantLabel) && !product.includes(variantLabel) ? `${product} - ${variantLabel}` : product;
 
 export type Cart = {
   /** Carries the cart's secret key, so it stays server-side. */
@@ -153,6 +162,12 @@ export async function setCart(
   shop: string,
   lines: { variantId: string; quantity: number }[],
   cartId?: string,
+  /**
+   * Product names by variant id, remembered from search. A cart response names
+   * each line by its VARIANT, so a single-variant product comes back as
+   * "Default Title" with the real name nowhere in the payload.
+   */
+  names: Record<string, string> = {},
 ): Promise<Cart> {
   const cart = { line_items: lines.map((l) => ({ item: { id: l.variantId }, quantity: l.quantity })) };
   const result = await callUcp(env, shop, cartId ? "update_cart" : "create_cart", cartId ? { id: cartId, cart } : { cart });
@@ -167,7 +182,7 @@ export async function setCart(
     lines: ((c.line_items ?? []) as any[]).map((l) => ({
       // Carried through so a cart can be re-sent with changed quantities.
       variantId: String(l.item.id),
-      title: l.item.title,
+      title: names[String(l.item.id)] ?? (isPlaceholder(l.item.title) ? "Item" : l.item.title),
       quantity: l.quantity,
       price: typeof l.item.price === "number" ? money(l.item.price, c.currency) : "",
       imageUrl: l.item.image_url,

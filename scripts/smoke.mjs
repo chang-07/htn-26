@@ -159,6 +159,22 @@ if (flags.has("--net")) {
   });
 }
 
+if (flags.has("--net")) {
+  await check("a single-variant product keeps its real name, never \"Default Title\"", async () => {
+    // Shopify names the only variant of an option-less product "Default Title",
+    // and a cart response carries that instead of the product's name.
+    const c = chat("flower");
+    const found = await tool(c, "shop_search", { shop: "urbanstems.com", query: "bouquet" });
+    expect(!/default title/i.test(found), "the placeholder reached the model in search results");
+    const variant = found.match(/gid:[^"\\]*ProductVariant[^"\\]*/)?.[0];
+    expect(variant, "no variant found at urbanstems.com");
+    await tool(c, "shop_build_cart", { shop: "urbanstems.com", lines: [{ variantId: variant, quantity: 1 }] });
+    const title = (await dump(c)).state.carts?.[0]?.lines?.[0]?.title ?? "";
+    expect(title && !/default title|^item$/i.test(title), `cart line is titled "${title}"`);
+    return title;
+  });
+}
+
 if (flags.has("--llm")) {
   console.log("\nmodel-driven turns");
   const m = chat("llm");
