@@ -369,11 +369,11 @@ D1 is the durable, cross-chat copy that survives eviction.
 ### Research — real options from the live web
 
 The `research` tool starts `ResearchWorkflow` (`src/server/research.ts`), which
-browses through Browserbase and reports back to the chat's agent when done:
+uses Browserbase Search and Fetch and reports back to the chat's agent when done:
 
 ```
 plan ─▶ search ─▶ select ─▶ read + extract ─▶ synthesize ─▶ agent.researchFinished()
-LLM     browser    LLM       browser + LLM     LLM           model gets a turn, posts the card
+LLM     Search     Jev       Fetch + LLM       LLM           model gets a turn, posts the card
 ```
 
 The model decides what to look for and what the pages mean; fixed code does the
@@ -381,6 +381,39 @@ navigation, so a run is bounded. `DEPTH` in `research.ts` is the whole budget:
 `quick` is 2 searches and 3 pages, `deep` is 4 and 8. Addresses, prices and
 links in the report are copied from per-page extractions, never from the
 ranking step's retelling.
+
+Set `AI_GATEWAY_API_KEY` to enable Jev's pre-fetch filter through Vercel AI Gateway. It scores each search
+result's metadata for relevance to the brief, and returns confidence in that
+judgment separately. Defaults are relevance >= 2 on a 0–3 rubric and confidence
+>= 0.5; tune `RESEARCH_MIN_RELEVANCE` and `RESEARCH_MIN_CONFIDENCE` against real
+results. These are initial thresholds, not calibrated guarantees. `JEV_MODEL`
+defaults to `typesafe-ai/jev`. Requests use Vercel's TypeSafe-compatible endpoint
+`https://ai-gateway.vercel.sh/typesafe/v1/systemone`; a direct TypeSafe key is no
+longer used. Scores are recorded in `research.selected` with provider
+`jev-vercel-gateway`.
+
+Create a key in the Vercel AI Gateway dashboard and set `AI_GATEWAY_API_KEY` in
+`.env` or `.dev.vars` for local development; for the deployed Cloudflare Worker,
+run `npx wrangler secret put AI_GATEWAY_API_KEY` and deploy the updated code.
+Vercel's [model catalog](https://vercel.com/ai-gateway/models) lists Jev as free
+as of September 19, 2026, although its individual model page still lists a
+per-token price. Check the Gateway dashboard for current pricing and limits.
+This changes only Jev scoring; other research services retain their own billing.
+
+Only passing results reach Fetch, sorted by relevance, with at most two URLs
+per hostname and the existing page budget. If every result is rejected, the run
+reports that explicitly instead of fetching poor matches. Provider errors and
+malformed scores also cannot silently bypass the Jev gate. Search metadata does
+not establish current availability, price, or factual accuracy; extraction still
+uses the fetched page as evidence.
+
+Without an AI Gateway key, the original LLM selector is retained and logged as
+`llm-fallback`. Without a Browserbase key, search and page reading use the
+existing browser path. The Search/Fetch API path creates no watchable browser
+session; booking continues to use browser sessions.
+
+Run the isolated, mocked provider/selection checks with
+`node --experimental-strip-types --test scripts/research-sources.test.mjs`.
 
 Run the pipeline without waiting for the model to choose it:
 
@@ -392,8 +425,9 @@ curl 'localhost:5173/api/dev/dump?chat=demo'     # .research is the full report
 curl 'localhost:5173/api/dev/browse?q=ramen+waterloo'   # just the browser: one search, or ?url= for one page
 ```
 
-`research.finished` logs a Browserbase replay link per session — open it first
-when a run comes back thin. On the local dev model a quick run takes 2-4
+On the browser fallback path, `research.finished` logs a replay link per
+Browserbase session. Search/Fetch runs expose stage and score logs instead.
+On the original local dev model a quick run took 2-4
 minutes, nearly all of it LLM time on page extraction; it is much faster on the
 demo profile. Without `BROWSERBASE_API_KEY`, `src/server/browser.ts` falls back
 to Cloudflare Browser Rendering, which search engines tend to block.
@@ -857,3 +891,57 @@ localhost-only and return 404 on the deployed Worker.
   must text the number first (inbound-first).
 - `vite.config.ts` needs the `agents()` plugin, or `@callable()` is a syntax
   error at Worker startup.
+
+## Agent observability
+
+The existing `/runs` viewer now includes **Performance & diagnostics** for each
+run: per-model-call p50/p95, input/output/cached/reasoning token counts, errors,
+JSON retries, unfinished spans, and cumulative latency by operation. Clicking a
+slow operation or error opens its event details, including trace/span IDs and
+Sentry event IDs when exported. Percentiles are for the selected run, not global
+service SLAs. Overlapping and nested durations are not additive wall time.
+Optimization observations identify slow operations, validation retries, low cache
+reuse and repeated work; they are investigation suggestions, not automatic
+changes to models, prompts or side-effect ordering. Old runs retain their events
+but do not acquire retroactive span metrics.
+
+Tracing covers Worker requests and Durable Object/Agent execution in Sentry,
+plus locally recorded agent turns, model calls, SDK transport attempts, tools,
+research and booking workflow attempts, Browserbase Search/Fetch, Jev, browser
+observation and browser actions. Actual Workflow step callbacks are traced so
+cached replay results are not reported as fresh work. Workflow telemetry reports
+back into the same chat's run viewer. SDK transport HTTP status and retryability
+are recorded, with non-success responses marked as failed spans without altering
+the SDK's retry behavior.
+
+Model decisions are recorded as tool selections, short action summaries,
+validation outcomes and execution guards. Raw private reasoning is neither
+captured nor rendered, including legacy `thinking` fields. `reasoningTokens` is a
+usage counter, not reasoning text. Existing `LOG_BODIES` still controls message
+text in the local run history. External Sentry payloads contain operational
+metadata only: no prompts, completions, tool arguments, HTTP bodies, request
+headers, contact details or payment data. Error messages stay in the protected
+run dashboard; Sentry receives exception types, stack frames and correlation IDs.
+
+To enable external export, create a Sentry Cloudflare/JavaScript project, set
+`SENTRY_DSN` in `.env`/`.dev.vars`, and configure `SENTRY_ENVIRONMENT`, optionally
+`SENTRY_RELEASE` and `SENTRY_TRACES_SAMPLE_RATE` (default `0.2`). For production,
+set the DSN with `npx wrangler secret put SENTRY_DSN`, set environment to
+`production`, then deploy. The existing dashboard works without a DSN. Trace
+sampling applies to Sentry exports, not local dashboard events. The SDK captures
+handled operation errors and uncaught request/DO/workflow errors and exports
+structured logs. No source-map upload or Sentry account setup is performed by
+this repository; configure release source maps separately if needed.
+
+Verify with `npm run typecheck`, `npm test`, and `npm run build`. For a UI smoke
+check without calling any real model, booking, payment or messaging service:
+
+```sh
+npm run runs:migrate
+node scripts/observability-smoke.mjs
+# Open http://localhost:5173/runs/observability-local-smoke
+```
+
+The fixture is explicitly labelled `LOCAL SYNTHETIC CHECK` and only writes the
+local D1 database. It exercises a successful model span, a failed provider span,
+token counters, retry diagnostics, and dashboard navigation.

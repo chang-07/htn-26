@@ -1,3 +1,4 @@
+import { telemetryScope, traceOperation, traceWorkflowSteps } from "./telemetry";
 import { liveAgent } from "./live-agent";
 import { fillCheckout, hasCardForm, payCheckout, type ShipTo } from "./checkout";
 import { cancelPayment, paymentCard, paymentSucceeded, requestPayment } from "./linq";
@@ -84,6 +85,11 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
   }
 
   async run(event: AgentWorkflowEvent<BookingParams | AvailabilityParams | PayParams>, step: AgentWorkflowStep) {
+    return telemetryScope((level, name, fields) => this.live.telemetryProgress(level, name, fields), () =>
+      traceOperation("booking.workflow", "workflow", { workflow: "booking" }, () => this.execute(event, traceWorkflowSteps(step, "booking"))));
+  }
+
+  private async execute(event: AgentWorkflowEvent<BookingParams | AvailabilityParams | PayParams>, step: AgentWorkflowStep) {
     if ("pay" in event.payload) {
       const pay = event.payload;
       // One step, no retries: a retry could pay twice. The card lives and dies

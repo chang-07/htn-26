@@ -1,3 +1,4 @@
+import { emitTelemetry, traceOperation } from "./telemetry.ts";
 /**
  * One log shape everywhere: `scope event {fields}`.
  *
@@ -26,13 +27,15 @@ export function errorFields(err: unknown): Fields {
   return { error: String(err) };
 }
 
-export function log(level: Level, scope: string, event: string, fields: Fields = {}) {
+export function log(level: Level, scope: string, event: string, fields: Fields = {}, mirror = true, external = true) {
+  fields = emitTelemetry(level, `${scope}.${event}`, fields, mirror, external);
   // One line per event: console's object pretty-printing spreads fields over
   // several lines, which defeats grep.
   const line = `${scope.padEnd(6)} ${event.padEnd(22)} ${JSON.stringify(fields)}`;
   if (level === "error") console.error(line);
   else if (level === "warn") console.warn(line);
   else console.log(line);
+  return fields;
 }
 
 /** Times an async step and logs `<event>` with ms, or `<event>.failed` with the error. */
@@ -45,7 +48,7 @@ export async function timed<T>(
 ): Promise<T> {
   const started = Date.now();
   try {
-    const result = await run();
+    const result = await traceOperation(`${scope}.${event}`, "function", fields, run);
     sink("info", event, { ...fields, ms: Date.now() - started });
     return result;
   } catch (err) {
