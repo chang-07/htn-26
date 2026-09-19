@@ -135,9 +135,37 @@ export class RunRecorder {
   ) {
     try {
       const kept = memory?.load();
-      if (kept) this.last = JSON.parse(kept);
+      if (kept) {
+        const parsed = JSON.parse(kept);
+        // Older entries are the last run on its own.
+        this.last = "runId" in parsed ? parsed : (parsed.last ?? null);
+        const open = "runId" in parsed ? null : parsed.open;
+        // The object was restarted mid-run (a deploy, an eviction). The turn is
+        // retried and its events belong to the run that was already open: once,
+        // they were filed under the previous run and this one sat open until the
+        // sweeper called it a 30-minute timeout.
+        if (open && Date.now() - open.carry.started < RUN_TIMEOUT_MS) {
+          this.runId = open.runId;
+          this.seq = open.seq;
+          this.activeLevel = open.level;
+          this.carry = open.carry;
+          this.restored = true;
+        }
+      }
     } catch {
       // Unreadable history only costs continuity, never a turn.
+    }
+  }
+
+  /** True until the run picked up from before a restart sees its turn start again. */
+  private restored = false;
+
+  private remember() {
+    try {
+      const open = this.runId ? { runId: this.runId, seq: this.seq, level: this.activeLevel, carry: this.carry } : null;
+      this.memory?.save(JSON.stringify({ last: this.last, open }));
+    } catch {
+      // as above
     }
   }
 
@@ -148,7 +176,8 @@ export class RunRecorder {
       // A turn that crashed without logging turn.end leaves the previous run
       // open; opening a new one is what closes it (ended stays NULL, and the
       // viewer shows it as abandoned rather than silently merging the two).
-      if (this.continuesLast()) this.resume();
+      if (this.restored && this.runId) this.restored = false;
+      else if (this.continuesLast()) this.resume();
       else this.open(fields);
       this.emit([
         // Lead-in first, in arrival order, so the timeline reads correctly.
@@ -255,12 +284,8 @@ export class RunRecorder {
     };
     this.send({ kind: "close", run: { runId: this.runId, ended, ms: ended - this.carry.started, ...summary } });
     this.last = { runId: this.runId, seq: this.seq, started: this.carry.started, endedAt: ended, ...summary };
-    try {
-      this.memory?.save(JSON.stringify(this.last));
-    } catch {
-      // as above
-    }
     this.runId = null;
+    this.remember();
   }
 
   private drainOrphans() {
@@ -274,6 +299,7 @@ export class RunRecorder {
     this.activeLevel = items.reduce((level, item) => worst(level, item.level), this.activeLevel);
     const rows: RunEventRow[] = items.map((i) => ({ ...i, runId, chat: this.chat, seq: this.seq++ }));
     this.send({ kind: "events", events: rows });
+    this.remember();
   }
 
   private writes: Promise<unknown> = Promise.resolve();

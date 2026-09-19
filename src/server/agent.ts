@@ -369,7 +369,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     }
 
-    // A short delay batches a burst of texts into a single turn.
+    // A short delay batches a burst of texts into a single turn. The burst shares
+    // the turn its first text booked: a second booking ran a second turn over the
+    // same texts, and "yo" / "am i in" got two answers.
+    if (Date.now() < Number(this.getMeta("turn_due") ?? 0)) return;
+    this.setMeta("turn_due", String(Date.now() + 2000));
     await this.schedule(2, "runTurn");
   }
 
@@ -1526,6 +1530,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * concurrently over the same chat.
    */
   async runTurn() {
+    // From here on the transcript may already have been read, so a new text books its own turn.
+    this.setMeta("turn_due", "0");
     if (this.turnRunning) {
       this.turnRequested = true;
       return;
@@ -1900,6 +1906,15 @@ ${transcript}`,
         const { who } = parseToolArgs("forget_person", rawArgs);
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
+        // Deleting is the one thing here that cannot be taken back, so the model's
+        // reading of intent is not enough: "switch my shipping info" once wiped a
+        // profile. The person's own recent words have to ask for it.
+        const asked = this.sql<{ body: string | null }>`
+          SELECT body FROM messages WHERE direction = 'in' AND author = ${person.handle} ORDER BY id DESC LIMIT 3`;
+        if (!asked.some((m) => /\b(forget|delete|erase|wipe|remove)\b/i.test(m.body ?? ""))) {
+          this.note("warn", "person.forget_refused", { who: mask(person.handle) });
+          return "Refused: they did not ask to be forgotten or deleted. Nothing was removed. To change or update their details, call send_profile_link instead.";
+        }
         await peopleStore(this.env).forget(person.handle);
 
         // "Forget me" has to mean this chat too, not only the shared profile:
@@ -2538,6 +2553,13 @@ this.rememberCardId(id);
     if (since && Date.now() - since < RESEARCH_STALE_MS) {
       return "Research is already running. Wait for it to finish.";
     }
+    // A search that broke seconds ago (a missing key, a dead workflow) breaks the
+    // same way again: the model once retried it in the turn meant to report it,
+    // and the group never heard that anything had failed.
+    const failed = this.sql<{ ts: number }>`SELECT ts FROM research WHERE ok = 0 AND delivered = 0 ORDER BY id DESC LIMIT 1`[0];
+    if (failed && Date.now() - failed.ts < 60_000) {
+      return "Not started: the last search failed moments ago from a system problem and the group has not been told. Tell them that in one line and offer to try again later; call nothing else.";
+    }
     this.setMeta("research_started", String(Date.now()));
     this.setMeta("research_progress_at", String(Date.now()));
     this.setMeta("research_brief", params.brief.slice(0, 200));
@@ -2713,7 +2735,7 @@ this.rememberCardId(id);
       deliveredId: row.id,
       text: report.ok
         ? `JUST FINISHED — the group has not seen this yet. Whatever else is going on, share the highlights in one or two lines now, then call propose_plan with the best 2-4 options below, passing title, subtitle and bookingUrl through unchanged. ${body}`
-        : `JUST FAILED — tell the group in one line that the search came up empty and ask what to change. ${body}`,
+        : `JUST FAILED — you were woken to report this, not to answer anything else. Tell the group in one line that the search failed and ask what to change or whether to retry; do not call research or any other tool first. ${body}`,
     };
   }
 

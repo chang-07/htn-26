@@ -265,7 +265,7 @@ const descriptions: Record<ToolName, string> = {
     "Save the profile answers of the person you are talking to. Direct chats only. Include every field their message answered, even several at once. Call it BEFORE send_message.",
   send_profile_link:
     "Send this person their private profile link. Only works in a direct one-to-one chat, because the link is theirs alone.",
-  forget_person: "Delete everything saved about a person. Only when that person themselves asks ('forget me').",
+  forget_person: "Delete everything saved about a person. Only when that person themselves asks to be forgotten or deleted ('forget me'). Never for changing, switching or updating details such as shipping info: that is send_profile_link.",
   shop_drop_cart: "Remove one store's cart from the shopping list, when the group decides not to order from there after all.",
   set_delivery:
     "Choose where this event's orders ship. Only when someone in the chat says so: 'send it all to the party', 'ship it to my place for everyone' (event), or explicitly asks for it to go to the venue (venue). You never see or handle the address: whoever pays checks it on a private form first.",
