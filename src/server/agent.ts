@@ -646,12 +646,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** The person has to do something in their wallet before the card can be minted. */
   async payNeedsAction(payer: string, kind: "needs_card" | "needs_approval", url: string, total: string, shop: string) {
     this.note("info", `pay.${kind}`, { who: mask(payer), shop, total });
-    await sendLinkCard(this.env, this.name, {
-      title: kind === "needs_approval" ? `Approve ${total}` : "Add a card to pay",
-      subtitle: `${this.label(payer)}: ${shop}. ${kind === "needs_approval" ? "One tap with your passkey." : "Then it goes through on its own."}`,
-      button: kind === "needs_approval" ? "Approve" : "Add card",
-      url,
-    }).catch((err: unknown) => this.note("warn", "pay.action_card_failed", errorFields(err)));
+    // A bare link, not a card: a card opens in an in-app webview, where the
+    // passkey these pages need does not work. iMessage opens a plain url in Safari.
+    const who = this.label(payer);
+    await this.say(kind === "needs_approval" ? `${who}, approve ${total} at ${shop} (one tap with your passkey): ${url}` : `${who}, add a card to pay ${total} at ${shop}, then it goes through on its own: ${url}`);
   }
 
   async payFinished(result: PayResult) {
