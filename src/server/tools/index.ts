@@ -110,6 +110,12 @@ export const toolSchemas = {
     shop: z.string().describe("The store whose cart to remove from the shopping list"),
   }),
   show_shopping_list: z.object({}),
+  set_delivery: z.object({
+    to: z
+      .enum(["event", "venue", "payer"])
+      .describe("event: one address for the whole event, typed by the first person to pay. venue: the same, prefilled with a researched venue's address. payer: back to each order shipping to whoever pays for it."),
+    venue: z.string().optional().describe("With to=venue: the venue's exact name from the Research findings"),
+  }),
   mark_paid: z.object({
     who: z.string().describe("Name of the person who said they paid"),
     shop: z.string().describe("Which store's order they paid for, as listed under Shopping list"),
@@ -207,6 +213,8 @@ const descriptions: Record<ToolName, string> = {
     "Send this person their private profile link. Only works in a direct one-to-one chat, because the link is theirs alone.",
   forget_person: "Delete everything saved about a person. Only when that person themselves asks ('forget me').",
   shop_drop_cart: "Remove one store's cart from the shopping list, when the group decides not to order from there after all.",
+  set_delivery:
+    "Choose where this event's orders ship. Only when someone in the chat says so: 'send it all to the party', 'ship it to my place for everyone' (event), or explicitly asks for it to go to the venue (venue). You never see or handle the address: whoever pays checks it on a private form first.",
   show_shopping_list:
     "Post one ticket covering every store's order: what is being bought where, the combined total, the per-person split, and what is still unpaid. Use once the shopping is settled or when someone asks what it all comes to. Not after every cart change.",
   mark_paid:

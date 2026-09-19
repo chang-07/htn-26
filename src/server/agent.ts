@@ -11,6 +11,8 @@ import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppin
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
 import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
+import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
+import type { ShipTo } from "./checkout";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
@@ -99,6 +101,11 @@ on a time, book it, and order anything they need.
   how to split it, answer from the Invoice in one line or call show_invoice to
   post it. It posts itself once every cart is paid, so do not post it after
   every change, and never do the arithmetic yourself.
+- Orders ship to whoever pays for them unless the group wants one place for
+  the whole event ("send it all to the party", "ship everything to Sam's"):
+  then call set_delivery with to=event. Use to=venue only when someone
+  explicitly asks for it to go to the venue itself. Never ask for, repeat or
+  guess a street address in the chat: it is typed on a private form.
 - Size quantities to the headcount below, not to the number of people talking:
   if 6 are in, order for 6. If nobody has been asked yet and the amount depends
   on it, ask who is in (ask_rsvp) before building a cart. When the headcount
@@ -640,15 +647,29 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.say(`${who}, you haven't set up payments yet. text me "set up payments" in a direct message (takes a minute), then thumbs up the cart again`);
       return;
     }
-    if (!profile?.shipTo) {
+    // Where it ships. An event address belongs to the chat and is never used
+    // unseen: each payer opens the form with it filled in and saves it once.
+    // Without one, it is the payer's own address, asked for the first time only.
+    const delivery = this.delivery();
+    const choice = this.getMeta(`ship_choice:${payer}`);
+    const toEvent = delivery && choice !== "own";
+    const contact = profile?.shipTo ?? profile?.contact;
+    const shipTo: ShipTo | undefined = !toEvent
+      ? profile?.shipTo
+      : delivery.confirmed && choice === `event:${delivery.stamp}` && contact && isComplete(delivery.address)
+        ? { name: contact.name, email: contact.email, ...delivery.address }
+        : undefined;
+    if (!shipTo) {
       // Asked for on their own private page, and the payment picks itself back up when it is saved.
       this.setMeta(`pay_waiting:${payer}`, shop);
       const token = await store.tokenFor(payer);
-      this.note("info", "pay.needs_address", { who: mask(payer) });
+      this.note("info", "pay.needs_address", { who: mask(payer), event: !!toEvent });
       await sendLinkCard(this.env, this.name, {
-        title: "Where should it ship?",
-        subtitle: `${who}: one time only. I'll pay for ${cart.shop} as soon as it's saved.`,
-        button: "Add address",
+        title: toEvent ? (delivery.confirmed || delivery.source === "venue" ? "Ship it to the event?" : "Where is the event?") : "Where should it ship?",
+        subtitle: toEvent
+          ? `${who}: check the address and save. I'll pay for ${cart.shop} as soon as you do.`
+          : `${who}: one time only. I'll pay for ${cart.shop} as soon as it's saved.`,
+        button: toEvent && (delivery.confirmed || delivery.source === "venue") ? "Check address" : "Add address",
         url: `${this.env.PUBLIC_BASE_URL}/p/${token}/ship?chat=${encodeURIComponent(this.name)}`,
       }).catch((err: unknown) => this.note("warn", "pay.address_card_failed", errorFields(err)));
       return;
@@ -661,7 +682,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       shop,
       checkoutUrl: cart.checkoutUrl,
       payer,
-      shipTo: profile.shipTo,
+      shipTo,
       capCents: Number(this.env.PAY_CAP_CENTS) || 6000,
       key: crypto.randomUUID(),
     };
@@ -676,6 +697,52 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (!shop) return;
     this.setMeta(`pay_waiting:${payer}`, "");
     await this.startPay(shop, payer, "resume");
+  }
+
+  // ------------------------------------------------------------------ delivery
+  // One address for the whole event, held here rather than on a person. Like a
+  // person's own address it lives outside public state and is never shown to
+  // the model, which learns only that one is set.
+
+  private delivery(): Delivery | undefined {
+    const raw = this.getMeta("delivery");
+    return raw ? (JSON.parse(raw) as Delivery) : undefined;
+  }
+
+  /** A new stamp, so everyone who said "ship here" to the old address sees the form again. */
+  private setDelivery(next: Omit<Delivery, "stamp"> | undefined) {
+    this.setMeta("delivery", next ? JSON.stringify({ ...next, stamp: crypto.randomUUID().slice(0, 8) }) : "");
+  }
+
+  private deliveryContext(): string {
+    const d = this.delivery();
+    if (!d) return "each order ships to whoever pays for it.";
+    const where = d.source === "venue" ? `the venue (${d.label})` : "the event";
+    return `everything ships to ${where}; ${d.confirmed ? "the address is on file" : "the first person to pay confirms the address on a form"}. You never see it.`;
+  }
+
+  /** The address page asks what to prefill. Only someone in this chat is told. */
+  async deliveryFor(handle: string): Promise<Pick<Delivery, "source" | "label" | "address" | "confirmed"> | null> {
+    const d = this.delivery();
+    if (!d || !this.participants().some((p) => p.handle === handle)) return null;
+    return { source: d.source, label: d.label, address: d.address, confirmed: d.confirmed };
+  }
+
+  /** The address page, on save: this person checked the event address, perhaps correcting it. */
+  async deliverySaved(handle: string, address: Address) {
+    const d = this.delivery();
+    if (!d || !this.participants().some((p) => p.handle === handle)) return;
+    const same = d.confirmed && JSON.stringify(d.address) === JSON.stringify(address);
+    if (!same) this.setDelivery({ ...d, address, confirmed: true });
+    this.setMeta(`ship_choice:${handle}`, `event:${this.delivery()!.stamp}`);
+    this.note("info", "delivery.saved", { who: mask(handle), source: d.source, changed: !same });
+  }
+
+  /** The address page, on save: this person is sending their order home instead. */
+  async deliveryDeclined(handle: string) {
+    if (!this.delivery()) return;
+    this.setMeta(`ship_choice:${handle}`, "own");
+    this.note("info", "delivery.declined", { who: mask(handle) });
   }
 
   /** Called over RPC by the pay workflow. */
@@ -1257,6 +1324,7 @@ About the people: ${about.text}
 Where the group is based: ${this.getMeta("area") || "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
 Shopping list: ${this.shoppingListContext()}
+Delivery: ${this.deliveryContext()}
 Headcount: ${this.headcountContext()}
 Invoice: ${this.invoiceContext()}
 Research: ${research.text}
@@ -1756,6 +1824,31 @@ this.rememberCardId(id);
         this.setMeta(`cart_photos:${shop}`, "");
         this.note("info", "cart.dropped", { shop, cancelledAtStore: cancelled });
         return `Dropped the ${shop} cart. Its old checkout card is still in the thread, so tell the group in one line not to use it. ${this.shoppingListLine()}`;
+      }
+
+      case "set_delivery": {
+        const { to, venue } = parseToolArgs("set_delivery", rawArgs);
+        // A new destination is a new question for everyone, including whoever chose to ship home.
+        this.sql`DELETE FROM meta WHERE key LIKE 'ship_choice:%'`;
+        if (to === "payer") {
+          this.setDelivery(undefined);
+          this.note("info", "delivery.cleared");
+          return "Done: each order ships to whoever pays for it.";
+        }
+        if (to === "event") {
+          this.setDelivery({ source: "event", confirmed: false });
+          this.note("info", "delivery.set", { source: "event" });
+          return "Set. The first person to pay types the event's address on a private form, and everyone after them gets it filled in to check. Say so in one short line; do not ask for the address in the chat.";
+        }
+        if (!venue) return "Say which venue: its exact name from the Research findings.";
+        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const report = this.sql<{ report: string }>`SELECT report FROM research WHERE ok = 1 ORDER BY id DESC LIMIT 1`[0];
+        const found = report ? (JSON.parse(report.report) as ResearchReport).candidates.find((c) => norm(c.name).includes(norm(venue)) || norm(venue).includes(norm(c.name))) : undefined;
+        // Only an address research read off the web: nothing is invented here.
+        if (!found?.address) return `No address is known for "${venue}". Use to=event instead and the person paying will type it.`;
+        this.setDelivery({ source: "venue", label: found.name, address: parseAddress(found.address), confirmed: false });
+        this.note("info", "delivery.set", { source: "venue", venue: found.name });
+        return `Set: orders ship to ${found.name}. Whoever pays first checks the address on a private form before anything is ordered. Say so in one short line, and mention that the venue should be told to expect a parcel.`;
       }
 
       case "show_shopping_list": {
