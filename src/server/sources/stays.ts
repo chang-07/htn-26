@@ -28,7 +28,12 @@ export function parseStays(html: string, q: StayQuery): Stay[] {
   const seen = new Set<string>();
   const stays: Stay[] = [];
   for (const m of blob.matchAll(TUPLE)) {
-    const name = JSON.parse(`"${m[1]}"`) as string; // the blob is JSON text: & and friends
+    let name: string;
+    try {
+      name = JSON.parse(`"${m[1]}"`) as string; // the blob is JSON text: & and friends
+    } catch {
+      continue; // a non-JSON escape in one tuple must not drop the rest of the page
+    }
     if (seen.has(name)) continue;
     seen.add(name);
     stays.push({ name, nightly: m[2], rating: Number(m[4]), reviews: Number(m[3]), url: staysUrl(q, name) });

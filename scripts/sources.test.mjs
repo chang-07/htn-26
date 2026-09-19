@@ -155,6 +155,14 @@ test("parseStays returns nothing without the blob", () => {
   assert.deepEqual(parseStays("<html><title>x</title></html>", stayQ), []);
 });
 
+test("parseStays skips a tuple with a malformed escape instead of dropping the whole page", () => {
+  const blob = `AF_initDataCallback({data:[["Bad \\x Hotel","/aclk?1","$150",null,10,4.0,["Good Hotel","/aclk?2","$200",null,20,4.5,]]});</script>`;
+  const html = `<html><head><title>x</title></head><body><script>${blob}</script></body></html>`;
+  const stays = parseStays(html, stayQ);
+  assert.equal(stays.length, 1);
+  assert.equal(stays[0].name, "Good Hotel");
+});
+
 test("searchStays caps at 10", async (t) => {
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ statusCode: 200, content: fixture("google-hotels.html") }), { headers: { "content-type": "application/json" } }));
   const stays = await searchStays(env, stayQ);
