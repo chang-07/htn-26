@@ -18,7 +18,7 @@ const captured = new WeakMap<object, string>();
 telemetryAdapter.error = (error, fields) => {
   if (!Sentry.isEnabled()) return;
   if (typeof error === "object" && error !== null && captured.has(error)) return captured.get(error);
-  const eventId = Sentry.captureException(error, { tags: { operation: String(fields.operation), traceId: String(fields.traceId) } });
+  const eventId = Sentry.captureException(error, { tags: { operation: String(fields.operation), traceId: String(fields.traceId ?? ""), ...(fields.runId ? { runId: String(fields.runId) } : {}) } });
   if (typeof error === "object" && error !== null) captured.set(error, eventId);
   return eventId;
 };

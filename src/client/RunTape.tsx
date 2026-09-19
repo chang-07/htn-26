@@ -139,6 +139,7 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
       };
     }
     case "turn.end": return { svc: "model", title: str(f.outcome) ?? "turn end", sub: `${num(f.steps) ?? 0} model steps` };
+    case "run.timeout": return { svc: "model", title: "timed out", sub: str(f.error) ?? "No completion within 30 minutes" };
     case "turn.crashed": return { svc: "model", title: "crashed", sub: str(f.error) ?? "" };
     default: return { svc: e.event.startsWith("turn.") ? "model" : "chat", title: e.event.replace(/\./g, " "), sub: "" };
   }

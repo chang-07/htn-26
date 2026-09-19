@@ -74,7 +74,7 @@ export function RunDiagnostics({ events, onPick, run }: { events: TapeEvent[]; o
         <div className="ra-node ra-agent">
           <header><span className="ra-context-icon" aria-hidden="true">◈</span><strong>Plan agent</strong><span className={`ra-dot${finished ? " is-ended" : ""}`} aria-hidden="true" /></header>
           <div className="ra-agent-body">
-            <div><span>Status</span><Badge tone={finished ? "" : "blue"}>{finished ? "Ended" : "Open"}</Badge></div>
+            <div><span>Status</span><Badge tone={finished ? "" : "blue"}>{run.outcome === "timed_out" ? "Timed out" : finished ? "Ended" : "Open"}</Badge></div>
             <div><span>{finished ? "Elapsed time" : "Recorded so far"}</span><strong>{dur(elapsed)}</strong></div>
             <button onClick={showTraces}><span>Recorded traces</span><Badge tone={timeline.rows.length ? "blue" : ""}>{timeline.rows.length || "None"} →</Badge></button>
             <button onClick={() => setView("errors")}><span>Error events</span><Badge tone={d.errors.length ? "red" : ""}>{d.errors.length} →</Badge></button>
@@ -107,7 +107,7 @@ export function RunDiagnostics({ events, onPick, run }: { events: TapeEvent[]; o
         <div><span>Events available</span><strong>{events.length}</strong></div>
         <div><span>Operations without an end</span><strong>{d.pending.length}</strong></div>
         <div><span>Structured-output retries</span><strong>{d.retries.length}</strong></div>
-        <p>{d.pending.length ? "An operation without an end may still be running or its final event may be missing." : "Metrics describe the events saved for this run."}</p>
+        <p>{run.outcome === "timed_out" ? "The run timed out. These operations have no recorded completion; their external status is unknown." : d.pending.length ? "An operation without an end may still be running or its final event may be missing." : "Metrics describe the events saved for this run."}</p>
       </div></section>
     </div>
 

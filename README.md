@@ -958,3 +958,18 @@ node scripts/observability-smoke.mjs
 The fixture is explicitly labelled `LOCAL SYNTHETIC CHECK` and only writes the
 local D1 database. It exercises a successful model span, a failed provider span,
 token counters, retry diagnostics, and dashboard navigation.
+
+### Stuck-run watchdog
+
+Run history has a generous **30-minute absolute deadline** for runs with no recorded
+completion. RunHub checks every minute using a durable schedule, and checks again
+when the viewer loads history. This also repairs stranded runs from before a restart
+or deployment. The deadline closes the run as `timed_out`, stores an error event,
+and reports a `RunTimeoutError` to Sentry with the run ID. Sentry's event ID is stored
+with the error when available; no message text is included in the exception.
+
+The viewer shows **Timed out**, a visible error message and the Sentry event ID,
+instead of an endless working indicator. It refreshes history every 15 seconds to
+recover missed WebSocket updates. Late completion and stale snapshots cannot erase
+a timeout. The timeout reports missing completion; it cannot cancel or undo an
+external booking/payment already submitted, so check its status before retrying.

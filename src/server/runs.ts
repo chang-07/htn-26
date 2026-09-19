@@ -18,6 +18,9 @@
  * numbers and records message bodies as lengths. Nothing new is exposed — but
  * the viewer is reachable from the internet, so see requireRunsAuth().
  */
+import { RUN_TIMEOUT_MS } from "../shared/run-timeout";
+import { expireRunRecords } from "./run-timeouts";
+import { telemetryAdapter } from "./telemetry";
 import { Agent, getAgentByName, type Connection } from "agents";
 import type { Fields, Level } from "./log";
 import { errorFields, log } from "./log";
@@ -211,7 +214,7 @@ export class RunRecorder {
 
   /** True when nothing a person did stands between the last run and now. */
   private continuesLast(): boolean {
-    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && !this.orphans.some(byAPerson);
+    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && Date.now() - this.last!.started < RUN_TIMEOUT_MS && !this.orphans.some(byAPerson);
   }
 
   /** Pick the last run back up: same id, sequence numbers carry on, totals accumulate. */
@@ -308,6 +311,25 @@ type HubMessage =
  */
 export class RunHub extends Agent<Env, Record<string, never>> {
   initialState = {};
+  private sweep?: Promise<void>;
+
+  async onStart() {
+    // Cron schedules are persisted and idempotent in the Agents SDK.
+    await this.schedule("* * * * *", "expireRuns");
+  }
+
+  async expireRuns(): Promise<void> {
+    if (this.sweep) return this.sweep;
+    this.sweep = (async () => {
+      const expired = await expireRunRecords(this.env.RUNS_DB, (error, runId) =>
+        telemetryAdapter.error?.(error, { operation: "run.timeout", runId }));
+      for (const item of expired) {
+        this.push({ type: "events", events: [item.event] });
+        this.push({ type: "run.close", run: item.run });
+      }
+    })();
+    try { await this.sweep; } finally { this.sweep = undefined; }
+  }
 
   /** Called over RPC by every PlanAgent's recorder. */
   async ingest(msg: HubMessage) {
@@ -315,19 +337,21 @@ export class RunHub extends Agent<Env, Record<string, never>> {
     try {
       if (msg.kind === "open") {
         const { runId, chat, trigger, started } = msg.run;
-        await db
-          .prepare(`INSERT OR REPLACE INTO runs (run_id, chat, trigger, started) VALUES (?, ?, ?, ?)`)
+        const inserted = await db
+          .prepare(`INSERT OR IGNORE INTO runs (run_id, chat, trigger, started) VALUES (?, ?, ?, ?)`)
           .bind(runId, chat, trigger, started)
           .run();
+        if (!inserted.meta.changes) return; // A replayed open must not resurrect a terminal run.
       } else if (msg.kind === "close") {
         const r = msg.run;
-        await db
+        const updated = await db
           .prepare(
             `UPDATE runs SET ended = ?, outcome = ?, level = CASE WHEN ${RANK_SQL("?")} > ${RANK_SQL("level")} THEN ? ELSE level END, ms = ?, tokens = ?, steps = ?, tools = ?
-             WHERE run_id = ?`,
+             WHERE run_id = ? AND (outcome IS NULL OR outcome != 'timed_out')`,
           )
           .bind(r.ended, r.outcome, r.level, r.level, r.ms, r.tokens, r.steps, JSON.stringify(r.tools), r.runId)
           .run();
+        if (!updated.meta.changes) return; // Late completion cannot erase a persisted timeout.
       } else if (msg.events.length) {
         const inserts = msg.events.map((e) =>
           db
@@ -370,6 +394,7 @@ export class RunHub extends Agent<Env, Record<string, never>> {
 
   /** New viewer: hand it the recent runs so it renders before anything happens. */
   async onConnect(connection: Connection) {
+    await this.expireRuns();
     const runs = await listRuns(this.env, { limit: 50 }).catch(() => []);
     connection.send(JSON.stringify({ type: "hello", runs } satisfies RunFeedMessage));
   }
@@ -406,6 +431,11 @@ const toSummary = (r: RunRow): RunSummary => ({
   events: r.events,
   said: r.said ?? null,
 });
+
+export async function refreshRunTimeouts(env: Env) {
+  const hub = await getAgentByName<Env, RunHub>(env.RunHub, HUB_NAME);
+  await hub.expireRuns();
+}
 
 export async function listRuns(
   env: Env,

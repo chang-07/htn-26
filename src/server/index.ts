@@ -14,7 +14,7 @@ import { parseLinks, readInstagram, readLinks } from "./social";
 import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
 import { planEmoji } from "../dressing";
 import { errorFields, log, short } from "./log";
-import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
+import { getRun, listChats, listRuns, refreshRunTimeouts, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
 import { invoiceFor } from "../invoice";
 
@@ -497,6 +497,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
  * routeAgentRequest serves at /agents/run-hub/global.
  */
 async function handleRuns(request: Request, url: URL, env: Env): Promise<Response> {
+  await refreshRunTimeouts(env);
   const rest = url.pathname.slice("/api/runs".length).replace(/^\//, "");
   const q = url.searchParams;
 

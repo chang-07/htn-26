@@ -1,3 +1,4 @@
+import { mergeRunState, RUN_TIMEOUT_MESSAGE } from "../shared/run-timeout";
 import { runLabel } from "../shared/run-labels";
 import { RunDiagnostics } from "./RunDiagnostics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -133,7 +134,7 @@ export function Runs() {
       const i = prev.findIndex((r) => r.runId === run.runId);
       if (i === -1) return [{ ...EMPTY_RUN, ...run } as RunSummary, ...prev];
       const next = [...prev];
-      next[i] = { ...next[i], ...run };
+      next[i] = mergeRunState(next[i], { ...next[i], ...run });
       return next;
     });
   }, []);
@@ -152,7 +153,7 @@ export function Runs() {
       } catch {
         return;
       }
-      if (msg.type === "hello") setRuns(msg.runs as RunSummary[]);
+      if (msg.type === "hello") setRuns((prev) => (msg.runs as RunSummary[]).map((run) => mergeRunState(prev.find((r) => r.runId === run.runId), run)));
       else if (msg.type === "run.open") {
         const run = msg.run as RunSummary;
         upsert(run);
@@ -184,7 +185,8 @@ export function Runs() {
   // Past runs, and a refresh whenever the chat filter changes.
   useEffect(() => {
     const url = `/api/runs?limit=100${chat ? `&chat=${encodeURIComponent(chat)}` : ""}${tokenParam}`;
-    fetch(url)
+    const controller = new AbortController();
+    const refresh = () => fetch(url, { signal: controller.signal })
       .then(async (r) => {
         if (r.status === 401) {
           // A remembered token that no longer works would wedge the page.
@@ -200,24 +202,32 @@ export function Runs() {
       })
       .then((d) => {
         setProblem(null);
-        setRuns(d.runs);
+        setRuns((prev) => d.runs.map((run) => mergeRunState(prev.find((r) => r.runId === run.runId), run)));
       })
       // A blank list with no explanation is indistinguishable from "no runs yet".
-      .catch((e: Error) => setProblem(e.message));
+      .catch((e: Error) => { if (!controller.signal.aborted) setProblem(e.message); });
+    void refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
   }, [chat, tokenParam]);
 
   // A run picked from the list has its events in D1, not in memory.
   useEffect(() => {
-    if (!selected || events[selected]) return;
-    fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`)
+    if (!selected) return;
+    const controller = new AbortController();
+    const refresh = () => fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`, { signal: controller.signal })
       .then((r) => (r.ok ? (r.json() as Promise<{ run: RunSummary; events: TapeEvent[] }>) : null))
       .then((d) => {
         if (!d) return;
-        setEvents((prev) => ({ ...prev, [selected]: d.events }));
-        setLinked(d.run);
+        setEvents((prev) => ({ ...prev, [selected]: [...new Map([...(prev[selected] ?? []), ...d.events].map((e) => [e.seq, e])).values()].sort((a, b) => a.seq - b.seq) }));
+        setLinked((prev) => mergeRunState(prev?.runId === d.run.runId ? prev : undefined, d.run));
+        upsert(d.run);
       })
       .catch(() => {});
-  }, [selected, events, tokenParam]);
+    void refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [selected, tokenParam, upsert]);
 
   // Landing on bare /runs with an empty pane is a dead end; open the newest.
   useEffect(() => {
@@ -419,7 +429,7 @@ function Legend() {
 }
 
 /** The outcome as one word, for beside a title that no longer says it. */
-const OUTCOME_WORD: Record<string, string> = { replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
+const OUTCOME_WORD: Record<string, string> = { timed_out: "timed out", replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
 
 type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
 type ShownSession = Session & { visible: RunSummary[] };
@@ -511,6 +521,7 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
 
 /** What each outcome code means, in a sentence a judge can read from the back of the room. */
 const OUTCOME_TITLE: Record<string, string> = {
+  timed_out: "Timed out",
   replied: "Replied",
   silent: "No reply",
   llm_failed: "Model error",
@@ -563,6 +574,13 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
           <p style={{ margin: "10px 0 8px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
             {facts.map((f) => <span key={f}>{f}</span>)}
           </p>
+          {run.outcome === "timed_out" && <div role="alert" style={{ color: "var(--error)", margin: "12px 0", fontSize: 13 }}>
+            <strong>Run timed out.</strong> {RUN_TIMEOUT_MESSAGE}
+            {(run.tools.includes("book_option") || nodes.some((n) => n.event.startsWith("pay."))) && " Check the actual booking or payment status before retrying."}
+            {nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId != null && <p style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+              Sentry event: {String(nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId)}
+            </p>}
+          </div>}
           <Legend />
         </div>
         <div className="rv-stub" style={{ marginBottom: 14 }}>
