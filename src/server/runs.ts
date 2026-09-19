@@ -69,6 +69,15 @@ type RunClose = {
 
 /** Events that open and close a run. Everything else lands inside the open one. */
 const RUN_START = "turn.start";
+/**
+ * Events that mean a PERSON did something. A run is one interaction: what a
+ * person set in motion and everything that followed from it — the turn, the
+ * research it started, the turn that reported the findings, a second text.
+ * Only one of these begins a new run; work the agent woke itself up for is a
+ * continuation of the run that started it, however many turns that takes.
+ */
+const HUMAN_EVENTS = new Set(["message.in", "message.stored", "message.duplicate", "vote.cast", "vote.ignored", "reaction.ignored", "dev.tool", "person.forgotten", "links.forgotten", "profile.saved_via_form"]);
+const CONTINUE_WITHIN_MS = 20 * 60 * 1000;
 const RUN_END = new Set(["turn.end", "turn.crashed"]);
 /** Loose events waiting to be adopted by the next turn are flushed after this. */
 const ORPHAN_MAX_AGE_MS = 2 * 60 * 1000;
@@ -98,6 +107,10 @@ export class RunRecorder {
   private runId: string | null = null;
   private seq = 0;
   private orphans: { ts: number; level: Level; event: string; fields: Fields }[] = [];
+  /** The most recent run, kept so that what follows from it can be appended to it. */
+  private last: { runId: string; seq: number; started: number; endedAt: number; outcome: string; level: Level; tokens: number; steps: number; tools: string[] } | null = null;
+  /** Totals carried into a continued run, so its summary covers every turn in it. */
+  private carry = { started: 0, tokens: 0, steps: 0, tools: [] as string[] };
 
   constructor(
     private readonly env: Env,
@@ -113,7 +126,8 @@ export class RunRecorder {
       // A turn that crashed without logging turn.end leaves the previous run
       // open; opening a new one is what closes it (ended stays NULL, and the
       // viewer shows it as abandoned rather than silently merging the two).
-      this.open(fields);
+      if (this.continuesLast()) this.resume();
+      else this.open(fields);
       this.emit([
         // Lead-in first, in arrival order, so the timeline reads correctly.
         ...this.drainOrphans(),
@@ -162,15 +176,32 @@ export class RunRecorder {
     if (!this.orphans.length) return;
     const rank: Record<Level, number> = { info: 0, warn: 1, error: 2 };
     const worst = this.orphans.reduce<Level>((w, o) => (rank[o.level] > rank[w] ? o.level : w), "info");
-    this.open({ trigger: this.orphans[0].event });
+    // Research and booking progress arrives after the turn that started it has
+    // ended. It is the rest of that interaction, not an event of its own.
+    if (this.continuesLast()) this.resume();
+    else this.open({ trigger: this.orphans[0].event });
     this.emit(this.drainOrphans());
     // Not a crash: nothing ran. Without an outcome close() would call it one.
     this.close(worst, { outcome: "background" });
   }
 
+  /** True when nothing a person did stands between the last run and now. */
+  private continuesLast(): boolean {
+    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && !this.orphans.some((o) => HUMAN_EVENTS.has(o.event));
+  }
+
+  /** Pick the last run back up: same id, sequence numbers carry on, totals accumulate. */
+  private resume() {
+    const last = this.last!;
+    this.runId = last.runId;
+    this.seq = last.seq;
+    this.carry = { started: last.started, tokens: last.tokens, steps: last.steps, tools: last.tools };
+  }
+
   private open(fields: Fields) {
     this.runId = crypto.randomUUID();
     this.seq = 0;
+    this.carry = { started: Date.now(), tokens: 0, steps: 0, tools: [] };
     const trigger =
       typeof fields.trigger === "string" ? fields.trigger : (this.orphans[0]?.event ?? RUN_START);
     this.send({
@@ -181,19 +212,21 @@ export class RunRecorder {
 
   private close(level: Level = "info", fields: Fields = {}) {
     if (!this.runId) return;
-    this.send({
-      kind: "close",
-      run: {
-        runId: this.runId,
-        ended: Date.now(),
-        outcome: typeof fields.outcome === "string" ? fields.outcome : "crashed",
-        level,
-        ms: num(fields.ms),
-        tokens: num(fields.tokens),
-        steps: num(fields.steps),
-        tools: Array.isArray(fields.tools) ? (fields.tools as string[]) : [],
-      },
-    });
+    const rank: Record<Level, number> = { info: 0, warn: 1, error: 2 };
+    const ended = Date.now();
+    // A continued run reports the whole interaction: every turn's tokens and
+    // tools, and the time from the first event to this one.
+    const outcome = typeof fields.outcome === "string" ? fields.outcome : "crashed";
+    const summary = {
+      // "background" describes a tail of progress events, not the interaction: keep what the turns said.
+      outcome: outcome === "background" && this.last?.runId === this.runId ? this.last.outcome : outcome,
+      level: this.last?.runId === this.runId && rank[this.last.level] > rank[level] ? this.last.level : level,
+      tokens: this.carry.tokens + (num(fields.tokens) ?? 0),
+      steps: this.carry.steps + (num(fields.steps) ?? 0),
+      tools: [...this.carry.tools, ...(Array.isArray(fields.tools) ? (fields.tools as string[]) : [])],
+    };
+    this.send({ kind: "close", run: { runId: this.runId, ended, ms: ended - this.carry.started, ...summary } });
+    this.last = { runId: this.runId, seq: this.seq, started: this.carry.started, endedAt: ended, ...summary };
     this.runId = null;
   }
 

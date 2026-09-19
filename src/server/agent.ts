@@ -47,6 +47,9 @@ on a time, book it, and order anything they need.
   appear under "Research" below when done: tell the group you're on it, then
   stop. Never start a second run while one is in progress, and never invent
   places, prices or links — propose only what research found.
+- When someone comes back to a plan after a while, call propose_plan again
+  with the options that still apply: that puts the card back in front of them
+  instead of pointing at one far up the thread.
 - Brainstorm in plain text. Once there are 2-4 concrete options, call
   propose_plan; it posts the card and opens voting. Call it again to redraw the
   same card when options change rather than describing changes in text.
@@ -106,6 +109,8 @@ const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
 const MAX_SENDS_PER_TURN = 3;
+/** After this long a card has scrolled out of sight, so it is posted again rather than edited in place. */
+const CARD_STALE_MS = 20 * 60 * 1000;
 const EVENT_HISTORY = 300;
 /** A run that has not reported back by now is treated as lost, so the chat is not stuck. */
 /**
@@ -419,8 +424,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
    */
   private async planTicketIfNew() {
     const key = this.state.status === "booked" ? `booked:${this.state.chosenOptionId}` : this.state.options.map((o) => o.title).join("|");
-    if (this.getMeta("plan_ticket_key") === key) return;
+    // The same ballot is not posted twice in a row — but a ballot posted a while
+    // ago is far up the thread by now, and re-proposing it means "show me again".
+    const fresh = Date.now() - Number(this.getMeta("plan_ticket_at") ?? 0) < CARD_STALE_MS;
+    if (this.getMeta("plan_ticket_key") === key && fresh) return;
     this.setMeta("plan_ticket_key", key);
+    this.setMeta("plan_ticket_at", String(Date.now()));
     await this.postTicket("plan", planTicket(this.state));
   }
 
@@ -1118,7 +1127,10 @@ ${transcript}`,
 
         // A new set of options is a moment worth a photo; votes are not.
         await this.planTicketIfNew();
-        if (this.getMeta("card_message_id")) {
+        // Edit the card in place while it is still on screen; once it has
+        // scrolled away, a quiet edit is invisible, so post a new one.
+        const cardFresh = Date.now() - Number(this.getMeta("plan_card_at") ?? 0) < CARD_STALE_MS;
+        if (this.getMeta("card_message_id") && cardFresh) {
           await this.syncCard();
         } else {
           const id = await sendCard(
@@ -1128,7 +1140,8 @@ ${transcript}`,
             this.state,
             this.participants().length,
           );
-          this.rememberCardId(id);
+this.rememberCardId(id);
+          this.setMeta("plan_card_at", String(Date.now()));
           // Recipients without the extension see a static card with no
           // affordance, so spell out the tapback convention once.
           await this.say(`react to vote:\n${tapbackLegend(this.state)}`);
