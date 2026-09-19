@@ -318,7 +318,10 @@ const descriptions: Record<ToolName, string> = {
     "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
-export function openAiTools() {
+/** Built once per isolate: the schemas never change, and this ran before every model call. */
+let tools: ReturnType<typeof buildTools> | undefined;
+
+function buildTools() {
   return (Object.keys(toolSchemas) as ToolName[]).map((name) => ({
     type: "function" as const,
     function: {
@@ -327,6 +330,10 @@ export function openAiTools() {
       parameters: z.toJSONSchema(toolSchemas[name]) as Record<string, unknown>,
     },
   }));
+}
+
+export function openAiTools() {
+  return (tools ??= buildTools());
 }
 
 export function parseToolArgs<N extends ToolName>(

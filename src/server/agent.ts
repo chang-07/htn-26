@@ -32,6 +32,7 @@ import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
+import { startConcurrent } from "./tool-concurrency";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
@@ -187,12 +188,6 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
 
 const MAX_STEPS = 8;
-/**
- * Tools that only fetch over the network and do not care what ran before them
- * in the same step. Anything that speaks, posts a card or edits the plan stays
- * out: those are read in order by the group and guarded in order by the turn.
- */
-const CONCURRENT_TOOLS = new Set<string>(["shop_search", "find_matches"]);
 /** The bubble lasts ~85s per call; Linq says to refresh every 60. */
 const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
@@ -811,9 +806,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.note("info", "pay.asked", { shop, who: mask(payer), source });
 
     // The wallet: Linq is the authority, the profile flag only a cache of it.
+    // Both are needed before anything is decided, so they are read together.
     const store = peopleStore(this.env);
-    const profile = (await store.getMany([payer]))[payer];
-    const wallet: PaymentConnection = await paymentConnection(this.env, this.name, payer).catch(() => ({ status: "not_connected" }));
+    const [profiles, wallet] = await Promise.all([
+      store.getMany([payer]),
+      paymentConnection(this.env, this.name, payer).catch((): PaymentConnection => ({ status: "not_connected" })),
+    ]);
+    const profile = profiles[payer];
     if (wallet.status !== "connected" && !(wallet.simulated && profile?.payments === "connected")) {
       this.note("info", "pay.needs_wallet", { who: mask(payer) });
       await this.say(`${who}, you haven't set up payments yet. text me "set up payments" in a direct message (takes a minute), then thumbs up the cart again`);
@@ -1357,22 +1356,35 @@ export class PlanAgent extends Agent<Env, PlanState> {
     try {
       const watches = this.activeWatches();
       this.note("info", "watch.check", { active: watches.length });
-      for (const { item, row } of watches) {
+      // Two phases: every status is read at once (each is a slow proxied
+      // fetch of a different site), then what changed is posted in itinerary
+      // order, so the chat reads the same as it did when this was one loop.
+      const due = watches.filter(({ item, row }) => {
         if (row.failures >= 3 && row.failures % 4 !== 3) {
           this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
-          continue; // hourly, in 15-minute ticks
+          return false; // hourly, in 15-minute ticks
         }
-        const watch = item.watch!; // activeWatches only returns items with one
-        try {
-          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+        return true;
+      });
+      const read = await Promise.allSettled(
+        due.map(async ({ item }) => {
+          const watch = item.watch!; // activeWatches only returns items with one
           if ("flight" in watch) {
             const next = await flightStatus(this.env, watch.flight.ident);
             if (!next) throw new Error("no status");
-            await this.applyWatch(item, next, diffFlight(prev, next), prev);
-          } else {
-            const next = await orderStatus(this.env, watch.order.url);
-            await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop), prev);
+            return next;
           }
+          return orderStatus(this.env, watch.order.url);
+        }),
+      );
+      for (const [i, { item, row }] of due.entries()) {
+        const watch = item.watch!;
+        const got = read[i];
+        try {
+          if (got.status === "rejected") throw got.reason;
+          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+          if ("flight" in watch) await this.applyWatch(item, got.value, diffFlight(prev, got.value as FlightStatus), prev);
+          else await this.applyWatch(item, got.value, diffOrder(prev, got.value as OrderStatus, watch.order.shop), prev);
         } catch (err) {
           const failures = row.failures + 1;
           this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
@@ -1578,10 +1590,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** Read receipt, typing bubble and — once per chat — the name and photo. */
   private async acknowledge() {
     // Each is "ok", "dry" or the error, so the run viewer shows what Linq said.
-    const read = await markRead(this.env, this.name);
-    const typing = await this.typing();
+    // Three independent calls, made together: the bubble should not wait for
+    // the receipt, and neither should wait for the card.
     const firstTime = this.getMeta("contact_card_shared") !== "1";
-    const contactCard = firstTime ? await shareContactCard(this.env, this.name) : "already shared";
+    const [read, typing, contactCard] = await Promise.all([
+      markRead(this.env, this.name),
+      this.typing(),
+      firstTime ? shareContactCard(this.env, this.name) : "already shared",
+    ]);
     // A failure (no card set up yet) is tried again at the next wake.
     if (contactCard === "ok" || contactCard === "dry") this.setMeta("contact_card_shared", "1");
     const failed = [read, typing, contactCard].some((r) => !["ok", "dry", "fresh", "already shared"].includes(r));
@@ -1670,13 +1686,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
       this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
-      // After the first reply, not before: the text introduces, the card offers the shortcut.
-      await this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err)));
-      // A turn that ended in silence must not leave the bubble hanging.
-      if (this.typingAt) {
-        this.typingAt = 0;
-        await stopTyping(this.env, this.name);
-      }
+      // Two unrelated tidy-ups, done together. After the first reply, not
+      // before: the text introduces, the card offers the shortcut. And a turn
+      // that ended in silence must not leave the bubble hanging.
+      const bubbleUp = this.typingAt !== 0;
+      this.typingAt = 0;
+      await Promise.all([
+        this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err))),
+        bubbleUp ? stopTyping(this.env, this.name) : undefined,
+      ]);
     }
   }
 
@@ -1767,7 +1785,9 @@ ${transcript}`,
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
-      if (!spoke) await this.typing();
+      // Refreshed alongside the model call, never ahead of it: the bubble is
+      // best effort (startTyping never throws) and the model is the long pole.
+      if (!spoke) void this.typing().catch(() => {});
       try {
         res = await traceOperation("agent.model", "gen_ai.chat", { model, profile, step: step + 1, promptChars: JSON.stringify(messages).length }, () => client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never));
       } catch (err) {
@@ -1822,19 +1842,11 @@ ${transcript}`,
           () => this.runTool(call.function.name, call.function.arguments),
           this.note,
         );
-      // Lookups the model asked for together are fetched together: two stores
-      // searched in one step should cost one wait, not two. Everything else
-      // keeps its turn in the loop below, where order is the point.
-      const early = new Map<string, Promise<string>>();
-      if (calls.filter((c) => CONCURRENT_TOOLS.has(c.function.name)).length > 1) {
-        for (const call of calls) {
-          if (!CONCURRENT_TOOLS.has(call.function.name)) continue;
-          const started = run(call);
-          // The loop can end the turn before reaching this call; awaited or not, it must not go unhandled.
-          started.catch(() => {});
-          early.set(call.id, started);
-        }
-      }
+      // Lookups the model asked for together are fetched together: flights and
+      // a hotel, or two stores, searched in one step cost one wait, not two.
+      // Everything else keeps its turn in the loop below, where order is the
+      // point. Which tools qualify, and why, is in tool-concurrency.ts.
+      const early = startConcurrent(calls, run);
 
       for (const call of calls) {
         let output: string;
@@ -2538,13 +2550,15 @@ this.rememberCardId(id);
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
         const store = peopleStore(this.env);
-        const profile = (await store.getMany([person.handle]))[person.handle];
+        // Their profile and who they have already been offered: two reads that need only the handle.
+        const [profiles, paired] = await Promise.all([store.getMany([person.handle]), store.pairedWith(person.handle)]);
+        const profile = profiles[person.handle];
         // Searching the pool means being findable in it: same consent both ways.
         if (!profile?.matchOptIn) return "They are not in the match pool themselves. Ask whether they want to be introduced to people (save_profile matchOptIn) before searching.";
         // A place they named beats where they live: "i'm visiting vancouver, anyone there?"
         const where = near || profile.area;
         const query = [lookingFor, profile.interests, where && `Based in ${where}`].filter(Boolean).join(". ");
-        const exclude = [person.handle, ...(await store.pairedWith(person.handle))];
+        const exclude = [person.handle, ...paired];
         // Vectorize understands meaning ("bouldering" finds "climbing") but takes a
         // minute or two to index a new profile, and is absent without a login; the
         // shared-word scan is instant and always there. Meaning first, then words.
@@ -3080,8 +3094,11 @@ this.rememberCardId(id);
     }
 
     if (result.ok) {
-      await this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" });
-      if (onBallot) await this.dressChat();
+      // The dressing posts no message, so it cannot get ahead of the text in the thread.
+      await Promise.all([
+        this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" }),
+        onBallot ? this.dressChat() : undefined,
+      ]);
     } else if (handedOff) {
       await this.say(`${name}: ${result.detail}\nfinish it here: ${result.handoffUrl}`);
     } else {

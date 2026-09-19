@@ -49,8 +49,9 @@ export function agentProfileUrl(env: Env) {
 
 const USER_AGENT = "whim/1.0";
 
-async function endpointFor(shop: string): Promise<string> {
-  const host = shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+const hostOf = (shop: string) => shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+
+async function readManifest(host: string): Promise<string> {
   // Some storefronts 403 a request with no User-Agent, which is what a Worker sends.
   const res = await fetch(`https://${host}/.well-known/ucp`, { headers: { "user-agent": USER_AGENT } });
   if (!res.ok) throw new NotShoppable(host);
@@ -62,6 +63,27 @@ async function endpointFor(shop: string): Promise<string> {
   return mcp.endpoint;
 }
 
+/**
+ * A store's MCP endpoint, remembered per isolate. Every UCP call used to start
+ * with a round trip for the manifest, so a search followed by a cart paid for
+ * it twice, and two stores searched together paid for it twice more. The
+ * manifest changes on the timescale of a store's deploys, so a short memory is
+ * safe; a call that then cannot reach the endpoint forgets it (below), and a
+ * refusal is never remembered, so a store that comes online is found.
+ */
+const ENDPOINT_TTL_MS = 10 * 60 * 1000;
+const endpoints = new Map<string, { at: number; endpoint: Promise<string> }>();
+
+function endpointFor(shop: string): Promise<string> {
+  const host = hostOf(shop);
+  const kept = endpoints.get(host);
+  if (kept && Date.now() - kept.at < ENDPOINT_TTL_MS) return kept.endpoint;
+  const endpoint = readManifest(host);
+  endpoints.set(host, { at: Date.now(), endpoint });
+  endpoint.catch(() => endpoints.delete(host));
+  return endpoint;
+}
+
 async function callUcp(
   env: Env,
   shop: string,
@@ -69,22 +91,28 @@ async function callUcp(
   args: Record<string, unknown>,
 ): Promise<any> {
   const endpoint = await endpointFor(shop);
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json", "user-agent": USER_AGENT },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: crypto.randomUUID(),
-      method: "tools/call",
-      params: {
-        name: tool,
-        arguments: {
-          meta: { "ucp-agent": { profile: agentProfileUrl(env) } },
-          ...args,
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": USER_AGENT },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "tools/call",
+        params: {
+          name: tool,
+          arguments: {
+            meta: { "ucp-agent": { profile: agentProfileUrl(env) } },
+            ...args,
+          },
         },
-      },
-    }),
-  });
+      }),
+    });
+  } catch (err) {
+    endpoints.delete(hostOf(shop)); // the endpoint may have moved: next call reads the manifest again
+    throw err;
+  }
   const body = (await res.json()) as any;
   if (body.error) {
     throw new Error(`${tool} failed: ${body.error.message} ${JSON.stringify(body.error.data ?? {})}`);
