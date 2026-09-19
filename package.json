@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite dev",
     "llm": "node scripts/claude-llm-proxy.mjs",
+    "smoke": "node scripts/smoke.mjs",
     "runs:migrate": "wrangler d1 execute htn-runs --local --file migrations/0001_runs.sql",
     "runs:migrate:remote": "wrangler d1 execute htn-runs --remote --file migrations/0001_runs.sql",
     "build": "vite build",
