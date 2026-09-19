@@ -65,11 +65,12 @@ export async function askJson<T>(
   schema: z.ZodType<T>,
   system: string,
   user: string,
+  screenshot?: string,
 ): Promise<{ value: T; tokens: number }> {
   const { client, model, profile } = llmFor(env);
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: `${system}\n\nReply with a single JSON object matching this schema, and nothing else:\n${JSON.stringify(z.toJSONSchema(schema))}` },
-    { role: "user", content: user },
+    { role: "user", content: screenshot ? [{ type: "text", text: user }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${screenshot}` } }] : user },
   ];
 
   let tokens = 0;

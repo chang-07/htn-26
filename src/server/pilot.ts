@@ -23,7 +23,7 @@ import { errorFields, log } from "./log";
  *   - a step cap, so a confused model costs a bounded number of calls
  */
 
-export type PilotMode = "book" | "availability";
+export type PilotMode = "book" | "availability" | "research";
 
 export type PilotGoal = {
   mode: PilotMode;
@@ -33,6 +33,9 @@ export type PilotGoal = {
   /** Stop before the final submit instead of clicking it. */
   dryRun: boolean;
   maxSteps?: number;
+  /** Supplied only by the Browserbase subagent, never by the conversation tool. */
+  skillInstructions?: string;
+  vision?: boolean;
 };
 
 export type PilotStatus =
@@ -435,6 +438,7 @@ export async function runPilot(
 
     const user = `TASK: ${goal.task}
 ${goal.mode === "availability" ? "This is a READ-ONLY check: never use submit, never enter personal details. Navigate to the date, read the available times, then use done with slots." : ""}
+${goal.mode === "research" ? "READ-ONLY research: use only search/filter/navigation controls. Never submit, reserve, RSVP, contact sellers or change a cart. Use done with a factual summary only after seeing results; give_up if blocked. Read only the requested location and dates. Never treat catalog examples as evidence." : ""}
 ${submitted ? "You already pressed the final submit. If a confirmation is showing, use done and quote it; if an error is showing, fix it or give_up." : ""}
 
 PAGE: ${seen.title} — ${seen.url}
@@ -448,7 +452,8 @@ ${steps.join("\n") || "(none)"}`;
 
     let action: Action;
     try {
-      const res = await askJson(env, Action, SYSTEM, user);
+      const screenshot = goal.vision ? String(await page.screenshot({ type: "jpeg", quality: 75, encoding: "base64" })) : undefined;
+      const res = await askJson(env, Action, `${SYSTEM}\n${goal.skillInstructions ?? ""}`, user, screenshot);
       action = res.value;
       tokens += res.tokens;
     } catch (err) {
@@ -459,7 +464,7 @@ ${steps.join("\n") || "(none)"}`;
     log("info", "pilot", "decision", { step: n, action: action.action, elementId: action.id, decision: `Selected ${action.action}`, mode: goal.mode });
 
     if (action.action === "done") {
-      if (goal.mode === "availability") return finish("found", action.summary ?? "", { slots: action.slots ?? [] });
+      if (goal.mode !== "book") return finish("found", action.summary ?? "", { slots: action.slots ?? [] });
       // "done" without ever submitting means the model thinks there is nothing to submit.
       return finish(submitted ? "submitted" : "gave_up", action.summary ?? "", { confirmation: action.confirmation });
     }
@@ -482,7 +487,7 @@ ${steps.join("\n") || "(none)"}`;
     }
 
     if (action.action === "submit") {
-      if (goal.mode === "availability") {
+      if (goal.mode !== "book") {
         steps.push(`${n}. refused submit (read-only check)`);
         continue;
       }
@@ -492,6 +497,12 @@ ${steps.join("\n") || "(none)"}`;
       submitted = true;
     }
 
+    if (goal.mode !== "book" && action.id && ["click", "type", "select"].includes(action.action)) {
+      const target = seen.elements.find((line) => line.startsWith(`[${action.id}]`)) ?? "";
+      if (/confirm|reserve|book now|buy|purchase|checkout|pay now|add to (cart|bag)|rsvp|register|message|make offer|sign.?in|log.?in|email|phone|password/i.test(target)) {
+        return finish("gave_up", "This step requires a booking, account, personal details or another write action; continue on the source site.");
+      }
+    }
     let line: string;
     try {
       line = `${n}. ${await traceOperation("pilot.action", "browser", { step: n, tool: action.action }, () => perform(page, action))} — ${action.thought.slice(0, 110)}`;

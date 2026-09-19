@@ -30,9 +30,9 @@ DEV_LLM_MODEL=
 BROWSERBASE_API_KEY=
 BROWSERBASE_PROJECT_ID=
 
-# Jev through Vercel AI Gateway ranks search metadata before Browserbase Fetch.
+# Required for research: Jev gates search metadata and extracted specialist options.
 # Use a Vercel AI Gateway key, not a TypeSafe key. Scores are not fact verification.
-# Without an AI Gateway key, research retains the existing LLM selection fallback.
+# Without this key, research stops before searching; there is no unscored fallback.
 AI_GATEWAY_API_KEY=
 JEV_MODEL=typesafe-ai/jev
 RESEARCH_MIN_RELEVANCE=2

@@ -99,3 +99,83 @@ test("Fetch checks the target status, requires content, and bounds evidence leng
   response = { statusCode: 200, content: "a".repeat(100) };
   assert.equal((await fetchSource(env, hit("https://a.test/"), 10)).text.length, 10);
 });
+
+test("Jev deduplicates canonical URLs before scoring, without forwarding arbitrary metadata", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    calls++;
+    const body = JSON.parse(init.body);
+    const state = JSON.parse(body.state);
+    assert.equal(state.results.length, 1);
+    assert.equal(state.results[0].url, "https://a.test/");
+    assert.equal(state.results[0].secret, undefined);
+    assert.equal(state.results[0].snippet.length, 1200);
+    return json({ answers: { hit_0: { type: "score", score: 3, confidence: 1 } } });
+  });
+  const result = await scoreSources(env, "dinner", [
+    { ...hit("https://a.test/#top"), snippet: "x".repeat(5000), secret: "do not forward" },
+    hit("https://a.test/"), hit("javascript:alert(1)"),
+  ]);
+  assert.equal(calls, 1);
+  assert.equal(result.hits.length, 1);
+});
+
+test("every unique result is scored in bounded batches with at most two requests in flight", async (t) => {
+  let active = 0, peak = 0;
+  const batchSizes = [];
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    active++; peak = Math.max(peak, active);
+    const body = JSON.parse(init.body);
+    batchSizes.push(Object.keys(body.questions).length);
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    active--;
+    return json({ answers: Object.fromEntries(Object.keys(body.questions).map((id) => [id, { type: "score", score: 3, confidence: 0.9 }])),
+      usage: { input_tokens: 100, output_tokens: 5 } });
+  });
+  const result = await scoreSources(env, "dinner", Array.from({ length: 35 }, (_, i) => hit(`https://a.test/${i}`)));
+  assert.deepEqual(batchSizes, [16, 16, 3]);
+  assert.equal(peak, 2);
+  assert.equal(result.hits.length, 35);
+  assert.equal(result.hits[34].url, "https://a.test/34");
+  assert.equal(result.tokens, 315);
+});
+
+test("missing key and non-Jev model fail before a provider call; empty results cost nothing", async (t) => {
+  t.mock.method(globalThis, "fetch", () => assert.fail("should not call provider"));
+  await assert.rejects(scoreSources({}, "dinner", [hit("https://a.test/")]), /required/);
+  await assert.rejects(scoreSources({ ...env, JEV_MODEL: "another-model" }, "dinner", [hit("https://a.test/")]), /requires typesafe-ai\/jev/);
+  assert.deepEqual(await scoreSources({}, "dinner", []), { hits: [], tokens: 0 });
+});
+
+test("a malformed later batch rejects the entire result set, never returns a partial unscored list", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    const body = JSON.parse(init.body);
+    const results = JSON.parse(body.state).results;
+    return json({ answers: results.length === 1 ? {} : Object.fromEntries(Object.keys(body.questions).map((id) => [id, { type: "score", score: 3, confidence: 1 }])) });
+  });
+  await assert.rejects(scoreSources(env, "dinner", Array.from({ length: 17 }, (_, i) => hit(`https://a.test/${i}`))), /omitted/);
+});
+
+test("all extracted skill candidates are judged independently, even when they share one source", async (t) => {
+  const { scoreCandidates } = await import("../src/server/research-sources.ts");
+  const candidates = [
+    { name: "Toronto event", kind: "meetup", why: "fits", source: "https://api.luma.com/events", details: ["Free, Saturday"], checkedAt: "2026-09-19T12:00:00Z" },
+    { name: "Paris event", kind: "meetup", why: "wrong city", source: "https://api.luma.com/events" },
+    { name: "Unknown city", kind: "meetup", why: "uncertain", source: "https://api.luma.com/events" },
+  ];
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(Object.keys(body.questions).length, 3);
+    assert.match(body.questions.hit_0.instructions, /extracted candidate 0/);
+    assert.match(JSON.parse(body.state).results[0].snippet, /Free, Saturday/);
+    return json({ answers: {
+      hit_0: { type: "score", score: 2.9, confidence: 0.9 },
+      hit_1: { type: "score", score: 0.1, confidence: 1 },
+      hit_2: { type: "score", score: 3, confidence: 0.1 },
+    } });
+  });
+  const result = await scoreCandidates(env, "Toronto meetups on Saturday", candidates);
+  assert.deepEqual(result.candidates, [candidates[0]]);
+  assert.equal(result.candidates[0], candidates[0]);
+  assert.equal(result.scores.length, 3);
+});
