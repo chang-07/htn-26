@@ -37,28 +37,79 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
 | Vectorize + Workers AI | Interest embeddings and nearest-neighbour matchmaking |
 | R2 | Rendered card images |
 
-## Run it locally — no Linq number, no OpenAI spend
+## Running it
+
+### First time
 
 ```sh
 npm install
-npm run dev
+cp .dev.vars.example .dev.vars   # then fill in a model — see below
+npm run runs:migrate             # local database behind the run viewer
 ```
 
-With no `LINQ_API_KEY` set, the Linq transport is **dry**: sends are logged, not
-delivered. Drive the agent with the localhost-only simulator:
+### Every time
+
+Two terminals. The second is only needed if you are using your Claude plan as
+the model.
 
 ```sh
+npm run dev      # terminal 1 — the Worker and the pages, on http://localhost:5173
+npm run llm      # terminal 2 — only for the "Claude plan" row below
+```
+
+### Where the model comes from
+
+`LLM_PROFILE` is `dev` in `wrangler.jsonc`, so local runs use whatever
+`DEV_LLM_*` points at. Pick one and put it in `.dev.vars`:
+
+| You want | Set | Costs |
+|---|---|---|
+| Your Claude plan | `DEV_LLM_BASE_URL=http://127.0.0.1:11435/v1`, `DEV_LLM_MODEL=haiku`, and run `npm run llm` | nothing (uses your subscription) |
+| Ollama | `DEV_LLM_BASE_URL=http://localhost:11434/v1`, `DEV_LLM_MODEL=<model>` | nothing |
+| Workers AI | `DEV_LLM_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1` plus a token | pennies |
+| OpenAI — what deploys use | leave `DEV_LLM_*` blank, set `OPENAI_API_KEY` | credits |
+
+> **Leaving `DEV_LLM_*` blank does not mean "no model".** It falls back to
+> OpenAI and spends credits. `llm.ts` logs `llm profile.fallback` when this
+> happens — worth grepping for if a local test costs money unexpectedly.
+
+### Drive it without a phone
+
+With no `LINQ_API_KEY` set the Linq transport is **dry**: sends are logged, not
+delivered. These routes are localhost-only and 404 on the deployed Worker.
+
+```sh
+# send a message to the agent, as if someone texted it
 curl -X POST localhost:5173/api/dev/message -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","text":"dinner friday? ramen downtown"}'
+
+# tapback on the plan card
 curl -X POST localhost:5173/api/dev/react -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","reaction":"like"}'
+
+# run any agent tool directly — no model call, no tokens
 curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
   -d '{"chat":"demo","tool":"propose_plan","args":{"title":"Friday dinner","options":[{"title":"A"},{"title":"B"}]}}'
-                                                  # run any agent tool directly: no LLM, no tokens
+
+# start a research run without going through the model
+curl -X POST localhost:5173/api/dev/research -H 'content-type: application/json' \
+  -d '{"chat":"demo","brief":"late night ramen","near":"Toronto","depth":"quick"}'
+
 curl 'localhost:5173/api/dev/dump?chat=demo'      # state, transcript, votes
-open  'http://localhost:5173/w/demo'              # live vote page
-open  'http://localhost:5173/card/demo'           # the card image
+curl 'localhost:5173/api/dev/logs?chat=demo'      # that chat's event history, as text
 ```
+
+### Where to look
+
+| Open | What it is |
+|---|---|
+| `localhost:5173/runs` | **the run viewer** — every turn as a graph of cards. Start here when something looks wrong |
+| `localhost:5173/w/demo` | the vote page for chat `demo`, live over WebSocket |
+| `localhost:5173/card/demo` | the plan card as a PNG, exactly as the chat sees it |
+| `localhost:5173/live/demo` | the browser, live, while a booking or research run is going |
+
+The run viewer needs no token on localhost. On the deployed Worker it does —
+see `RUNS_TOKEN` in the secrets table.
 
 ### Real iMessage from your laptop
 
@@ -99,6 +150,41 @@ Votes, research results and booking results wake it too, as before. In the logs
 a sleeping message is `message.stored`; a waking one is `message.in` with a
 `wake` reason. Test the gate in the simulator with `"group": true` plus
 `"mention": true` or `"replyTo": "last"` on `/api/dev/message`.
+
+### Location — a city, once, and then the share is ended
+
+In a one-to-one chat where the agent doesn't know where someone is, it offers a
+choice: type it, or share location. Only after they say yes does it call
+`request_location`, which makes their phone show Apple's share prompt.
+
+When they accept, the agent reads the share **once**, keeps `locality` plus the
+region ("Toronto, ON, Canada") as their area, and immediately ends the share
+from its side so it has no way to look again. Coordinates and street addresses
+are never stored or logged — `readLocation` in `linq.ts` drops them before
+anything else sees them.
+
+- **Only a share the agent asked for is read.** Someone sharing with the number
+  unprompted has agreed to nothing, so it is ignored, and their share is left alone.
+- **1:1 iMessage only** — an Apple limit. The tool refuses in a group before
+  anything is sent.
+- **Two ways it hears back.** The `location.sharing.started` webhook is the fast
+  path; a timer at 25s, 90s and 4min covers subscriptions made before that
+  event was added. Bring an old subscription up to date, keeping its secret:
+  `node scripts/linq-webhook.mjs events`
+- **Needs the feature on the Linq account.** Without it Linq answers `403`,
+  code `2011`, and the agent just asks them to type instead.
+- **If a share stays empty:** it was probably started from the standalone Find My
+  app, which binds it to their Apple ID email rather than the number. They need
+  to re-share from inside the Messages conversation.
+
+Try it without a phone:
+
+```sh
+curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
+  -d '{"chat":"demo","tool":"request_location","args":{}}'
+curl -X POST localhost:5173/api/dev/location -H 'content-type: application/json' \
+  -d '{"chat":"demo","from":"+15550001111","locality":"Toronto","region":"ON, Canada"}'
+```
 
 ### Presence — read receipts, typing, a name and a face
 
@@ -493,36 +579,77 @@ Alternatives for `dev`: a local Ollama (`http://localhost:11434/v1`, free, slow,
 and small models leak reasoning and skip tools) or Workers AI's
 OpenAI-compatible endpoint — see `.dev.vars.example`.
 
-## Deploy
+## Setting up the dependencies
 
-Live at **https://htn-planner.schangchang-li.workers.dev**. A redeploy takes
-about ten seconds:
+### 1. The toolchain
 
-```sh
-npm run deploy      # builds, then deploys with LLM_PROFILE=demo (OpenAI)
-```
-
-`wrangler.jsonc` keeps `LLM_PROFILE` at `dev` so local work never spends OpenAI
-credits; the deploy script overrides it for production only.
-
-R2 (card image caching) is optional and currently off — see the note in
-`wrangler.jsonc`.
-
-### Which agent is live: deployed or your laptop
-
-Linq delivers to every active subscription, and two live agents means two
-replies to every text. Keep exactly one active:
+**Node 20 or newer** (developed on 26) and **npm**. The lockfile is
+`package-lock.json`, so installing with pnpm or yarn produces a different tree —
+don't. `wrangler` comes from the dev dependencies, so there is nothing to
+install globally; every command below uses `npx wrangler` or an npm script.
 
 ```sh
-node scripts/linq-webhook.mjs list
-node scripts/linq-webhook.mjs use workers.dev          # the deployed Worker answers
-node scripts/linq-webhook.mjs use trycloudflare        # your laptop answers (tunnel must be up)
-node scripts/linq-webhook.mjs create <tunnel-url> --env   # after a tunnel restart: new URL, new secret
-node scripts/linq-webhook.mjs prune                    # delete dead, inactive subscriptions
+node --version    # v20+
+npm install
 ```
 
-Production logs: `npx wrangler tail`. The simulator routes (`/api/dev/*`) are
-localhost-only and return 404 on the deployed Worker.
+### 2. The accounts
+
+Work down the table. Only the first row is required to get *something* running
+locally; the rest turn features on.
+
+| Service | What you need | Goes in | Without it |
+|---|---|---|---|
+| **Cloudflare** | `npx wrangler login`, then a D1 database and a Vectorize index (see *Cloudflare setup from scratch*) | `wrangler.jsonc` | nothing deploys; local dev still works |
+| **A model** | one of the four rows in *Where the model comes from* | `.dev.vars` | the agent cannot think — every turn fails |
+| **Linq** | account key, and a number to send from | `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET` | sends are logged, not delivered. Fine for local work |
+| **Browserbase** | API key from the dashboard | `BROWSERBASE_API_KEY` | falls back to Cloudflare Browser Rendering, whose datacenter IPs review sites block |
+| **OpenAI** | API key | `OPENAI_API_KEY` | needed for deploys, which run `LLM_PROFILE=demo` |
+| **Instagram** | a throwaway account for the bot, logged in once (below) | `BROWSERBASE_CONTEXT_ID` | reading someone's linked Instagram hits a login wall |
+| **Shopify** | nothing | — | — (stores are called over UCP, which is public) |
+
+Local secrets live in `.dev.vars` (copy `.dev.vars.example`). Production secrets
+are separate and go in one at a time with `npx wrangler secret put NAME`.
+
+### 3. One-time setup scripts
+
+None of these are needed to run the agent locally; each turns on one thing.
+
+```sh
+node scripts/ig-login.mjs                    # log the bot's Instagram in, by hand,
+                                             # in a remote browser. Prints BROWSERBASE_CONTEXT_ID.
+                                             # The password never touches this repo.
+node scripts/linq-contact-card.mjs set "Plan"   # the name and photo people see for the number
+node scripts/linq-webhook.mjs create <url> --env   # point Linq at your tunnel (see above)
+```
+
+### 4. Check it works
+
+```sh
+npm run smoke        # deterministic checks against the local dev server, no model calls
+npm run typecheck
+```
+
+Run `npm run smoke` after every pull and before every deploy — several people
+edit this repo at once and it covers the things that have already broken.
+
+### What each package is for
+
+| package | why |
+| --- | --- |
+| `agents` | the Durable Object framework behind `PlanAgent` and `RunHub` — state, WebSockets, scheduling |
+| `@linqapp/sdk` | iMessage: sending, cards, tapbacks, webhook verification |
+| `openai` | the model client. Points at OpenAI or any OpenAI-compatible endpoint via the `dev` profile |
+| `@cloudflare/puppeteer` | drives the browser for research and booking, over CDP |
+| `workers-og` | renders the plan and cart cards to PNG inside the Worker |
+| `zod` | validates tool arguments coming back from the model |
+| `react` / `react-dom` | the vote page and the `/runs` viewer |
+
+**Dev dependencies:** `vite` + `@cloudflare/vite-plugin` (one dev server for both
+the Worker and the React app), `@vitejs/plugin-react`, `typescript`, `wrangler`.
+
+**Cloudflare services used:** Durable Objects with SQLite, Workflows, D1,
+Vectorize, Browser Rendering, Workers AI (embeddings), and R2 (optional, off).
 
 ## Cloudflare setup from scratch
 
@@ -609,33 +736,36 @@ Only one subscription may be active at a time — see *Which agent is live* belo
 | `not available on your plan` | the account is on the free tier; Browser Rendering, Workflows and Vectorize need Workers Paid |
 | `Invalid cache control` from Shopify | `PUBLIC_BASE_URL` is unset or wrong, so the agent profile is unreachable |
 
-## What this depends on
+## Deploy
 
-**Toolchain.** Node 20 or newer (developed on 26) and npm — the lockfile is
-`package-lock.json`, so don't install with pnpm or yarn. `npx wrangler` comes
-from the dev dependency; no global install needed.
+Live at **https://htn-planner.schangchang-li.workers.dev**. A redeploy takes
+about ten seconds:
 
-**Runtime dependencies**
+```sh
+npm run deploy      # builds, then deploys with LLM_PROFILE=demo (OpenAI)
+```
 
-| package | why |
-| --- | --- |
-| `agents` | the Durable Object framework behind `PlanAgent` and `RunHub` — state, WebSockets, scheduling |
-| `@linqapp/sdk` | iMessage: sending, cards, tapbacks, webhook verification |
-| `openai` | the model client. Points at OpenAI or any OpenAI-compatible endpoint via the `dev` profile |
-| `@cloudflare/puppeteer` | drives the browser for research and booking, over CDP |
-| `workers-og` | renders the plan and cart cards to PNG inside the Worker |
-| `zod` | validates tool arguments coming back from the model |
-| `react` / `react-dom` | the vote page and the `/runs` viewer |
+`wrangler.jsonc` keeps `LLM_PROFILE` at `dev` so local work never spends OpenAI
+credits; the deploy script overrides it for production only.
 
-**Dev dependencies:** `vite` + `@cloudflare/vite-plugin` (one dev server for the
-Worker and the React app), `@vitejs/plugin-react`, `typescript`, `wrangler`.
+R2 (card image caching) is optional and currently off — see the note in
+`wrangler.jsonc`.
 
-**Cloudflare services:** Durable Objects with SQLite, Workflows, D1, Vectorize,
-Browser Rendering, Workers AI (embeddings), and R2 (optional, off).
+### Which agent is live: deployed or your laptop
 
-**Outside accounts:** Linq (the iMessage number), OpenAI (production model),
-Browserbase (optional but strongly recommended browser sessions). Shopify needs
-no key — stores are called over UCP, which is public.
+Linq delivers to every active subscription, and two live agents means two
+replies to every text. Keep exactly one active:
+
+```sh
+node scripts/linq-webhook.mjs list
+node scripts/linq-webhook.mjs use workers.dev          # the deployed Worker answers
+node scripts/linq-webhook.mjs use trycloudflare        # your laptop answers (tunnel must be up)
+node scripts/linq-webhook.mjs create <tunnel-url> --env   # after a tunnel restart: new URL, new secret
+node scripts/linq-webhook.mjs prune                    # delete dead, inactive subscriptions
+```
+
+Production logs: `npx wrangler tail`. The simulator routes (`/api/dev/*`) are
+localhost-only and return 404 on the deployed Worker.
 
 ## Things that will bite you
 

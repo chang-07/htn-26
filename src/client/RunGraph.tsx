@@ -81,6 +81,14 @@ function classify(e: GraphEvent): { svc: ServiceId; title: string; sub: string }
   if (e.event.startsWith("booking.")) {
     return { svc: "booking", title: e.event.replace(".", " "), sub: str(f.detail) ?? str(f.option) ?? "" };
   }
+  if (e.event.startsWith("location.")) {
+    const st = e.event.slice("location.".length);
+    return {
+      svc: "chat",
+      title: st === "requested" ? "location asked" : st === "taken" ? "city saved" : "sharing started",
+      sub: st === "taken" ? (str(f.area) ?? "") : st === "requested" ? (str(f.result) ?? "") : `from ${str(f.who) ?? "?"}`,
+    };
+  }
   if (e.event.startsWith("cart.")) {
     return { svc: "shop", title: e.event.replace(".", " "), sub: str(f.shop) ?? "" };
   }
@@ -133,6 +141,9 @@ function describe(n: Node): string {
       : "Research failed, so the agent has nothing it is allowed to propose.";
     case "booking.started": return "A browser session opened to make the reservation for real.";
     case "booking.finished": return f.ok ? "The reservation went through." : "The booking failed, and the agent has to take that back to the group.";
+    case "location.requested": return "The agent asked this person's phone to share its location, after they agreed to.";
+    case "location.sharing_started": return "The person accepted, and Linq reported that sharing began.";
+    case "location.taken": return "The agent read the share once, kept only the city, and ended the share.";
     case "cart.updated": return "A cart was built at the store and posted to the chat. The agent cannot pay — a person finishes checkout.";
     case "cart.edited": return "The cart's quantities were changed from this page, and the card in the thread was redrawn.";
     case "tool": return ({
@@ -228,6 +239,16 @@ function explain(n: Node): string[] {
         ? "The reservation was submitted and confirmed."
         : `It did not get a booking: ${s_("detail") ?? "no reason recorded"}. The agent has to take that back to the group rather than pretend it worked.`);
       out.push("The capture is the last thing the browser saw, which is usually enough to tell whether it got lost or the slot was genuinely unavailable.");
+      break;
+    case "location.requested":
+      out.push("Apple only allows this in a one-to-one iMessage chat, and the person sees a system prompt they have to accept — nothing is readable until they do. The agent only calls this after they have said yes in the conversation.");
+      break;
+    case "location.sharing_started":
+      out.push("This event carries no coordinates, only that sharing began. If it never arrives — an older webhook subscription will not send it — the agent checks on a timer instead.");
+      break;
+    case "location.taken":
+      out.push("Only the city and region were kept, as the person's area, so searches are about the right place. Coordinates and the street address were never stored or logged.");
+      out.push(f.shareEnded ? "The share was then ended from the agent's side, so it has no way to look again." : "Ending the share failed, so the person was told how to stop it themselves.");
       break;
     case "cart.updated":
       out.push("The cart was created at the store and a checkout link came back. The agent cannot pay — the card in the chat carries the link so a person finishes it.");

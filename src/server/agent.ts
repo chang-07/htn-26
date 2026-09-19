@@ -8,7 +8,7 @@ import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMat
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, markRead, readLocation, requestLocation, stopLocation, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
@@ -41,6 +41,9 @@ on a time, book it, and order anything they need.
 - "In the area" and "nearby" mean the group's own area, shown below. When
   someone states where they are, call remember_area; pass that area as the
   research "near" unless they name somewhere else for this outing.
+- In a one-to-one chat where the area is unknown, offer a choice: they can type
+  where they are, or share their location and you will take just the city.
+  Call request_location only after they say yes to sharing. Never in a group.
 - Never invent a venue, address or price. Every option you propose must come
   from the Research findings below or a shop_search result in this conversation.
 - A vote needs at least two real options. If research found only one good
@@ -1425,6 +1428,24 @@ ${transcript}`,
         return "remembered";
       }
 
+      case "request_location": {
+        // Apple only allows the request in a 1:1 iMessage chat, and asking in
+        // front of a group is not a thing to do to someone anyway.
+        if (this.getMeta("is_group") !== "0") return "Not possible in a group chat. Ask where they are instead.";
+        const asked = await requestLocation(this.env, this.name);
+        this.note("info", "location.requested", { result: asked });
+        if (asked === "already_sharing") {
+          this.setMeta("location_asked_at", String(Date.now()));
+          const took = await this.takeLocation();
+          return took ? `Their area is now ${took}, and they have been told. Say nothing more about it.` : "They are sharing, but no position has arrived yet. Say you will pick it up when it lands, then stop.";
+        }
+        if (asked !== "sent") return "Location sharing is not available here. Ask them to type where they are instead.";
+        this.setMeta("location_asked_at", String(Date.now()));
+        // The webhook is the fast path; these cover a subscription without it.
+        for (const seconds of [25, 90, 240]) await this.schedule(seconds, "checkLocation");
+        return "Request sent: their phone is showing the prompt. Say so in one short line, then stop — when they accept, the city is saved and confirmed to them on its own.";
+      }
+
       case "remember_name": {
         const { who, name: goesBy } = parseToolArgs("remember_name", rawArgs);
         const person = this.participants().find((p) => this.label(p.handle) === who);
@@ -1955,6 +1976,60 @@ this.rememberCardId(id);
   }
 
   /** Called over RPC by ResearchWorkflow as it moves through its stages. */
+  // ---------------------------------------------------------------- location
+  // The agent takes a city, once, and then ends the share so it cannot look
+  // again. Coordinates and street addresses are never stored or logged.
+
+  /** How long after asking a share still counts as the answer to that ask. */
+  private static LOCATION_WINDOW_MS = 30 * 60 * 1000;
+
+  /** Webhook path: someone in this chat started sharing. */
+  async locationShared(sharedBy: string) {
+    this.note("info", "location.sharing_started", { who: mask(sharedBy) });
+    await this.takeLocation();
+  }
+
+  /** Scheduler callback: the fallback when no webhook is subscribed. */
+  async checkLocation() {
+    await this.takeLocation();
+  }
+
+  /**
+   * Reads the share, keeps the city, ends the share. Returns the area it saved.
+   * Only acts on a share the agent asked for: someone sharing with the number
+   * unprompted has not agreed to anything, and ending their share for them
+   * would be as wrong as reading it.
+   */
+  private async takeLocation(simulated?: { handle: string; locality: string; region?: string }): Promise<string | null> {
+    const askedAt = Number(this.getMeta("location_asked_at") || 0);
+    if (!askedAt || Date.now() - askedAt > PlanAgent.LOCATION_WINDOW_MS) return null;
+
+    const places = simulated ? [simulated] : await readLocation(this.env, this.name);
+    const place = places.find((pl) => pl.locality);
+    if (!place?.locality) return null;
+
+    // Claimed before anything slow, so the webhook and a poll cannot both act.
+    this.setMeta("location_asked_at", "");
+    const area = [place.locality, place.region].filter(Boolean).join(", ").slice(0, 120);
+    this.setMeta("area", area);
+    await peopleStore(this.env).save(place.handle, { area });
+    const stopped = simulated ? "dry" : await stopLocation(this.env, this.name, place.handle);
+    const ended = stopped === "ok" || stopped === "dry";
+    this.note("info", "location.taken", { who: mask(place.handle), area, shareEnded: ended });
+
+    await this.say(
+      ended
+        ? `got it, ${place.locality}. i only kept the city, and i've ended the share so i can't see where you are`
+        : `got it, ${place.locality}. i only kept the city. you can stop sharing from the chat details whenever you like`,
+    );
+    return area;
+  }
+
+  /** Simulator only: stands in for the person tapping "share" on their phone. */
+  async devShareLocation(handle: string, locality: string, region?: string) {
+    return this.takeLocation({ handle, locality, region });
+  }
+
   async researchProgress(stage: string, fields: Fields = {}) {
     this.setMeta("research_progress_at", String(Date.now()));
     if (stage === "browser" && typeof fields.liveUrl === "string") {

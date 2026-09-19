@@ -156,6 +156,16 @@ async function handleLinqWebhook(request: Request, env: Env): Promise<Response> 
         });
         break;
       }
+
+      case "location.sharing.started": {
+        // No coordinates arrive here — only that sharing began. The agent reads
+        // the city itself, and only if it was the one that asked.
+        const loc = (event as { data: { chat_id: string | null; shared_by: string } }).data;
+        if (!loc.chat_id) break; // shared from Find My rather than the conversation: not readable
+        const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, loc.chat_id);
+        await agent.locationShared(loc.shared_by);
+        break;
+      }
     }
   } catch (err) {
     // A handler bug must not put Linq into a retry loop.
@@ -171,6 +181,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
+ *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
  *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
@@ -274,6 +285,12 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   const chat = body.chat ?? url.searchParams.get("chat") ?? "demo";
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
 
+  if (url.pathname === "/api/dev/location") {
+    // Stands in for the person accepting the share prompt on their phone:
+    //   {"chat":"demo","from":"+15550001111","locality":"Toronto","region":"ON, Canada"}
+    const took = await agent.devShareLocation(body.from, body.locality ?? "Toronto", body.region);
+    return Response.json({ took });
+  }
   if (url.pathname === "/api/dev/message") {
     // Defaults to a direct chat (always answered). Pass "group": true to test the
     // wake gate, with "mention": true or "replyTo": "last" | "<message id>".
