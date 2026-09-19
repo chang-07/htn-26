@@ -6,7 +6,7 @@ import { llmFor } from "./llm";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { markRead, sendCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { markRead, sendCard, sendLinkCard, sendPhoto, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
@@ -407,6 +407,49 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /** Scheduler callback: once per direct chat, right after onboarding finishes. */
+  /**
+   * Form-first onboarding: right after the agent's first reply in a new direct
+   * chat, a tappable card offers the whole profile as one 30-second form. The
+   * conversation stays as the other way in — someone who just keeps texting is
+   * asked one question at a time, exactly as before.
+   */
+  private async offerProfileCard() {
+    if (this.getMeta("is_group") !== "0" || this.getMeta("profile_card_sent") === "1") return;
+    const person = this.participants()[0];
+    if (!person) return;
+    const store = peopleStore(this.env);
+    const profile = (await store.getMany([person.handle]))[person.handle];
+    if (!missingFields(profile).length) return; // nothing left to ask
+    this.setMeta("profile_card_sent", "1");
+
+    const token = await store.tokenFor(person.handle);
+    await store.save(person.handle, { dmChat: this.name });
+    const id = await timed(
+      "agent",
+      "profile_card.out",
+      {},
+      () =>
+        sendLinkCard(this.env, this.name, {
+          title: "Set up your profile",
+          subtitle: "30 seconds, so plans fit you. Or just answer here.",
+          button: "Open",
+          url: `${this.env.PUBLIC_BASE_URL}/p/${token}`,
+        }),
+      this.note,
+    ).catch(() => undefined);
+    if (id) {
+      this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${"[profile card]"}, ${Date.now()})`;
+      // The card carries the link, so the plain-text copy after onboarding is not needed.
+      this.setMeta("profile_link_sent", "1");
+    }
+  }
+
+  /** Called by the profile form when it is saved. */
+  async profileSaved(name?: string) {
+    this.note("info", "profile.saved_via_form", {});
+    await this.say(`got it${name ? `, ${name}` : ""}. add me to any group chat and @ me when you want something planned`);
+  }
+
   async offerProfile() {
     if (this.getMeta("is_group") !== "0" || this.getMeta("profile_link_sent") === "1") return;
     await this.sendProfileLink("change any of that here, anytime:\n");
@@ -461,7 +504,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       text,
       onboarding: `\nOnboarding: still unknown about this person, in order: ${missing.map((m) => `${m.key} (${m.ask})`).join("; ")}.
 - First call save_profile with everything their latest message answered — one message can answer several — and put anything they declined in skipped. "skip", "pass" or "rather not" means skipped. Then send_message.
-- ${first ? "This is your first exchange: say in one line who you are (a planner they can add to group chats) and that a few quick questions will make plans fit them, then ask the first one." : "Ask only the next unknown item, as one short friendly question. No lists, no preamble."}
+- ${first ? "This is your first exchange: say in one line who you are (a planner they can add to group chats) and that a few quick questions will make plans fit them, then ask the first one. A tappable profile card appears right under your message, so add in a few words that they can tap it to do it all at once, or just answer here." : "Ask only the next unknown item, as one short friendly question. No lists, no preamble."}
 - If they asked for something else instead, help with that and leave onboarding for later. Never ask about an item that is not in the unknown list.`,
     };
   }
@@ -596,6 +639,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
       this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
+      // After the first reply, not before: the text introduces, the card offers the shortcut.
+      await this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err)));
       // A turn that ended in silence must not leave the bubble hanging.
       if (this.typingAt) {
         this.typingAt = 0;

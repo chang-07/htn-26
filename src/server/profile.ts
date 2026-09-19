@@ -1,5 +1,7 @@
 import { log, mask } from "./log";
-import { people, syncMatchPool, type Profile } from "./people";
+import { getAgentByName } from "agents";
+import type { PlanAgent } from "./agent";
+import { ONBOARDING, people, syncMatchPool, type Profile } from "./people";
 
 /**
  * The page behind a person's profile link: GET shows the form, POST saves it.
@@ -71,11 +73,20 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
         .filter((l) => /^https?:\/\/\S+\.\S+/.test(l))
         .slice(0, 6),
       matchOptIn: form.get("matchOptIn") === "on",
+      // "Fill in what you like; skip the rest" has to mean it: a field left
+      // blank on the form is an answer, so the chat does not ask for it again.
+      skipped: ONBOARDING.map((o) => o.key).filter((k) => k !== "matchOptIn" && !String(form.get(k) ?? "").trim()),
     });
     log("info", "people", "profile.saved", { who: mask(handle), matchOptIn: saved.matchOptIn, links: saved.links.length });
 
     // Same profile, same consent: ticking the box is what puts someone in the pool.
     if (!(await syncMatchPool(env, handle, saved))) log("warn", "people", "match_pool.failed", { who: mask(handle) });
+
+    // Close the loop where they started: a line in their chat with the agent.
+    if (saved.dmChat) {
+      const agent = await getAgentByName<Env, PlanAgent>(env.PlanAgent, saved.dmChat);
+      await agent.profileSaved(saved.name).catch((err) => log("warn", "people", "profile.ack_failed", { error: String(err).slice(0, 200) }));
+    }
     return page(`<main><span class="meta">Saved</span><h1>Got it${saved.name ? `, ${esc(saved.name)}` : ""}</h1>
       <p>The planner will use this in every chat you're in. Open this link again any time to change it, or text "forget me" to delete it.</p></main>`, true);
   }

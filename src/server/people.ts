@@ -24,6 +24,8 @@ export type Profile = {
   matchOptIn?: boolean;
   /** Onboarding questions they chose not to answer, so they are not asked twice. */
   skipped?: string[];
+  /** Their one-to-one chat with the agent, so saving the form can be acknowledged there. */
+  dmChat?: string;
   updated: number;
 };
 

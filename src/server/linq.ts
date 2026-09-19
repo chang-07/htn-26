@@ -188,6 +188,32 @@ export const tapback = (env: Env, chatId: string, messageId: string, type: Tapba
  * A photo cannot be redrawn, so tickets go out at moments, not on every change.
  * Returns the message id, which is what a tapback on the photo will name.
  */
+/**
+ * A tappable card that opens a URL, drawn by Linq's own iMessage extension (the
+ * `link` experience), so it needs no app of ours. Phones without Agent Apps
+ * show the title and subtitle as a static card; tapping still opens the link.
+ */
+export async function sendLinkCard(
+  env: Env,
+  chatId: string,
+  card: { title: string; subtitle?: string; button?: string; url: string },
+): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.link_card", { chat: short(chatId), title: card.title, url: card.url.replace(/\/p\/[0-9a-f]+/, "/p/<token>") });
+    return `dry-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
+    message: {
+      experience: {
+        name: "link",
+        action: "open",
+        params: { title: card.title.slice(0, 64), subtitle: card.subtitle?.slice(0, 120), button: card.button?.slice(0, 24), url: card.url },
+      },
+    },
+  });
+  return res.message.id;
+}
+
 export async function sendPhoto(env: Env, chatId: string, url: string): Promise<string> {
   if (isDry(env, chatId)) {
     log("info", "linq", "dry.photo", { chat: short(chatId), image: url });
