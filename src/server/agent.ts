@@ -7,7 +7,7 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { type PaymentConnection, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
@@ -513,8 +513,18 @@ export class PlanAgent extends Agent<Env, PlanState> {
         this.setMeta("pay_connect_id", "");
         await peopleStore(this.env).save(msg.from, { payments: "connected" });
         this.note("info", "payments.connected", { who: mask(msg.from) });
-        await this.say("you're connected. one more step: add a card below. i can only ever charge it for things you approve, one at a time", { screenEffect: "confetti" });
-        await timed("agent", "payments.attach_card", {}, () => sendAttachCard(this.env, this.name), this.note).catch(() => undefined);
+        // A plain link first (it opens in Safari, where the page works); Linq's inline card only as a fallback.
+        const link = await attachLink(this.env, this.name, msg.from).catch((err: unknown) => void this.note("warn", "payments.attach_link_failed", errorFields(err)));
+        if (link) {
+          this.note("info", "payments.attach_link", {});
+          await this.say(`you're connected. one more step, add a card: ${link}`, { screenEffect: "confetti" });
+          // The link is theirs alone; the transcript the model reads gets a placeholder.
+          this.sql`UPDATE messages SET body = ${"you're connected. one more step, add a card: [private link]"} WHERE direction = 'out' AND body LIKE ${`%${link}%`}`;
+          await this.say("if safari says it blocked a pop-up, tap allow (or settings > safari > block pop-ups off) and reload. i can only ever charge the card for things you approve, one at a time");
+        } else {
+          await this.say("you're connected. one more step: add a card below. i can only ever charge it for things you approve, one at a time", { screenEffect: "confetti" });
+          await timed("agent", "payments.attach_card", {}, () => sendAttachCard(this.env, this.name), this.note).catch(() => undefined);
+        }
       } catch (err) {
         this.note("warn", "payments.verify_failed", errorFields(err));
         await this.say("that code didn't work. it may have expired. text \"set up payments\" to get a new one");

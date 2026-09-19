@@ -354,6 +354,29 @@ export async function paymentCard(env: Env, paymentId: string): Promise<{ number
   return { number, expMonth, expYear, cvc };
 }
 
+/**
+ * A link to the wallet's add-a-card page that opens in Safari. Linq's own
+ * attach_card card opens inline, where the page cannot work: it needs a pop-up
+ * and a passkey, and an in-app webview allows neither. The only place Linq
+ * hands out the page's url is on a payment request for someone with no card
+ * yet, so this makes a $1 placeholder request purely to read that url. Nothing
+ * ever fetches a card for it, so it cannot charge, and it lapses on its own.
+ * Only for a wallet that was connected a moment ago: for one that already has a
+ * card, the same call would start a real approval.
+ */
+export async function attachLink(env: Env, chatId: string, handle: string): Promise<string | undefined> {
+  if (isDry(env, chatId)) return undefined;
+  const linq = linqClient(env);
+  const p = await linq.payments.create(
+    { handle, amount_cents: 100, currency: "usd", description: "Card setup (not a purchase)", merchant: { name: "Plan setup", url: env.PUBLIC_BASE_URL } },
+    { idempotencyKey: `setup-${crypto.randomUUID()}` },
+  );
+  if (p.status === "awaiting_user_action" && p.attach_url) return p.attach_url;
+  // They already have a card, so a placeholder would become a real request: close it.
+  if (p.id) await linq.payments.cancel(p.id).catch((err: unknown) => log("warn", "linq", "payment.cancel_failed", errorFields(err)));
+  return undefined;
+}
+
 /** The card that asks someone to add a payment card to their wallet. */
 export async function sendAttachCard(env: Env, chatId: string): Promise<string> {
   if (isDry(env, chatId)) {
