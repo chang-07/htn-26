@@ -263,7 +263,7 @@ await check("a location request is refused in a group", async () => {
   expect(/group/i.test(result), `asked for location in a group: ${result}`);
   expect(!(await logs(c)).includes("location.requested"), "the request reached Linq from a group chat");
 });
-await check("a share is only read when the agent asked, once, and only the city is kept", async () => {
+await check("a share they started is kept running; one the agent asked for is ended", async () => {
   const c = chat("locdm");
   const from = "+15550006002";
   // A direct chat, established without waking the model: payment removal is handled in code.
@@ -271,15 +271,24 @@ await check("a share is only read when the agent asked, once, and only the city 
   await sleep(800);
   const share = async (locality) => (await (await post("/api/dev/location", { chat: c, from, locality, region: "ON, Canada" })).json()).took;
 
-  expect((await share("Toronto")) === null, "read a share nobody asked for");
+  // Sharing unprompted is consent to be read, but the share is theirs to end.
+  expect((await share("Waterloo")) === "Waterloo, ON, Canada", "ignored a share the person started themselves");
+  let text = await logs(c);
+  expect(text.includes('"shareEnded":false'), "ended a share the agent never asked for");
+  await share("Waterloo");
+  expect(count(await logs(c), "location.taken") === 1, "told them twice about the same share");
+
+  // Asked for during onboarding: the city was all it wanted, so it ends the share.
   await tool(c, "request_location", {});
   expect((await share("Toronto")) === "Toronto, ON, Canada", "the accepted share was not taken");
-  expect((await share("Ottawa")) === null, "acted on a second share after the ask was already answered");
-
-  const text = await logs(c);
-  expect(count(text, "location.taken") === 1, "the city was taken more than once");
-  expect(text.includes('"shareEnded":true'), "the share was not ended after the city was read");
-  expect(!/coordinates|latitude|longitude/i.test(text), "something finer than a city reached the log");
+  text = await logs(c);
+  expect(text.includes('"shareEnded":true'), "the share it asked for was not ended");
+  expect(!/coordinates|latitude|longitude|"lat"|"lon"/i.test(text), "something finer than a city reached the log");
+});
+await check("with nobody sharing, read_locations says so rather than inventing a place", async () => {
+  const c = chat("locread");
+  const result = await tool(c, "read_locations", {});
+  expect(/nobody/i.test(result) && /do not claim/i.test(result), `unexpected answer: ${result.slice(0, 120)}`);
 });
 
 console.log("\nrun history");

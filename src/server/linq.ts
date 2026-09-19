@@ -304,7 +304,10 @@ export async function requestLocation(env: Env, chatId: string): Promise<Locatio
 /** City-level only, by design: see the note above. */
 export type SharedPlace = { handle: string; locality?: string; region?: string; updatedAt?: string };
 
-export async function readLocation(env: Env, chatId: string): Promise<SharedPlace[]> {
+type Located = SharedPlace & { lon: number; lat: number };
+
+/** The one place coordinates exist. Nothing below hands them on. */
+async function located(env: Env, chatId: string): Promise<Located[]> {
   if (isDry(env, chatId)) return [];
   try {
     const res = await linqClient(env).chats.location.retrieve(chatId);
@@ -313,11 +316,43 @@ export async function readLocation(env: Env, chatId: string): Promise<SharedPlac
       locality: f.properties.locality,
       region: regionFrom(f.properties.address, f.properties.locality),
       updatedAt: f.properties.updated_at,
+      lon: f.geometry.coordinates[0],
+      lat: f.geometry.coordinates[1],
     }));
   } catch (err) {
     log("warn", "linq", "location_read.failed", { chat: short(chatId), error: String(err).slice(0, 200) });
     return [];
   }
+}
+
+const strip = ({ handle, locality, region, updatedAt }: Located): SharedPlace => ({ handle, locality, region, updatedAt });
+
+export async function readLocation(env: Env, chatId: string): Promise<SharedPlace[]> {
+  return (await located(env, chatId)).map(strip);
+}
+
+export type PlacesRead = { people: SharedPlace[]; pairs: { a: string; b: string; km: number }[] };
+
+/**
+ * Everyone sharing in this chat — reading works in groups, only *asking* is
+ * 1:1 — with the distance between each pair. The distance is worked out here so
+ * the coordinates never leave this file: callers get a city per person and a
+ * rounded number per pair, which is all "how far apart are we" needs.
+ */
+export async function readPlaces(env: Env, chatId: string): Promise<PlacesRead> {
+  const all = await located(env, chatId);
+  const pairs: PlacesRead["pairs"] = [];
+  for (let i = 0; i < all.length; i++)
+    for (let j = i + 1; j < all.length; j++) pairs.push({ a: all[i].handle, b: all[j].handle, km: kmBetween(all[i], all[j]) });
+  return { people: all.map(strip), pairs };
+}
+
+/** Great-circle distance, rounded to 100 m: precise enough to plan with, too coarse to locate anyone. */
+export function kmBetween(a: { lon: number; lat: number }, b: { lon: number; lat: number }): number {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const h =
+    Math.sin(rad(b.lat - a.lat) / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
+  return Math.round(2 * 6371 * Math.asin(Math.sqrt(h)) * 10) / 10;
 }
 
 /**
