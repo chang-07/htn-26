@@ -31,7 +31,7 @@ export async function openBrowser(
     timeoutSeconds?: number;
     /**
      * Use the persistent context that holds the bot account's logins (see
-     * scripts/ig-login.mjs). Only for reading a profile its owner handed over —
+     * scripts/social-login.mjs). Only for reading a profile its owner handed over —
      * never for research or booking, which have no business being signed in.
      */
     signedIn?: boolean;

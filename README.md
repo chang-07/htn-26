@@ -252,16 +252,18 @@ routes, Yosemite. i'll plan with that in mind."
   health, religion, politics, sexuality, ethnicity, relationships, money or
   where someone lives, and returns nothing rather than pad.
 - Public sites (Letterboxd, GitHub, a personal page) are read logged out.
-  **Instagram needs a login**, so it goes through the bot's own throwaway
-  account, held in a persistent Browserbase context:
+  **Instagram needs a login**, and X shows only a few popular posts without
+  one, so both go through the bot's own throwaway accounts, held together in
+  one persistent Browserbase context:
 
 ```sh
-node scripts/ig-login.mjs     # prints a live-view link; log in BY HAND; it saves itself
+node scripts/social-login.mjs     # Instagram. Prints a live-view link; log in BY HAND; it saves itself
+node scripts/social-login.mjs x   # X / Twitter, same flow
 ```
 
   The password is typed into the remote browser by a person and never touches
   the repo, a secret or a prompt — keep it that way. Automation is against
-  Instagram's terms and the account can be challenged or banned at any time, so
+  these sites' terms and an account can be challenged or banned at any time, so
   a login wall, a private account or a dead link all end in a quiet skip.
   `BROWSERBASE_CONTEXT_ID` names the context (`.env` locally, a secret in prod).
 

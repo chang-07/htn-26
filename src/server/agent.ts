@@ -601,7 +601,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (found.interests.length) {
       await this.say(`had a look at your ${found.read.join(" and ")}: ${found.interests.slice(0, 4).join(", ")}. i'll plan with that in mind. say "forget my links" if you'd rather i didn't`);
     } else if (found.skipped.some((k) => k.why === "private")) {
-      await this.say("your instagram's private, so i left it alone");
+      await this.say(`your ${found.skipped.find((k) => k.why === "private")!.label}'s private, so i left it alone`);
     }
     // Anything else (a login wall, a dead link) is ours to deal with, not theirs to hear about.
   }

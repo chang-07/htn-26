@@ -14,14 +14,15 @@ import { errorFields, log } from "./log";
  * is not what permits it — they asking us to look is. What was read is then
  * told to them in their own chat, so none of it happens behind their back.
  *
- * Instagram is read through the bot's own signed-in account (a persistent
- * Browserbase context, set up by hand with scripts/ig-login.mjs). That login can
- * be challenged or banned at any moment, so every path here ends in "skipped",
+ * Instagram and X are read through the bot's own signed-in accounts (one
+ * persistent Browserbase context, set up by hand with scripts/social-login.mjs).
+ * Either login can be challenged or banned at any moment, so every path here ends in "skipped",
  * never in an error the person sees.
  */
 
 export type LinkSource =
   | { kind: "instagram"; handle: string; label: string }
+  | { kind: "x"; handle: string; label: string }
   | { kind: "web"; url: string; label: string };
 
 export type ReadOutcome = { source: LinkSource; ok: boolean; text?: string; skipped?: "private" | "login_wall" | "not_found" | "unreadable" };
@@ -37,12 +38,23 @@ export type OnlineSummary = {
 };
 
 const IG_HANDLE = /^[a-z0-9._]{1,30}$/i;
+const X_HANDLE = /^[a-z0-9_]{1,15}$/i;
+/** Paths on x.com that are the site's own pages, not somebody's profile. */
+const X_RESERVED = /^(i|home|explore|search|login|signup|settings|messages|notifications|hashtag|intent|share|compose)$/i;
 
 /** Turns what someone typed ("@me on insta", "letterboxd.com/me") into things that can be opened. */
 export function parseLinks(links: string[]): LinkSource[] {
   const out: LinkSource[] = [];
   for (const raw of links.slice(0, 6)) {
     const text = raw.trim();
+    // X first: "@me on twitter" would otherwise fall through to the bare-"@name" Instagram rule.
+    const xFromUrl = text.match(/(?:^|[\/.\s])(?:x|twitter)\.com\/@?([a-z0-9_]+)/i)?.[1];
+    const saysX = /\b(twitter|x)\b/i.test(text) && !text.includes("/");
+    const xHandle = xFromUrl ?? (saysX ? text.match(/@([a-z0-9_]{1,15})\b/i)?.[1] : undefined);
+    if (xHandle && X_HANDLE.test(xHandle) && !X_RESERVED.test(xHandle)) {
+      out.push({ kind: "x", handle: xHandle.toLowerCase(), label: "twitter" });
+      continue;
+    }
     // An Instagram handle arrives as a URL, as "@name", or as "name on insta".
     const fromUrl = text.match(/instagram\.com\/([a-z0-9._]+)/i)?.[1];
     const at = text.match(/@([a-z0-9._]{2,30})/i)?.[1];
@@ -66,7 +78,7 @@ export function parseLinks(links: string[]): LinkSource[] {
   // The same account given twice ("@me" and the full URL) is read once.
   const seen = new Set<string>();
   return out.filter((s) => {
-    const key = s.kind === "instagram" ? `ig:${s.handle}` : s.url;
+    const key = s.kind === "web" ? s.url : `${s.kind}:${s.handle}`;
     return seen.has(key) ? false : (seen.add(key), true);
   }).slice(0, 4);
 }
@@ -101,6 +113,49 @@ export async function readInstagram(browser: Browser, handle: string): Promise<O
   }
 }
 
+export async function readX(browser: Browser, handle: string): Promise<Omit<ReadOutcome, "source">> {
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: 1280, height: 1600 });
+    await page.goto(`https://x.com/${encodeURIComponent(handle)}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await new Promise((r) => setTimeout(r, 5000)); // the timeline is fetched after load
+
+    const seen = await page.evaluate(() => {
+      const body = document.body?.innerText ?? "";
+      // X ships no stable class names or test ids, so this goes by shape: each
+      // post is an <article>, and its words are the long lines — the rest is a
+      // name, a handle, a date and four counters.
+      const posts = Array.from(document.querySelectorAll<HTMLElement>("article"))
+        .map((a) => a.innerText.split("\n").map((l) => l.trim()))
+        // Their own words only: a repost is led by "<someone> reposted".
+        .filter((lines) => !/ reposted$/i.test(lines[0] ?? ""))
+        .map((lines) => lines.filter((l) => l.length > 40).join(" "))
+        .filter(Boolean)
+        .slice(0, 14);
+      return {
+        path: location.pathname,
+        body: body.slice(0, 2000),
+        // Everything above the Posts / Replies tabs: name, handle, bio.
+        header: body.split(/\nPosts\nReplies\n/)[0].split("\n").filter((l) => !/^[\d.,]+[KM]?( posts)?$|^(Following|Followers|Follow|Mention|Message)$/i.test(l.trim())).join("\n").slice(0, 700),
+        posts,
+        // Logged out, X shows a few popular posts at best, under links asking to sign in.
+        signedOut: Boolean(document.querySelector('a[href*="mode=login"], a[href="/login"], a[href*="/flow/login"]')),
+      };
+    });
+
+    if (/\/(login|i\/flow\/login|i\/jf\/onboarding)/.test(seen.path)) return { ok: false, skipped: "login_wall" };
+    if (/these posts are protected/i.test(seen.body)) return { ok: false, skipped: "private" };
+    if (/this (account|page) doesn.t exist|account suspended/i.test(seen.body)) return { ok: false, skipped: "not_found" };
+    // A bio alone is not worth passing off as a read when the wall is what hid the rest.
+    if (!seen.posts.length && seen.signedOut) return { ok: false, skipped: "login_wall" };
+    if (!seen.posts.length) return { ok: false, skipped: "unreadable" };
+
+    return { ok: true, text: `PROFILE HEADER:\n${seen.header}\n\nRECENT POSTS:\n${seen.posts.map((t) => `- ${t.slice(0, 280)}`).join("\n")}`.slice(0, 3500) };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 const Summary = z.object({
   interests: z.array(z.string()).max(6).describe("Short phrases for things they evidently enjoy: 'film photography', 'bouldering', 'ramen'"),
   line: z.string().describe("One plain sentence a friend might say about what they are into, under 140 characters"),
@@ -122,12 +177,14 @@ export async function readLinks(env: Env, links: string[]): Promise<OnlineSummar
   const outcomes: ReadOutcome[] = [];
   let session;
   try {
-    // Signed in only when there is an Instagram link to read; a personal site needs no login.
-    session = await openBrowser(env, { timeoutSeconds: 180, signedIn: sources.some((s) => s.kind === "instagram") });
+    // Signed in only when a link needs it; a personal site is read with no account behind it.
+    session = await openBrowser(env, { timeoutSeconds: 180, signedIn: sources.some((s) => s.kind !== "web") });
     for (const source of sources) {
       try {
         if (source.kind === "instagram") {
           outcomes.push({ source, ...(await readInstagram(session.browser, source.handle)) });
+        } else if (source.kind === "x") {
+          outcomes.push({ source, ...(await readX(session.browser, source.handle)) });
         } else {
           const page = await readPage(session.browser, source.url, 3000);
           outcomes.push(page.text.trim().length > 80 ? { source, ok: true, text: `${page.title}\n${page.text}` } : { source, ok: false, skipped: "unreadable" });
