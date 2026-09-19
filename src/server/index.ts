@@ -11,7 +11,7 @@ import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
 import { parseLinks, readInstagram, readLinks } from "./social";
-import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
 import { planEmoji } from "../dressing";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, refreshRunTimeouts, requireRunsAuth } from "./runs";
@@ -218,7 +218,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *                          + "group": true, and "mention": true or "replyTo": "last" | "photo", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", or "cart"+"shop"
  *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
- *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
+ *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice|itinerary&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/booked   {"chat":"demo","optionId"?:"…","confirmation"?:"…"}   land a confirmed booking without a browser
@@ -317,6 +317,16 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
           [{ id: "e1", who: "Maya", amount: "$86.40", what: "dinner" }],
           [...people, "Alex"],
         ),
+      ),
+      // state=open: a flight to book and an order on its way · done: everything landed
+      itinerary: itineraryTicket(
+        [
+          { id: "i1", kind: "flight", title: "Flair YYZ→YVR Oct 10", status: done ? "done" : "confirmed", note: "F8 227", lastUpdate: done ? "landed 4:01 PM" : undefined },
+          { id: "i2", kind: "stay", title: "JW Marriott Parq", status: done ? "confirmed" : "handoff", price: "$277/night" },
+          { id: "i3", kind: "event", title: "Raptors vs Spurs Dec 17", status: "confirmed" },
+          { id: "i4", kind: "order", title: "partycity.com", status: done ? "done" : "watching", lastUpdate: done ? "delivered" : "shipped, arriving Tue" },
+        ],
+        "Vancouver weekend",
       ),
     };
     const kind = url.searchParams.get("kind") ?? "plan";

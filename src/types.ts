@@ -15,6 +15,31 @@ export type PlanOption = {
   availability?: string;
 };
 
+/**
+ * One commitment on the trip: the flight the group picked, the hotel, the
+ * game, the venue the pilot booked, a paid order on its way. `handoff` means
+ * a person finishes it at `url`; `watching` means the agent is checking on it.
+ */
+export type ItineraryItem = {
+  id: string;
+  kind: "flight" | "stay" | "event" | "venue" | "order";
+  title: string;
+  subtitle?: string;
+  url?: string;
+  /** Display string, e.g. "CA$254". */
+  price?: string;
+  status: "handoff" | "confirmed" | "watching" | "done";
+  /** Confirmation number, flight number, tracking number. */
+  note?: string;
+  /** Display name. */
+  paidBy?: string;
+  watch?: { flight: { ident: string; date?: string } } | { order: { url: string; shop: string } };
+  /** The last line posted about it. */
+  lastUpdate?: string;
+};
+
+export const ITEM_EMOJI: Record<ItineraryItem["kind"], string> = { flight: "✈️", stay: "🏨", event: "🎟️", venue: "📍", order: "📦" };
+
 export type CartSummary = {
   shop: string;
   checkoutUrl: string;
@@ -60,6 +85,8 @@ export type PlanState = {
    * everyone in the chat until anyone has answered. Same footing as `awaiting`.
    */
   going?: string[];
+  /** The trip so far, one entry per settled segment. Display names only. */
+  itinerary?: ItineraryItem[];
   /** Bumped on every change; used to bust the card image cache. */
   version: number;
 };
@@ -84,6 +111,7 @@ export const EMPTY_PLAN: PlanState = {
   carts: [],
   expenses: [],
   going: [],
+  itinerary: [],
   version: 0,
 };
 

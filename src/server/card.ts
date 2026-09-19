@@ -1,5 +1,5 @@
 import { ImageResponse, loadGoogleFont } from "workers-og";
-import { SLOT_EMOJI, cartsTotal, type CartSummary, type PlanState } from "../types";
+import { ITEM_EMOJI, SLOT_EMOJI, cartsTotal, type CartSummary, type ItineraryItem, type PlanState } from "../types";
 import { fmtMoney, type Invoice } from "../invoice";
 
 /**
@@ -358,6 +358,30 @@ export function matchTicket(a: string, b: string, common: { emoji?: string; text
     rows: common.slice(0, 3).map((c) => ({ lead: c.emoji, text: c.text })),
     stub: { big: String(Math.min(common.length, 3)), label: "In common" },
     faces: [a, b],
+  };
+}
+
+const ITEM_STATUS: Record<ItineraryItem["status"], string> = { handoff: "yours to finish", confirmed: "booked", watching: "watching", done: "done" };
+
+/**
+ * The trip so far. Cream while anyone still has something to finish or the
+ * agent is still watching; green once every item is booked or done.
+ */
+export function itineraryTicket(items: ItineraryItem[], title: string): Ticket {
+  const open = items.some((i) => i.status === "handoff" || i.status === "watching");
+  const settled = items.filter((i) => i.status === "confirmed" || i.status === "done").length;
+  return {
+    tone: open ? "open" : "done",
+    metaLeft: "Itinerary",
+    metaRight: `${settled}/${items.length} set`,
+    title: title || "The trip",
+    rows: items.slice(0, 4).map((i) => ({
+      lead: ITEM_EMOJI[i.kind],
+      text: i.title,
+      tail: i.lastUpdate?.slice(0, 24) ?? ITEM_STATUS[i.status],
+      dim: i.status === "done",
+    })),
+    stub: { big: String(items.length), label: items.length === 1 ? "Stop" : "Stops" },
   };
 }
 

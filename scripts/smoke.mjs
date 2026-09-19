@@ -110,7 +110,7 @@ await check("a new ballot forgets the old photo; a booking's confirmation photo 
 });
 await check("plan card renders as a PNG", async () => expect((await get(`/card/${a}?v=1`)).headers.get("content-type") === "image/png", "not a PNG"));
 await check("every ticket design renders", async () => {
-  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice", "icon"]) {
+  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice", "itinerary", "icon"]) {
     const res = await get(`/api/dev/card?kind=${kind}`);
     expect(res.headers.get("content-type") === "image/png", `${kind}: ${res.status}`);
   }
@@ -228,6 +228,12 @@ await check("the invoice ticket renders in both states", async () => {
   for (const state of ["open", "done"]) {
     const res = await get(`/api/dev/card?kind=invoice&state=${state}`);
     expect(res.headers.get("content-type") === "image/png", `${state}: ${res.status}`);
+  }
+});
+await check("the itinerary ticket renders in both states", async () => {
+  for (const state of ["open", "done"]) {
+    const res = await get(`/api/dev/card?kind=itinerary&state=${state}`);
+    expect(res.headers.get("content-type") === "image/png", `itinerary ${state}: ${res.status}`);
   }
 });
 await check("paying the last cart posts the invoice ticket once, not before", async () => {
