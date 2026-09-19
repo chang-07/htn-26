@@ -98,10 +98,15 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   lost. In a group, anyone can text you directly and say "profile" to set theirs up.
 - Only add someone to the match pool when they themselves asked to join.
 - Pairing people up ("find me someone to climb with") is for direct chats:
-  find_matches, then describe the candidates WITHOUT identifying them and ask
-  which one; request_intro only for the one they pick. You never learn or share
-  a candidate's name or number: the two meet in a new group chat only after the
-  other person says yes. If asked in a group, tell them to text you directly.
+  find_matches, then request_intro. When they told you to go ahead ("put me
+  with them", "set it up", "just pick") or one candidate is clearly the best
+  fit, call request_intro for the top candidate in the SAME turn, without asking
+  again; only ask "which one?" when they wanted to choose or the fits are close.
+  Describe candidates WITHOUT identifying them: you never learn or share a name
+  or number. Be plain about how it works: you have asked the other person, and
+  the group chat opens the moment they say yes; you cannot add anyone to a chat
+  who has not agreed. When they name a place ("anyone in Vancouver?"), pass it
+  as near. If asked in a group, tell them to text you directly.
 - In a group you sleep while people talk among themselves, and are woken only
   when someone @mentions you, replies to one of your messages, or answers a
   question you asked. You have still read everything said while you slept — use
@@ -1686,7 +1691,7 @@ this.rememberCardId(id);
       }
 
       case "find_matches": {
-        const { who, lookingFor } = parseToolArgs("find_matches", rawArgs);
+        const { who, lookingFor, near } = parseToolArgs("find_matches", rawArgs);
         if (this.getMeta("is_group") !== "0") return "Not in a group: pairing is private. Tell them to text you directly.";
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
@@ -1694,7 +1699,9 @@ this.rememberCardId(id);
         const profile = (await store.getMany([person.handle]))[person.handle];
         // Searching the pool means being findable in it: same consent both ways.
         if (!profile?.matchOptIn) return "They are not in the match pool themselves. Ask whether they want to be introduced to people (save_profile matchOptIn) before searching.";
-        const query = [lookingFor, profile.interests, profile.area && `Based in ${profile.area}`].filter(Boolean).join(". ");
+        // A place they named beats where they live: "i'm visiting vancouver, anyone there?"
+        const where = near || profile.area;
+        const query = [lookingFor, profile.interests, where && `Based in ${where}`].filter(Boolean).join(". ");
         const exclude = [person.handle, ...(await store.pairedWith(person.handle))];
         // Vectorize understands meaning ("bouldering" finds "climbing") but takes a
         // minute or two to index a new profile, and is absent without a login; the
@@ -1706,7 +1713,15 @@ this.rememberCardId(id);
           }),
           store.scanPool(query, exclude),
         ]);
-        const matches = [...semantic, ...lexical.filter((l) => !semantic.some((m) => m.id === l.id))].slice(0, 3);
+        const merged = [...semantic, ...lexical.filter((l) => !semantic.some((m) => m.id === l.id))];
+        // Only people an introduction can actually reach: still opted in, with a
+        // direct chat to ask them in. The index can hold entries older than that rule.
+        const reachable = await store.getMany(merged.map((m) => m.id));
+        const matches = merged
+          .filter((m) => reachable[m.id]?.matchOptIn && reachable[m.id]?.dmChat)
+          .filter((m) => !near || (reachable[m.id]?.area ?? "").toLowerCase().includes(near.split(/[ ,]/)[0].toLowerCase()))
+          .slice(0, 3);
+        if (!matches.length && near) return `Nobody in the pool is based in ${near} yet. Say so plainly, and offer to look without the location.`;
         if (!matches.length) return "Nobody new in the pool fits yet. Say so plainly; more people join over time.";
 
         // The model gets refs and blurbs. Handles and names stay here, keyed by
@@ -1742,7 +1757,7 @@ this.rememberCardId(id);
         await theirs.introAsk(intro);
         await this.schedule(Math.ceil(INTRO_TTL_MS / 1000), "introExpired", { id: intro.id });
         this.note("info", "intro.requested", { intro: intro.id });
-        return "Asked them privately. Tell the asker you have asked and will report back; do not promise a yes.";
+        return "Asked them privately. Tell the asker, in one or two short lines: you have asked, and a group chat with the two of them opens the moment the other person says yes. Do not promise a yes.";
       }
 
       case "answer_intro": {
