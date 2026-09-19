@@ -523,7 +523,10 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   const icon = path.endsWith("/icon.png");
   const name = decodeURIComponent(icon ? path.slice(0, -"/icon.png".length) : path);
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
-  const plan = (await agent.state) as PlanState;
+  // A method, not the `state` property: the Sentry wrapper around the agent
+  // class passes method calls through but answers undefined for a remote
+  // property read, which took every card image down with a 500.
+  const plan = (await agent.publicState()) as PlanState;
 
   // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
   const bucket = (env as { CARDS?: R2Bucket }).CARDS;

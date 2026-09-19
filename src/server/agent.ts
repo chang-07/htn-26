@@ -182,6 +182,14 @@ const invoiceKey = (inv: Extract<Invoice, { ok: true }>) => JSON.stringify(inv.e
  * WebSocket; anything private (transcript, handles, who voted for what) lives
  * in this object's own SQLite database and never leaves the server.
  */
+/**
+ * The SDK works out which binding an agent lives under from its class name, and
+ * index.ts exports this class wrapped by Sentry, whose name is not "PlanAgent".
+ * Left to guess, every workflow launch fails ("Could not detect Agent binding
+ * name") — research, availability, booking and paying all at once. So say it.
+ */
+const WORKFLOW_OPTS = { agentBinding: "PlanAgent" } as const;
+
 export class PlanAgent extends Agent<Env, PlanState> {
   initialState: PlanState = EMPTY_PLAN;
 
@@ -686,7 +694,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       capCents: Number(this.env.PAY_CAP_CENTS) || 6000,
       key: crypto.randomUUID(),
     };
-    const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+    const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
     this.note("info", "pay.started", { workflowId: short(workflowId), shop, who: mask(payer), live: this.env.PAYMENTS_LIVE === "true" });
     await this.say(`on it, ${who}. checking out at ${cart.shop}`);
   }
@@ -1715,7 +1723,7 @@ this.rememberCardId(id);
         if (!checks.length) return "None of those options has an online booking link, so there is nothing to check. Say so.";
 
         const params: AvailabilityParams = { mode: "availability", partySize: args.partySize, isoTime: args.isoTime, checks };
-        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
         this.note("info", "availability.started", { workflowId: short(workflowId), options: checks.map((c) => c.title) });
         return `Checking ${checks.length} booking page${checks.length === 1 ? "" : "s"} now; it takes a minute or two each and the results arrive on their own. Tell the group you're checking in one short line, then stop.`;
       }
@@ -1760,7 +1768,7 @@ this.rememberCardId(id);
             phone: args.contactPhone ?? (lastSpeaker && /^\+?\d{8,}$/.test(lastSpeaker) ? lastSpeaker : undefined),
           },
         };
-        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
         this.note("info", "booking.started", { workflowId: short(workflowId), option: option.title });
         return "Booking started. The card updates and the chat is told when it finishes — do not announce success yet.";
       }
@@ -2104,7 +2112,7 @@ this.rememberCardId(id);
     this.setMeta("research_progress_at", String(Date.now()));
     this.setMeta("research_brief", params.brief.slice(0, 200));
     await this.schedule(RESEARCH_WATCHDOG_SECONDS, "researchWatchdog");
-    const workflowId = await this.runWorkflow("RESEARCH_WORKFLOW", params);
+    const workflowId = await this.runWorkflow("RESEARCH_WORKFLOW", params, WORKFLOW_OPTS);
     this.note("info", "research.started", { workflowId: short(workflowId), depth: params.depth, brief: params.brief.slice(0, 120), near: params.near });
     return "Research started; it takes a few minutes. Tell the group you're looking into it in one short line, then stop. The findings will arrive on their own.";
   }
@@ -2305,6 +2313,11 @@ this.rememberCardId(id);
   }
 
   /** Simulator only: the open Who's in ticket's message id. */
+  /** The plan as the vote page and the card images see it. */
+  async publicState(): Promise<PlanState> {
+    return this.state;
+  }
+
   /** This chat's id, which is this agent's name. Lets a workflow find the agent again after a deploy. */
   async chatId() {
     return this.name;
