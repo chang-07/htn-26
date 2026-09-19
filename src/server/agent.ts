@@ -341,8 +341,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     }
 
-    // A short delay batches a burst of texts into a single turn.
-    await this.schedule(2, "runTurn");
+    // A short delay batches a burst of texts into a single turn. A group needs
+    // the longer one, since several people type at once; one person in a direct
+    // chat is waiting on the reply, and this delay was a third of that wait.
+    await this.schedule(msg.isGroup === false ? 1 : 2, "runTurn");
   }
 
   /** Why this message should wake the model, or null to stay asleep. */
@@ -1419,7 +1421,8 @@ ${transcript}`,
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
-      if (!spoke) await this.typing();
+      // Not awaited: the bubble and the model call start together. It never throws.
+      if (!spoke) void this.typing();
       try {
         res = await traceOperation("agent.model", "gen_ai.chat", { model, profile, step: step + 1, promptChars: JSON.stringify(messages).length }, () => client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never));
       } catch (err) {
