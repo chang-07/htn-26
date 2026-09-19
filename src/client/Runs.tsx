@@ -1,3 +1,4 @@
+import { runLabel } from "../shared/run-labels";
 import { RunDiagnostics } from "./RunDiagnostics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
@@ -417,11 +418,6 @@ function Legend() {
   );
 }
 
-/** A run is named by what was said to it; failing that, by what woke it. */
-const runTitle = (run: RunSummary) =>
-  // The rail is what a projector shows first, so an address typed into a chat stays off it.
-  run.said?.trim().replace(/\s+/g, " ").replace(/\S+@\S+/g, "(email)") || (run.outcome !== "background" && run.outcome !== "replied" && OUTCOME_TITLE[run.outcome ?? ""]) || (run.trigger ?? "run").replace(/[._]/g, " ");
-
 /** The outcome as one word, for beside a title that no longer says it. */
 const OUTCOME_WORD: Record<string, string> = { replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
 
@@ -503,7 +499,7 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
           {facts.map((f) => <span key={f as string}>{f}</span>)}
           {live > 0 && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ink)", marginLeft: "auto" }}>
-              <i className="rv-live" style={{ width: 7, height: 7, background: "var(--ink)" }} />
+              <i className="rv-live" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--ink)" }} />
               {live > 1 ? `${live} running` : "running"}
             </span>
           )}
@@ -533,7 +529,8 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
   const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
   const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
   const asked = nodes.find((n) => (n.event === "message.in" || n.event === "message.stored") && typeof n.fields.text === "string");
-  const title = (asked?.fields.text as string | undefined)?.trim() || run.said?.trim() || (running ? "Running" : runTitle(run));
+  const label = runLabel({ ...run, said: (asked?.fields.text as string | undefined)?.trim() || run.said });
+  const title = label.title;
   const verdict = running ? "Running" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
   const facts = [
     wall != null ? `${dur(wall)} wall` : null,
@@ -562,6 +559,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
           <h1 className="rv-clamp2" title={title} style={{ margin: "10px 0 0", fontFamily: "var(--sans)", fontWeight: 600, fontSize: title.length > 60 ? 17 : 20, lineHeight: 1.25, letterSpacing: "-0.01em", textWrap: "balance", maxWidth: "34ch" }}>
             {title}
           </h1>
+          {label.detail && <p style={{ margin: "8px 0", fontSize: 12, color: "var(--soft)", overflowWrap: "anywhere" }}>{label.detail}</p>}
           <p style={{ margin: "10px 0 8px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
             {facts.map((f) => <span key={f}>{f}</span>)}
           </p>
@@ -577,6 +575,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
 }
 
 function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean; onClick: () => void }) {
+  const label = runLabel(run);
   const running = run.ended === null;
   const quiet = run.outcome === "silent" || run.outcome === "background";
   const facts = [
@@ -591,11 +590,12 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
           className={running ? "rv-live" : undefined}
           style={{ width: 6, height: 6, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level), flexShrink: 0 }}
         />
-        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500, color: quiet && !selected ? "var(--soft)" : undefined }}>
-          {runTitle(run)}
+        <span className="rv-clamp2" title={label.title} style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500, color: quiet && !selected ? "var(--soft)" : undefined }}>
+          {label.title}
         </span>
         <span style={{ color: "var(--faint)", fontFamily: "var(--mono)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{clock(run.started)}</span>
       </span>
+      {label.detail && <span className="rv-clamp2" title={label.detail} style={{ margin: "5px 0 0 14px", fontSize: 11, color: "var(--soft)", textAlign: "left", overflowWrap: "anywhere" }}>{label.detail}</span>}
       <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
         <span style={{ display: "flex", gap: 3 }}>
           {servicesForTools(run.tools).map((s) => (
