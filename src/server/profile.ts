@@ -105,7 +105,7 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
     <h1>So the plans fit you</h1>
     <p>The planner reads this before it suggests anything, in every group chat you're in. Fill in what you like; skip the rest.</p>
     <div class="perf"></div>
-    <form method="post">
+    <form method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving…';">
       ${inputs}
       <label>Links, if you want<textarea id="links" name="links" placeholder="Personal site, GitHub, Letterboxd, Spotify… one per line">${esc(profile.links.join("\n"))}</textarea></label>
       <label class="check"><input id="matchOptIn" type="checkbox" name="matchOptIn" ${profile.matchOptIn ? "checked" : ""}>
