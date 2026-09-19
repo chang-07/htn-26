@@ -420,7 +420,7 @@ function Legend() {
 /** A run is named by what was said to it; failing that, by what woke it. */
 const runTitle = (run: RunSummary) =>
   // The rail is what a projector shows first, so an address typed into a chat stays off it.
-  run.said?.trim().replace(/\s+/g, " ").replace(/\S+@\S+/g, "(email)") || (run.outcome !== "background" && OUTCOME_TITLE[run.outcome ?? ""]) || (run.trigger ?? "run").replace(/[._]/g, " ");
+  run.said?.trim().replace(/\s+/g, " ").replace(/\S+@\S+/g, "(email)") || (run.outcome !== "background" && run.outcome !== "replied" && OUTCOME_TITLE[run.outcome ?? ""]) || (run.trigger ?? "run").replace(/[._]/g, " ");
 
 /** The outcome as one word, for beside a title that no longer says it. */
 const OUTCOME_WORD: Record<string, string> = { replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
@@ -533,7 +533,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
   const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
   const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
   const asked = nodes.find((n) => (n.event === "message.in" || n.event === "message.stored") && typeof n.fields.text === "string");
-  const title = (asked?.fields.text as string | undefined)?.trim() || run.said?.trim() || (running ? "Running" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "Run"));
+  const title = (asked?.fields.text as string | undefined)?.trim() || run.said?.trim() || (running ? "Running" : runTitle(run));
   const verdict = running ? "Running" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
   const facts = [
     wall != null ? `${dur(wall)} wall` : null,
@@ -549,10 +549,13 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
             {onBack && (
               <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
             )}
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
-              <i className={running ? "rv-live" : undefined} style={{ width: 7, height: 7, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
-              {verdict}
-            </span>
+            {/* A reply is the ordinary case and goes without saying; anything else is worth a label. */}
+            {(running || run.outcome !== "replied") && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
+                <i className={running ? "rv-live" : undefined} style={{ width: 7, height: 7, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
+                {verdict}
+              </span>
+            )}
             <span title={run.chat} style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{run.chat.slice(0, 8)}</span>
             <span style={{ fontVariantNumeric: "tabular-nums" }}>{new Date(run.started).toLocaleString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" })}</span>
           </div>
