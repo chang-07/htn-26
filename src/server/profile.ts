@@ -2,6 +2,7 @@ import { log, mask } from "./log";
 import { getAgentByName } from "agents";
 import type { PlanAgent } from "./agent";
 import { ONBOARDING, people, syncMatchPool, type Profile } from "./people";
+import { TICKET_CSS, TICKET_FONTS } from "../theme";
 
 /**
  * The page behind a person's profile link: GET shows the form, POST saves it.
@@ -20,31 +21,14 @@ const FIELDS: { key: keyof Profile & string; label: string; hint: string; long?:
   { key: "about", label: "Anything else worth knowing", hint: "Hate loud bars. Free most Fridays.", long: true },
 ];
 
+/** One shell for every state of the page; the look lives in src/theme.ts, shared with the vote page. */
 function page(body: string, done = false) {
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your profile</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<style>
-  *{box-sizing:border-box;}
-  body{margin:0;background:#efe7d6;color:#241f17;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:15px;line-height:1.5;padding:28px 20px 60px;}
-  main{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:22px;}
-  h1{font-family:"Archivo",system-ui,sans-serif;font-weight:800;font-size:34px;line-height:1;letter-spacing:-.02em;margin:0;}
-  .meta{font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;opacity:.62;}
-  p{margin:0;}
-  form{display:flex;flex-direction:column;gap:18px;}
-  label{display:flex;flex-direction:column;gap:6px;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;}
-  input[type=text],textarea{width:100%;font:inherit;font-size:16px;letter-spacing:0;text-transform:none;color:inherit;background:#f8f3e6;
-    border:1.5px solid #241f17;border-radius:8px;padding:11px 12px;}
-  textarea{min-height:74px;resize:vertical;}
-  input:focus,textarea:focus,button:focus-visible{outline:3px solid #1f5f4f;outline-offset:2px;}
-  .check{flex-direction:row;align-items:flex-start;gap:10px;text-transform:none;letter-spacing:0;font-size:14px;}
-  .check input{width:20px;height:20px;margin:1px 0 0;accent-color:#1f5f4f;}
-  button{font-family:"Archivo",sans-serif;font-weight:800;font-size:18px;background:#241f17;color:#efe7d6;border:0;border-radius:10px;padding:15px;cursor:pointer;}
-  .perf{border-top:2px dotted rgba(36,31,23,.32);}
-  .done{background:#1f5f4f;color:#f0ece2;}
-  small{opacity:.62;font-size:12.5px;}
-</style></head><body${done ? ' class="done"' : ""}>${body}</body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light"><title>Your profile</title>
+<link rel="stylesheet" href="${TICKET_FONTS}">
+<style>html,body{margin:0;background:${done ? "#1f5f4f" : "#efe7d6"};}${TICKET_CSS}</style></head>
+<body><div class="tk-page${done ? " is-done" : ""}"><div class="tk-wrap">${body}</div></div></body></html>`,
     { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
   );
 }
@@ -53,8 +37,8 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
   const token = url.pathname.slice("/p/".length);
   const found = token ? await people(env).byToken(token) : null;
   if (!found) {
-    return page(`<main><span class="meta">Profile</span><h1>This link isn't valid</h1>
-      <p>Text the planner "profile" and it will send you a fresh one.</p></main>`);
+    return page(`<div class="tk-meta">Profile</div><h1 class="tk-title">This link isn't valid</h1>
+      <hr class="tk-perf"><p style="margin:0">Text the planner "profile" and it will send you a fresh one.</p>`);
   }
   const { handle, profile } = found;
 
@@ -90,30 +74,29 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
       const agent = await getAgentByName<Env, PlanAgent>(env.PlanAgent, saved.dmChat);
       await agent.profileSaved(saved.name).catch((err) => log("warn", "people", "profile.ack_failed", { error: String(err).slice(0, 200) }));
     }
-    return page(`<main><span class="meta">Saved</span><h1>Got it${saved.name ? `, ${esc(saved.name)}` : ""}</h1>
-      <p>The planner will use this in every chat you're in. Open this link again any time to change it, or text "forget me" to delete it.</p></main>`, true);
+    return page(`<div class="tk-meta">Saved</div><h1 class="tk-title">Got it${saved.name ? `, ${esc(saved.name)}` : ""}</h1>
+      <hr class="tk-perf"><p style="margin:0">The planner uses this in every chat you're in. Open this link again to change it, or text "forget me" to delete it.</p>`, true);
   }
 
   const inputs = FIELDS.map((f) => {
     const value = esc(String(profile[f.key] ?? ""));
-    return `<label>${f.label}${
+    return `<label class="tk-field"><span class="tk-meta">${f.label}</span>${
       f.long
         ? `<textarea id="${f.key}" name="${f.key}" placeholder="${esc(f.hint)}">${value}</textarea>`
         : `<input id="${f.key}" type="text" name="${f.key}" value="${value}" placeholder="${esc(f.hint)}">`
     }</label>`;
   }).join("");
 
-  return page(`<main>
-    <span class="meta">Planner · your profile</span>
-    <h1>So the plans fit you</h1>
-    <p>The planner reads this before it suggests anything, in every group chat you're in. Fill in what you like; skip the rest.</p>
-    <div class="perf"></div>
-    <form method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving…';">
+  return page(`<div class="tk-meta">Your profile</div>
+    <h1 class="tk-title">So the plans fit you</h1>
+    <p style="margin:14px 0 0">Read before anything is suggested, in every group chat you're in. Fill in what you like and skip the rest.</p>
+    <hr class="tk-perf">
+    <form class="tk-form" method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving';">
       ${inputs}
-      <label>Links, if you want<textarea id="links" name="links" placeholder="@you on instagram, Letterboxd, GitHub, a site… one per line">${esc(profile.links.join("\n"))}</textarea></label>
-      <label class="check"><input id="matchOptIn" type="checkbox" name="matchOptIn" ${profile.matchOptIn ? "checked" : ""}>
+      <label class="tk-field"><span class="tk-meta">Links, if you want</span><textarea id="links" name="links" placeholder="@you on instagram, Letterboxd, GitHub, a site. One per line.">${esc(profile.links.join("\n"))}</textarea></label>
+      <label class="tk-check"><input id="matchOptIn" type="checkbox" name="matchOptIn" ${profile.matchOptIn ? "checked" : ""}>
         <span>Count me in for matching. The planner may introduce me to someone here with similar interests.</span></label>
-      <button type="submit">Save</button>
-      <small>Only you have this link. Text the planner "forget me" and all of it is deleted.</small>
-    </form></main>`);
+      <button class="tk-action" type="submit">Save</button>
+      <p class="tk-small" style="margin:0">Only you have this link. Text the planner "forget me" and all of it is deleted.</p>
+    </form>`);
 }

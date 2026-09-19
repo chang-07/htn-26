@@ -13,8 +13,9 @@ function App() {
   if (!match) {
     return (
       <Shell>
-        <h1 style={{ fontSize: 24 }}>Plan</h1>
-        <p style={{ color: "#9C9CAC" }}>The UI lives in the group chat.</p>
+        <main style={{ padding: 28, fontFamily: "ui-monospace, Menlo, monospace", color: "#241f17", background: "#efe7d6", minHeight: "100vh" }}>
+          The planner lives in the group chat.
+        </main>
       </Shell>
     );
   }
@@ -26,19 +27,8 @@ function App() {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <main
-      style={{
-        padding: 24,
-        maxWidth: 560,
-        margin: "0 auto",
-        color: "#FAFAFA",
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif",
-      }}
-    >
-      {children}
-    </main>
-  );
+  // The ticket pages style themselves (see src/theme.ts); nothing to add here.
+  return <>{children}</>;
 }
 
 createRoot(document.getElementById("root")!).render(

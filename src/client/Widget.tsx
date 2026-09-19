@@ -1,15 +1,34 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAgent } from "agents/react";
+import { TICKET_CSS, TICKET_FONTS } from "../theme";
 import { SLOT_EMOJI, cartsOf, cartsTotal, type PlanState } from "../types";
 
-const STATUS_LABEL: Record<PlanState["status"], string> = {
-  idle: "No plan yet",
-  voting: "Voting open",
-  booking: "Booking…",
-  booked: "Booked",
-  handoff: "Ready for you to finish",
+// The same words the ticket image uses, so the page reads as the card opened up.
+const STATUS_META: Record<PlanState["status"], string> = {
+  idle: "Plan",
+  voting: "React to vote",
+  booking: "Booking",
+  booked: "Confirmed",
+  handoff: "Yours to finish",
   failed: "Booking failed",
 };
+
+/** Mounts the ticket look once: fonts, stylesheet, and the page ground behind it. */
+function useTicketTheme(done: boolean) {
+  useEffect(() => {
+    if (!document.getElementById("tk-fonts")) {
+      const link = Object.assign(document.createElement("link"), { id: "tk-fonts", rel: "stylesheet", href: TICKET_FONTS });
+      const style = Object.assign(document.createElement("style"), { id: "tk-css", textContent: TICKET_CSS });
+      document.head.appendChild(link);
+      document.head.appendChild(style);
+    }
+    document.documentElement.style.colorScheme = "light";
+  }, []);
+  useEffect(() => {
+    // The ground runs edge to edge, including the overscroll area on a phone.
+    document.body.style.background = done ? "#1f5f4f" : "#efe7d6";
+  }, [done]);
+}
 
 /**
  * Live view of one chat's plan. useAgent holds a WebSocket to the PlanAgent
@@ -27,7 +46,16 @@ export function Widget({ agentName }: { agentName: string }) {
     onStateUpdate: (state) => setPlan(state),
   });
 
-  if (!plan) return <p style={{ color: "#9C9CAC" }}>Connecting…</p>;
+  const done = plan?.status === "booked";
+  useTicketTheme(done);
+
+  if (!plan) {
+    return (
+      <div className="tk-page">
+        <div className="tk-wrap tk-meta">Connecting</div>
+      </div>
+    );
+  }
 
   async function vote(optionId: string) {
     setMine(optionId);
@@ -40,52 +68,70 @@ export function Widget({ agentName }: { agentName: string }) {
   }
 
   const open = plan.status === "voting";
+  const votes = Object.values(plan.counts).reduce((a, b) => a + b, 0);
 
   return (
-    <>
-      <h1 style={{ fontSize: 28, margin: "0 0 4px" }}>{plan.title || "Plan"}</h1>
-      <p style={{ color: "#9C9CAC", marginTop: 0 }}>
-        {STATUS_LABEL[plan.status]}
-        {plan.awaiting.length ? ` · waiting on ${plan.awaiting.join(", ")}` : ""}
-      </p>
+    <div className={`tk-page${done ? " is-done" : ""}`}>
+      <div className="tk-wrap">
+        <header className="tk-head">
+          <div>
+            <div className="tk-meta">{STATUS_META[plan.status]}</div>
+            <h1 className="tk-title">{plan.title || "No plan yet"}</h1>
+          </div>
+          {plan.options.length ? (
+            <div className="tk-stub">
+              <b>{votes}</b>
+              <span className="tk-meta">{votes === 1 ? "vote" : "votes"}</span>
+            </div>
+          ) : null}
+        </header>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {plan.options.map((o, i) => {
-          const won = plan.chosenOptionId === o.id;
-          return (
-            <button
-              key={o.id}
-              onClick={() => vote(o.id)}
-              disabled={!open}
-              style={{
-                textAlign: "left",
-                padding: 16,
-                borderRadius: 16,
-                border: `2px solid ${won ? "#3FA971" : mine === o.id ? "#5B5BD6" : "#1E1E26"}`,
-                background: won ? "#15301F" : "#15151C",
-                color: "inherit",
-                font: "inherit",
-                cursor: open ? "pointer" : "default",
-              }}
-            >
-              <div style={{ fontSize: 18, fontWeight: 600 }}>
-                {SLOT_EMOJI[i]} {o.title}
-              </div>
-              {o.subtitle ? <div style={{ color: "#9C9CAC", fontSize: 14 }}>{o.subtitle}</div> : null}
-              <div style={{ color: "#9C9CAC", fontSize: 13, marginTop: 6 }}>
-                {plan.counts[o.id] ?? 0} {plan.counts[o.id] === 1 ? "vote" : "votes"}
-              </div>
-            </button>
-          );
-        })}
+        {plan.options.length ? (
+          <>
+            <hr className="tk-perf" />
+            <div className="tk-rows">
+              {plan.options.map((o, i) => {
+                const won = plan.chosenOptionId === o.id;
+                const lost = Boolean(plan.chosenOptionId) && !won;
+                const count = plan.counts[o.id] ?? 0;
+                return (
+                  <button
+                    key={o.id}
+                    className={`tk-row${mine === o.id ? " is-mine" : ""}${won ? " is-won" : ""}${lost ? " is-dim" : ""}`}
+                    onClick={() => vote(o.id)}
+                    disabled={!open}
+                  >
+                    <span className="tk-mark">{SLOT_EMOJI[i]}</span>
+                    <span className="tk-grow">
+                      <span className="tk-name">{o.title}</span>
+                      {o.subtitle ? <span className="tk-sub">{o.subtitle}</span> : null}
+                      {o.availability ? <span className="tk-sub">{o.availability}</span> : null}
+                    </span>
+                    <span className="tk-num">{count ? `x${count}` : ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {open ? (
+              <p className="tk-small" style={{ margin: "14px 0 0" }}>
+                Tap one to vote{waitingLine(plan.awaiting)}
+              </p>
+            ) : null}
+          </>
+        ) : null}
+
+        {plan.bookingNote ? (
+          <>
+            <hr className="tk-perf" />
+            <p style={{ margin: 0 }}>{plan.bookingNote}</p>
+          </>
+        ) : null}
+
+        <ShoppingList plan={plan} />
+
+        {error ? <p className="tk-error">{error}</p> : null}
       </div>
-
-      {plan.bookingNote ? <p style={{ color: "#9C9CAC" }}>{plan.bookingNote}</p> : null}
-
-      <ShoppingList plan={plan} />
-
-      {error ? <p style={{ color: "#FF8A8A" }}>{error}</p> : null}
-    </>
+    </div>
   );
 }
 
@@ -100,56 +146,59 @@ function ShoppingList({ plan }: { plan: PlanState }) {
   const unpaid = carts.filter((c) => !c.paidBy).length;
 
   return (
-    <section style={{ marginTop: 28 }}>
-      <h2 style={{ fontSize: 18, margin: "0 0 2px" }}>Shopping list</h2>
-      <p style={{ color: "#9C9CAC", margin: "0 0 12px", fontSize: 14 }}>
-        {carts.length} {carts.length === 1 ? "store" : "stores"}
-        {sum ? ` · ${sum.symbol}${sum.amount.toFixed(2)} total` : ""}
-        {unpaid ? ` · ${unpaid} still to pay` : " · all paid"}
-      </p>
+    <section>
+      <hr className="tk-perf" />
+      <header className="tk-head">
+        <div>
+          <div className="tk-meta">Shopping list</div>
+          <div style={{ marginTop: 6 }}>
+            {carts.length} {carts.length === 1 ? "store" : "stores"}, {unpaid ? `${unpaid} to pay` : "all paid"}
+          </div>
+        </div>
+        {sum ? (
+          <div className="tk-stub">
+            <b style={{ fontSize: 24 }}>
+              {sum.symbol}
+              {sum.amount.toFixed(0)}
+            </b>
+            <span className="tk-meta">total</span>
+          </div>
+        ) : null}
+      </header>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {carts.map((cart) => {
-          const items = cart.lines.reduce((n, l) => n + l.quantity, 0);
-          return (
-            <div key={cart.shop} style={{ padding: 16, borderRadius: 16, background: "#15151C", border: `2px solid ${cart.paidBy ? "#3FA971" : "#1E1E26"}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
-                <span>{cart.shop}</span>
-                <span>{cart.total}</span>
-              </div>
-              <ul style={{ margin: "8px 0 12px", padding: 0, listStyle: "none", color: "#9C9CAC", fontSize: 14 }}>
-                {cart.lines.map((l, i) => (
-                  <li key={i}>
-                    {l.quantity}× {l.title}
-                    {l.price ? ` · ${l.price}` : ""}
-                  </li>
-                ))}
-              </ul>
-              {cart.paidBy ? (
-                <div style={{ color: "#7DE2B0", fontSize: 14, fontWeight: 600 }}>Paid by {cart.paidBy}</div>
-              ) : (
-                <a
-                  href={cart.checkoutUrl}
-                  style={{
-                    display: "block",
-                    padding: 12,
-                    borderRadius: 12,
-                    background: "#5B5BD6",
-                    color: "#fff",
-                    textAlign: "center",
-                    textDecoration: "none",
-                    fontWeight: 600,
-                  }}
-                >
-                  Check out {items} {items === 1 ? "item" : "items"} at {cart.shop}
-                </a>
-              )}
+      {carts.map((cart) => {
+        const items = cart.lines.reduce((n, l) => n + l.quantity, 0);
+        return (
+          <div key={cart.shop} style={{ marginTop: 26 }}>
+            <div className="tk-meta" style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>{cart.shop}</span>
+              <span>{cart.paidBy ? `paid by ${cart.paidBy}` : cart.total}</span>
             </div>
-          );
-        })}
-      </div>
+            <ul className="tk-rows" style={{ marginTop: 6 }}>
+              {cart.lines.map((l, i) => (
+                <li key={i} className={`tk-row${cart.paidBy ? " is-dim" : ""}`} style={{ fontSize: 15, padding: "5px 0" }}>
+                  <span className="tk-mark tk-soft">{l.quantity}x</span>
+                  <span className="tk-grow">{l.title}</span>
+                  <span className="tk-num">{l.price ?? ""}</span>
+                </li>
+              ))}
+            </ul>
+            {cart.paidBy ? null : (
+              <a className="tk-action" href={cart.checkoutUrl}>
+                Check out {items} {items === 1 ? "item" : "items"}
+              </a>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
+}
+
+/** Names when they are known; a count otherwise. "…0667" is a phone number, not a person. */
+function waitingLine(awaiting: string[]) {
+  if (!awaiting.length) return ".";
+  return awaiting.every((w) => !w.startsWith("…")) ? `. Waiting on ${awaiting.join(", ")}.` : `. Waiting on ${awaiting.length} more.`;
 }
 
 /** Stand-in identity for the web fallback: one vote per browser. */

@@ -3,10 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Paint the right ground before React mounts: cream for the ticket pages, left alone for /runs.
+      if (!location.pathname.startsWith("/runs")) document.documentElement.style.background = "#efe7d6";
+    </script>
     <title>Plan</title>
   </head>
-  <body style="margin: 0; background: #0b0b0f">
+  <body style="margin: 0">
     <div id="root"></div>
     <script type="module" src="/src/client/main.tsx"></script>
   </body>
