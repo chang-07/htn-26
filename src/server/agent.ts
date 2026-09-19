@@ -569,7 +569,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const person = this.participants()[0];
     if (!person) return false;
     const token = await peopleStore(this.env).tokenFor(person.handle);
-    await this.say(`${intro}${this.env.PUBLIC_BASE_URL}/p/${token}`);
+    const url = `${this.env.PUBLIC_BASE_URL}/p/${token}`;
+    // The same tappable card onboarding offers, so asking for the profile later
+    // gets the card again rather than a bare address. The plain link is what is
+    // left if the card cannot be sent.
+    const id = await timed(
+      "agent",
+      "profile_card.out",
+      { asked: true },
+      () => sendLinkCard(this.env, this.name, { title: "Your profile", subtitle: "Change anything, anytime.", button: "Open", url }),
+      this.note,
+    ).catch(() => undefined);
+    if (id) this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${"[profile card]"}, ${Date.now()})`;
+    else await this.say(`${intro}${url}`);
     this.setMeta("profile_link_sent", "1");
     return true;
   }
@@ -1661,7 +1673,7 @@ ${transcript}`,
         if (this.getMeta("is_group") !== "0") {
           return "Not in a group: the link is private. Tell them to text you directly and say 'profile'.";
         }
-        return (await this.sendProfileLink()) ? "Link sent as its own message. Do not paste it again." : "Nobody to send it to yet.";
+        return (await this.sendProfileLink()) ? "Profile card sent as its own message. Do not paste a link or describe it again." : "Nobody to send it to yet.";
       }
 
       case "forget_person": {
