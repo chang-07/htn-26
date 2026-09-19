@@ -243,6 +243,76 @@ export async function sendLinkCard(
 // a single-use virtual card for that purchase alone. Nothing here ever sees a
 // card number. These three calls are only the SETUP half: no money moves.
 
+// ------------------------------------------------------------------ location
+// Asking where someone is instead of making them type it. The agent takes the
+// city once and ends the share: it never polls a position, and coordinates
+// never leave this file — only the locality and the handle it belongs to.
+
+/**
+ * - "sent": the person gets an iMessage prompt and has to accept it.
+ * - "already_sharing": nothing to ask; read it.
+ * - "not_one_to_one": Apple only allows the request in a 1:1 iMessage chat.
+ * - "unavailable": the account lacks the feature, or Linq refused for another reason.
+ */
+export type LocationAsk = "sent" | "already_sharing" | "not_one_to_one" | "unavailable";
+
+export async function requestLocation(env: Env, chatId: string): Promise<LocationAsk> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.location_request", { chat: short(chatId) });
+    return "sent";
+  }
+  try {
+    await linqClient(env).chats.location.request(chatId);
+    return "sent";
+  } catch (err) {
+    const text = String(err);
+    // 409 covers three different refusals; the codes tell them apart.
+    if (/2016|2017|GroupChatNotSupported|ChatServiceNotSupported/.test(text)) return "not_one_to_one";
+    if (/\b409\b/.test(text)) return "already_sharing";
+    log("warn", "linq", "location_request.failed", { chat: short(chatId), error: text.slice(0, 200) });
+    return "unavailable";
+  }
+}
+
+/** City-level only, by design: see the note above. */
+export type SharedPlace = { handle: string; locality?: string; region?: string; updatedAt?: string };
+
+export async function readLocation(env: Env, chatId: string): Promise<SharedPlace[]> {
+  if (isDry(env, chatId)) return [];
+  try {
+    const res = await linqClient(env).chats.location.retrieve(chatId);
+    return res.data.features.map((f) => ({
+      handle: f.properties.handle,
+      locality: f.properties.locality,
+      region: regionFrom(f.properties.address, f.properties.locality),
+      updatedAt: f.properties.updated_at,
+    }));
+  } catch (err) {
+    log("warn", "linq", "location_read.failed", { chat: short(chatId), error: String(err).slice(0, 200) });
+    return [];
+  }
+}
+
+/**
+ * "12 King St W, Toronto, ON M5H 1A1, Canada" -> "ON, Canada". The street is
+ * dropped on purpose; the region is kept because "Waterloo" alone is ambiguous
+ * to a search engine and "Waterloo, ON, Canada" is not.
+ */
+function regionFrom(address?: string, locality?: string): string | undefined {
+  if (!address || !locality) return undefined;
+  const after = address.split(locality)[1];
+  if (!after) return undefined;
+  const parts = after
+    .split(",")
+    .map((part) => part.replace(/\b[A-Z]\d[A-Z] ?\d[A-Z]\d\b|\b\d{5}(-\d{4})?\b/g, "").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(", ") : undefined;
+}
+
+/** Ends the share, so the position can never be read again. Best effort. */
+export const stopLocation = (env: Env, chatId: string, handle: string) =>
+  quietly(env, chatId, "location_stop", (l) => l.chats.location.stop(chatId, { handle }));
+
 export type PaymentConnection = { status: "not_connected" | "pending" | "connected" | "revoked"; connectId?: string; simulated?: boolean };
 
 export async function paymentConnection(env: Env, chatId: string, handle: string): Promise<PaymentConnection> {

@@ -232,6 +232,34 @@ await check("nothing to split: no invoice for a chat of one", async () => {
   expect(!(await logs(c)).includes('"kind":"invoice"'), "an invoice was posted with nobody to split with");
 });
 
+console.log("\nlocation (simulated share: no phone, no model)");
+await check("a location request is refused in a group", async () => {
+  const c = chat("locgroup");
+  await post("/api/dev/message", { chat: c, group: true, from: "+15550006001", text: "anyone around" });
+  await sleep(400);
+  const result = await tool(c, "request_location", {});
+  expect(/group/i.test(result), `asked for location in a group: ${result}`);
+  expect(!(await logs(c)).includes("location.requested"), "the request reached Linq from a group chat");
+});
+await check("a share is only read when the agent asked, once, and only the city is kept", async () => {
+  const c = chat("locdm");
+  const from = "+15550006002";
+  // A direct chat, established without waking the model: payment removal is handled in code.
+  await post("/api/dev/message", { chat: c, from, text: "remove my payments" });
+  await sleep(800);
+  const share = async (locality) => (await (await post("/api/dev/location", { chat: c, from, locality, region: "ON, Canada" })).json()).took;
+
+  expect((await share("Toronto")) === null, "read a share nobody asked for");
+  await tool(c, "request_location", {});
+  expect((await share("Toronto")) === "Toronto, ON, Canada", "the accepted share was not taken");
+  expect((await share("Ottawa")) === null, "acted on a second share after the ask was already answered");
+
+  const text = await logs(c);
+  expect(count(text, "location.taken") === 1, "the city was taken more than once");
+  expect(text.includes('"shareEnded":true'), "the share was not ended after the city was read");
+  expect(!/coordinates|latitude|longitude/i.test(text), "something finer than a city reached the log");
+});
+
 console.log("\nrun history");
 await check("run history is locked for anyone arriving by a public hostname", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";
