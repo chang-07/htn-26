@@ -139,6 +139,15 @@ export function Runs() {
 
   const chats = useMemo(() => [...new Set(runs.map((r) => r.chat))], [runs]);
   const shown = chat ? runs.filter((r) => r.chat === chat) : runs;
+  const sessions = useMemo(() => groupIntoSessions(shown), [shown]);
+
+  // A session opens when it holds the selected run, or when anything in it is
+  // still going — the two cases where its turns are worth seeing.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const isOpen = (sess: Session) =>
+    collapsed[sess.id] === undefined
+      ? sess.runs.some((r) => r.runId === selected || r.ended === null)
+      : !collapsed[sess.id];
   const detail = selected
     ? (runs.find((r) => r.runId === selected) ?? (linked?.runId === selected ? linked : undefined))
     : undefined;
@@ -186,8 +195,18 @@ export function Runs() {
             </button>
           </div>
         </header>
-        {shown.map((r) => (
-          <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
+        {sessions.map((sess) => (
+          <div key={sess.id}>
+            <SessionHeader
+              session={sess}
+              open={isOpen(sess)}
+              onToggle={() => setCollapsed((c) => ({ ...c, [sess.id]: isOpen(sess) }))}
+            />
+            {isOpen(sess) &&
+              sess.runs.map((r) => (
+                <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
+              ))}
+          </div>
         ))}
         {!shown.length && <p style={{ color: "var(--muted)", padding: 16, fontSize: 13 }}>No runs yet. Text the agent, or POST /api/dev/message.</p>}
       </aside>
@@ -205,6 +224,84 @@ export function Runs() {
         </div>
       </section>
     </div>
+  );
+}
+
+type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
+
+/**
+ * A turn on its own is rarely the thing you want to look at — one conversation
+ * produces a dozen of them. Runs in the same chat are gathered into a session,
+ * split wherever the chat went quiet for longer than SESSION_GAP, so the rail
+ * lists conversations and the turns sit underneath as sub-runs.
+ */
+const SESSION_GAP = 20 * 60 * 1000;
+
+function groupIntoSessions(runs: RunSummary[]): Session[] {
+  const byChat = new Map<string, RunSummary[]>();
+  for (const r of runs) {
+    const list = byChat.get(r.chat) ?? [];
+    list.push(r);
+    byChat.set(r.chat, list);
+  }
+  const out: Session[] = [];
+  for (const [chat, list] of byChat) {
+    // Newest first everywhere else, so walk oldest-first to find the breaks.
+    const asc = [...list].sort((a, b) => a.started - b.started);
+    let current: RunSummary[] = [];
+    const flush = () => {
+      if (!current.length) return;
+      out.push({
+        id: `${chat}:${current[0].started}`,
+        chat,
+        runs: [...current].reverse(),
+        from: current[0].started,
+        to: current[current.length - 1].started,
+      });
+      current = [];
+    };
+    for (const r of asc) {
+      if (current.length && r.started - current[current.length - 1].started > SESSION_GAP) flush();
+      current.push(r);
+    }
+    flush();
+  }
+  return out.sort((a, b) => b.to - a.to);
+}
+
+function SessionHeader({ session, open, onToggle }: { session: Session; open: boolean; onToggle: () => void }) {
+  const live = session.runs.filter((r) => r.ended === null).length;
+  const bad = session.runs.filter((r) => r.level === "error").length;
+  const tokens = session.runs.reduce((n, r) => n + (r.tokens ?? 0), 0);
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      style={{
+        display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+        background: "var(--card-2)", border: 0, borderBottom: "1px solid var(--rule)",
+        padding: "9px 14px", cursor: "pointer", font: "inherit", position: "sticky", top: 0, zIndex: 1,
+      }}
+    >
+      <span style={{ fontFamily: MONO, fontSize: 9, color: "var(--faint)", width: 9 }}>{open ? "▾" : "▸"}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {session.chat}
+        </span>
+        <span style={{ display: "block", fontFamily: MONO, fontSize: 9.5, color: "var(--faint)", marginTop: 2 }}>
+          {session.runs.length} turn{session.runs.length === 1 ? "" : "s"}
+          {tokens ? ` · ${tokens.toLocaleString()} tok` : ""}
+          {bad ? ` · ${bad} failed` : ""}
+          {` · ${clock(session.to)}`}
+        </span>
+      </span>
+      {live > 0 && (
+        <span style={{ display: "flex", alignItems: "center", gap: 5, fontFamily: MONO, fontSize: 9, color: "var(--accent)" }}>
+          <span className="rg-live" style={{ width: 7, height: 7, borderRadius: 7, background: "var(--accent)" }} />
+          {live > 1 ? `${live} running` : "running"}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -253,7 +350,10 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-        <span style={{ width: 6, height: 6, borderRadius: 6, background: running ? "var(--accent)" : levelColor(run.level), flexShrink: 0 }} />
+        <span
+          className={running ? "rg-live" : undefined}
+          style={{ width: 6, height: 6, borderRadius: 6, background: running ? "var(--accent)" : levelColor(run.level), flexShrink: 0 }}
+        />
         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {running ? <em style={{ color: "var(--accent)" }}>running…</em> : (run.outcome ?? "—")}
         </span>

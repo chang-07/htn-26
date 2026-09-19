@@ -61,11 +61,14 @@ export const THEME_CSS = `
 .rg-run:hover { background: var(--card-2); }
 .rg-btn:hover { color: var(--ink); border-color: var(--rule-2); }
 .rg-step:hover { background: var(--accent-soft); color: var(--accent); }
+/* A turn that is still going, visible without reading the row. */
+.rg-live { animation: rgPulse 1.4s ease-in-out infinite; }
+@keyframes rgPulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-soft) } 50% { opacity: .45; box-shadow: 0 0 0 4px transparent } }
 @keyframes rgIn { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
 @keyframes rgFade { from { opacity:0 } to { opacity:1 } }
 @keyframes rgPop { from { opacity:0; transform:translateY(8px) scale(.985) } to { opacity:1; transform:none } }
 @media (prefers-reduced-motion: reduce) {
-  .rg-card, .rg-scrim, .rg-sheet { animation: none; }
+  .rg-card, .rg-scrim, .rg-sheet, .rg-live { animation: none; }
   .rg-card:hover { transform: none; }
 }
 `;

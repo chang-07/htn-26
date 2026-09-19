@@ -121,6 +121,99 @@ function describe(n: Node): string {
   }
 }
 
+/**
+ * The longer answer, for someone who has not read the code: what this kind of
+ * step is for, and what this one's numbers actually say. `describe` is the
+ * headline; this is the paragraph under it.
+ */
+function explain(n: Node): string[] {
+  const f = n.fields;
+  const out: string[] = [];
+  const n_ = (k: string) => num(f[k]);
+  const s_ = (k: string) => str(f[k]);
+
+  switch (n.event) {
+    case "message.in":
+      out.push("The agent only wakes for messages addressed to it — an @mention, a reply to something it said, an answer to a question it just asked, or any message in a one-to-one chat. This one qualified, so a turn was scheduled.");
+      if (n_("chars")) out.push(`The message was ${n_("chars")} characters. Phone numbers are masked before anything is written down.`);
+      break;
+    case "message.stored":
+      out.push("Everything said in the chat is stored so the agent has the full conversation when it is finally called on — but storing costs nothing, and no model runs here. This is why a busy group chat does not burn tokens.");
+      break;
+    case "turn.start":
+      out.push(`The model was handed the recent transcript, the current plan, anything research has returned, and the list of tools it may call. It then decides, step by step, what to do${s_("llm") ? ` — this turn ran on ${s_("llm")}` : ""}.`);
+      if (n_("history")) out.push(`It could see ${n_("history")} earlier messages.`);
+      break;
+    case "turn.end": {
+      const outcome = s_("outcome");
+      out.push(
+        outcome === "silent" ? "The model looked at the conversation and chose not to speak. In a group chat that is the common and correct outcome."
+        : outcome === "max_steps" ? "The model hit its step ceiling before finishing. That usually means it got stuck in a loop of tool calls."
+        : outcome === "llm_failed" ? "The model call itself failed — a network or provider problem, not something the model did wrong."
+        : "The turn completed and the agent had said its piece.");
+      if (n_("steps")) out.push(`It took ${n_("steps")} round trip${n_("steps") === 1 ? "" : "s"} to the model${n_("tokens") ? `, costing ${n_("tokens")!.toLocaleString()} tokens in total` : ""}.`);
+      break;
+    }
+    case "tool": {
+      const tool = s_("tool");
+      if (tool === "send_message") out.push("Text reaches the group only through this tool, never from the model's raw output — some models leak their reasoning into the reply, and that must not be texted to anyone.");
+      else if (tool === "research") out.push("This returns immediately. The real work runs in a separate workflow that can take minutes, and its findings come back later in the chat's history — which is why research steps often appear before the turn that uses them.");
+      else if (tool === "propose_plan") out.push("This posts the plan card into the thread and opens voting. People vote with tapbacks on the card, not by replying.");
+      else if (tool === "get_votes") out.push("The agent is required to check the tally here rather than guess a winner from the conversation.");
+      else if (tool === "book_option") out.push("This drives a real browser at the venue's own site. It is allowed at most once per plan, and it cannot pay for anything.");
+      else if (tool?.startsWith("shop")) out.push("The store is called over UCP — plain JSON-RPC over HTTPS, no browser. The agent can build a cart but never completes checkout; a person does that with the link.");
+      else out.push("A tool call. Arguments below are exactly what the model sent.");
+      break;
+    }
+    case "research.started":
+      out.push("A background workflow opened a real browser. The agent tells the group it is looking and then stops talking — it is not allowed to start a second run while one is in flight, and it may not invent places while waiting.");
+      break;
+    case "research.planned":
+      out.push("The model turned the plain-English brief into search queries. These are the exact strings that were typed into a search engine.");
+      break;
+    case "research.searched":
+      out.push(`The queries ran in the browser and came back with ${n_("hits") ?? 0} result links. Only a few of those get opened — reading a page is the expensive part.`);
+      break;
+    case "research.read":
+      out.push(`The browser opened ${s_("host") ?? "a page"} and a model read the visible text, pulling out anything that looked like a real venue. It found ${n_("candidates") ?? 0}.`);
+      out.push("The capture above is what the page looked like when it loaded, so you can tell a good result from a cookie wall or a blocked page.");
+      break;
+    case "research.finished":
+      out.push(`${n_("candidates") ?? 0} venue${n_("candidates") === 1 ? "" : "s"} came back from ${n_("pagesRead") ?? 0} page${n_("pagesRead") === 1 ? "" : "s"}. From here on the agent may only propose places that appear in this list — it cannot make one up.`);
+      if (n_("ms")) out.push(`The whole run took ${dur(n_("ms")!)} of wall clock, which is why the turn that asked for it finished long before this arrived.`);
+      break;
+    case "booking.started":
+      out.push("A browser session opened at the venue's own booking page and is being driven step by step. There is a session replay below if you want to watch what it did.");
+      break;
+    case "booking.finished":
+      out.push(f.ok
+        ? "The reservation was submitted and confirmed."
+        : `It did not get a booking: ${s_("detail") ?? "no reason recorded"}. The agent has to take that back to the group rather than pretend it worked.`);
+      out.push("The capture is the last thing the browser saw, which is usually enough to tell whether it got lost or the slot was genuinely unavailable.");
+      break;
+    case "cart.updated":
+      out.push("The cart was created at the store and a checkout link came back. The agent cannot pay — the card in the chat carries the link so a person finishes it.");
+      out.push("Quantities here are editable: changing them rewrites the cart at the store and redraws the card in the thread.");
+      break;
+    case "cart.edited":
+      out.push("Someone changed the quantities from this page rather than through the chat. The store cart was rewritten and the card in the thread redrawn, so the checkout link now points at the new contents.");
+      break;
+    case "card.update":
+      out.push("The card already in the thread was redrawn in place rather than a new one being sent, so the vote tally updates without spamming the chat.");
+      break;
+    case "ticket.out":
+      out.push("Cards are sent as photos, which is why they look designed rather than like a link preview. Voting happens with tapbacks on the photo.");
+      break;
+    case "message.out":
+      out.push(`The agent sent ${n_("chars") ?? 0} characters to the group. It is limited to one message per turn — an earlier version rephrased itself eight times in twenty seconds.`);
+      break;
+    case "vote.cast":
+      out.push(`A vote arrived${s_("source") === "reaction" ? " as a tapback on the card" : " from the vote page"}. The agent will not name a winner until it has checked the tally.`);
+      break;
+  }
+  return out;
+}
+
 /** The picture behind a step: a saved browser frame, or a product image. */
 function shotFor(fields: Record<string, unknown>, chat: string): string | undefined {
   const id = str(fields.shotId);
@@ -527,6 +620,13 @@ function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: stri
         </div>
 
         <div style={{ overflowY: "auto", padding: "15px 17px 28px", display: "flex", flexDirection: "column", gap: 17 }}>
+          {!!explain(node).length && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              {explain(node).map((para, i) => (
+                <p key={i} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.55, color: "var(--muted)" }}>{para}</p>
+              ))}
+            </div>
+          )}
           {str(f.text) && (
             <Section label={node.event === "message.in" ? "The message" : "What it sent"}>
               <p style={{ margin: 0, background: "var(--card-2)", border: "1px solid var(--rule)", borderRadius: 12, padding: "10px 13px", fontSize: 13.5, lineHeight: 1.5, color: "var(--ink)" }}>
