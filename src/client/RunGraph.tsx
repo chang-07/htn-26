@@ -42,6 +42,9 @@ const TOOL_SVC: Record<string, ServiceId> = {
   shop_drop_cart: "shop",
 };
 
+/** A browser session older than this is long gone, whatever the events say. */
+const LIVE_MAX_AGE = 10 * 60 * 1000;
+
 const CARD_W = 236;
 const GAP_X = 34;
 const GAP_Y = 30;
@@ -57,11 +60,22 @@ function classify(e: GraphEvent): { svc: ServiceId; title: string; sub: string }
   }
   if (e.event.startsWith("research.")) {
     const st = e.event.slice("research.".length);
+    // `queries` is the list itself, not a count — reading it as a number showed
+    // "0 queries written" on every run that had written some.
+    const listLen = (v: unknown) => (Array.isArray(v) ? v.length : num(v) ?? 0);
+    if (st === "selected") {
+      return {
+        svc: "browser",
+        title: "pages chosen",
+        sub: Array.isArray(f.hosts) ? (f.hosts as string[]).join(", ") : `${num(f.count) ?? 0} pages`,
+      };
+    }
+    if (st === "browser") return { svc: "browser", title: "browser open", sub: str(f.provider) ?? "" };
     const sub =
       st === "finished" ? `${num(f.candidates) ?? 0} venues found` :
       st === "read" ? (str(f.host) ?? "") :
       st === "searched" ? `${num(f.hits) ?? 0} results` :
-      st === "planned" ? `${num(f.queries) ?? 0} queries written` : (str(f.brief) ?? "");
+      st === "planned" ? `${listLen(f.queries)} queries written` : (str(f.brief) ?? "");
     return { svc: "browser", title: `research ${st}`, sub };
   }
   if (e.event.startsWith("booking.")) {
@@ -78,6 +92,14 @@ function classify(e: GraphEvent): { svc: ServiceId; title: string; sub: string }
     case "card.update": return { svc: "chat", title: "card redrawn", sub: `version ${num(f.version) ?? "?"}` };
     case "vote.cast": return { svc: "chat", title: "vote", sub: `by ${str(f.source) ?? "?"}` };
     case "turn.start": return { svc: "model", title: "turn", sub: str(f.llm) ?? "" };
+    case "turn.step": {
+      const calls = Array.isArray(f.calls) ? (f.calls as string[]) : [];
+      return {
+        svc: "model",
+        title: `step ${num(f.step) ?? "?"}`,
+        sub: calls.length ? `chose ${calls.join(", ")}` : str(f.thinking) ? "reasoning, no tool" : "no tool call",
+      };
+    }
     case "turn.end": return { svc: "model", title: str(f.outcome) ?? "turn end", sub: `${num(f.steps) ?? 0} model steps` };
     case "turn.crashed": return { svc: "model", title: "crashed", sub: str(f.error) ?? "" };
     default: return { svc: e.event.startsWith("turn.") ? "model" : "chat", title: e.event.replace(/\./g, " "), sub: "" };
@@ -94,11 +116,16 @@ function describe(n: Node): string {
     case "ticket.out": return "A card went into the thread as a photo, with tapback voting.";
     case "card.update": return "The card was redrawn in place, so the tally updates without a new message.";
     case "turn.start": return "The model woke and read the conversation.";
+    case "turn.step": return str(f.thinking)
+      ? "One round trip to the model. This is what it was thinking before it acted."
+      : "One round trip to the model, which went straight to a tool call without commentary.";
     case "turn.end": return f.outcome === "silent"
       ? "The model had nothing useful to add and stayed quiet."
       : "The turn finished and the agent had spoken.";
     case "research.started": return "Research started in the background. The agent says it is looking, then stops — findings arrive later.";
     case "research.planned": return "The brief became search queries.";
+    case "research.selected": return "A model picked which search results were worth opening in a browser.";
+    case "research.browser": return "A browser session opened. While the run is live you can watch it here.";
     case "research.searched": return "The queries ran in a real browser.";
     case "research.read": return "The browser opened a result page and pulled candidate venues off it.";
     case "research.finished": return f.ok
@@ -140,6 +167,11 @@ function explain(n: Node): string[] {
     case "message.stored":
       out.push("Everything said in the chat is stored so the agent has the full conversation when it is finally called on — but storing costs nothing, and no model runs here. This is why a busy group chat does not burn tokens.");
       break;
+    case "turn.step":
+      out.push("A turn is a loop: the model is called, it either calls tools or stops, and the results go back for another round. This is one pass through that loop.");
+      if (Array.isArray(f.calls) && (f.calls as string[]).length) out.push(`It chose to call ${(f.calls as string[]).join(", ")}.`);
+      if (s_("thinking")) out.push("The text below is the model's own prose. It never reaches the group — the chat only ever sees what goes through send_message — so it is reasoning rather than a reply.");
+      break;
     case "turn.start":
       out.push(`The model was handed the recent transcript, the current plan, anything research has returned, and the list of tools it may call. It then decides, step by step, what to do${s_("llm") ? ` — this turn ran on ${s_("llm")}` : ""}.`);
       if (n_("history")) out.push(`It could see ${n_("history")} earlier messages.`);
@@ -173,6 +205,12 @@ function explain(n: Node): string[] {
       break;
     case "research.searched":
       out.push(`The queries ran in the browser and came back with ${n_("hits") ?? 0} result links. Only a few of those get opened — reading a page is the expensive part.`);
+      break;
+    case "research.selected":
+      out.push("Opening a page costs a browser load and a model call, so a model first picks which results are worth it — preferring curated lists and venues' own pages over aggregator landing pages, and avoiding several results from one site.");
+      break;
+    case "research.browser":
+      out.push("Pages are read a tab at a time in one session, all at once rather than one after another, so the model is extracting from one page while the browser loads the next.");
       break;
     case "research.read":
       out.push(`The browser opened ${s_("host") ?? "a page"} and a model read the visible text, pulling out anything that looked like a real venue. It found ${n_("candidates") ?? 0}.`);
@@ -353,6 +391,27 @@ export function RunGraph({ run, events, token }: { run: RunSummary; events: Grap
 
   const running = run.ended === null;
   const t0 = nodes[0]?.ts ?? run.started;
+
+  /**
+   * Which card, if any, should hold the live browser. The session opens at a
+   * `*.browser` step and is closed by the matching `*.finished`, so the view
+   * belongs to the browser step for as long as nothing has closed it — not to
+   * whichever card happens to be last, which changes every few seconds.
+   *
+   * Deliberately not tied to the run being open: a research workflow's browser
+   * outlives the short run that records its callbacks, so keying off run.ended
+   * meant the view never appeared at all. Recency is the guard instead, and
+   * /live 404s once nothing is running.
+   */
+  const liveSeq = useMemo(() => {
+    let open: number | null = null;
+    let at = 0;
+    for (const n of nodes) {
+      if (n.fields.live === true) (open = n.seq), (at = n.ts);
+      if (n.event === "research.finished" || n.event === "booking.finished") open = null;
+    }
+    return open !== null && Date.now() - at < LIVE_MAX_AGE ? open : null;
+  }, [nodes]);
   const pickedNode = picked === null ? null : nodes.find((n) => n.seq === picked) ?? null;
 
   return (
@@ -391,6 +450,7 @@ export function RunGraph({ run, events, token }: { run: RunSummary; events: Grap
             chat={run.chat}
             turnMs={run.ms}
             live={running && i === nodes.length - 1}
+            showLive={n.seq === liveSeq}
             selected={picked === n.seq}
             onPick={() => setPicked((p) => (p === n.seq ? null : n.seq))}
             qtyOf={qtyOf}
@@ -416,9 +476,9 @@ export function RunGraph({ run, events, token }: { run: RunSummary; events: Grap
 }
 
 function Card({
-  node, t0, chat, turnMs, live, selected, onPick, qtyOf, dirty, pushing, onStep, onPush,
+  node, t0, chat, turnMs, live, showLive, selected, onPick, qtyOf, dirty, pushing, onStep, onPush,
 }: {
-  node: Node; t0: number; chat: string; turnMs: number | null; live: boolean; selected: boolean; onPick: () => void;
+  node: Node; t0: number; chat: string; turnMs: number | null; live: boolean; showLive: boolean; selected: boolean; onPick: () => void;
   qtyOf: (n: Node, li: number, items: CartItem[]) => number;
   dirty: (n: Node, items: CartItem[]) => boolean;
   pushing: boolean;
@@ -472,6 +532,21 @@ function Card({
           <div style={{ margin: "9px 11px 0", border: "1px solid var(--rule)", borderRadius: 6, overflow: "hidden", height: 92, background: "var(--card-2)" }}>
             <img src={shot} alt={`What the agent saw at ${node.event}`} loading="lazy" style={{ display: "block", width: "100%", height: "100%", objectFit: "cover", objectPosition: "top" }} />
           </div>
+        )}
+        {showLive && (
+          <span style={{ display: "block", margin: "9px 11px 0", border: "1px solid var(--accent)", borderRadius: 6, overflow: "hidden", height: 132, background: "var(--card-2)" }}>
+            <iframe
+              src={`/live/${encodeURIComponent(chat)}`}
+              title="The agent's browser, live"
+              style={{ width: "100%", height: "100%", border: 0, display: "block" }}
+              sandbox="allow-scripts allow-same-origin"
+            />
+          </span>
+        )}
+        {str(node.fields.thinking) && (
+          <p style={{ margin: "9px 11px 0", padding: "8px 10px", background: "var(--card-2)", border: "1px dashed var(--rule-2)", borderRadius: 10, fontSize: 11.5, lineHeight: 1.45, color: "var(--muted)", fontStyle: "italic" }}>
+            {str(node.fields.thinking)!.length > 120 ? `${str(node.fields.thinking)!.slice(0, 120)}…` : str(node.fields.thinking)}
+          </p>
         )}
         {text && !items && (
           <p style={{ margin: "9px 11px 0", padding: "8px 10px", background: "var(--card-2)", border: "1px solid var(--rule)", borderRadius: 10, fontSize: 12, lineHeight: 1.45, color: "var(--ink)" }}>
@@ -586,7 +661,7 @@ function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: stri
     }
   }
 
-  const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId"]);
+  const skip = new Set(["text", "url", "items", "plan", "replays", "replay", "args", "imageUrl", "shotId", "thinking"]);
   const raw = Object.fromEntries(Object.entries(f).filter(([k]) => !skip.has(k)));
 
   return (
@@ -626,6 +701,13 @@ function Sheet({ node, t0, chat, onClose }: { node: Node; t0: number; chat: stri
                 <p key={i} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.55, color: "var(--muted)" }}>{para}</p>
               ))}
             </div>
+          )}
+          {str(f.thinking) && (
+            <Section label="What the model was thinking">
+              <p style={{ margin: 0, background: "var(--card-2)", border: "1px dashed var(--rule-2)", borderRadius: 12, padding: "10px 13px", fontSize: 13, lineHeight: 1.55, color: "var(--muted)", fontStyle: "italic", whiteSpace: "pre-wrap" }}>
+                {str(f.thinking)}
+              </p>
+            </Section>
           )}
           {str(f.text) && (
             <Section label={node.event === "message.in" ? "The message" : "What it sent"}>

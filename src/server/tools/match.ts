@@ -22,13 +22,19 @@ export async function upsertProfile(env: Env, profile: PoolProfile) {
   ]);
 }
 
-export async function findMatches(env: Env, blurb: string, excludeId?: string, topK = 3) {
+/** Leaving the pool: "forget me", or un-ticking the box. */
+export async function removeProfile(env: Env, id: string) {
+  await env.PEOPLE_INDEX.deleteByIds([id]);
+}
+
+/** `exclude` is the asker plus anyone they have already been offered. */
+export async function findMatches(env: Env, blurb: string, exclude: string[] = [], topK = 3) {
   const res = await env.PEOPLE_INDEX.query(await embed(env, blurb), {
-    topK: topK + 1,
+    topK: Math.min(topK + exclude.length, 20),
     returnMetadata: "all",
   });
   return res.matches
-    .filter((m) => m.id !== excludeId)
+    .filter((m) => !exclude.includes(m.id))
     .slice(0, topK)
     .map((m) => ({
       id: m.id,

@@ -138,7 +138,22 @@ export const toolSchemas = {
     blurb: z.string().describe("Their interests, in their own words"),
   }),
   find_matches: z.object({
-    blurb: z.string().describe("Interests to match against"),
+    who: z.string().describe("Transcript label of the person who asked to be paired up"),
+    lookingFor: z
+      .string()
+      .optional()
+      .describe("What they said they want, in their words: 'someone to climb with', 'a board game group'. Omit to match on their whole profile."),
+  }),
+  request_intro: z.object({
+    candidate: z.string().describe("The ref of one candidate from find_matches, e.g. c1"),
+    common: z
+      .array(z.object({ emoji: z.string().optional().describe("One emoji"), text: z.string().describe("Under 28 characters") }))
+      .min(1)
+      .max(3)
+      .describe("What the two share, taken from the asker's profile and the candidate's blurb. Never invented."),
+  }),
+  answer_intro: z.object({
+    answer: z.enum(["yes", "no"]).describe("Their answer to the pending introduction"),
   }),
 } as const;
 
@@ -185,7 +200,12 @@ const descriptions: Record<ToolName, string> = {
     "Post the introduction ticket for two people from the match pool. Both must have opted in, and the things in common must come from their blurbs.",
   join_match_pool:
     "Add someone to the matchmaking pool. Only when that person has explicitly asked to be included.",
-  find_matches: "Find people in the opt-in pool with similar interests.",
+  find_matches:
+    "Search the opt-in pool for people to pair someone up with. The asker must be in the pool themselves. Candidates come back with a ref and a blurb but no name: describe them to the asker, never identify them.",
+  request_intro:
+    "Ask one candidate, privately in their own chat, whether they want to be introduced. Only after the asker picked that candidate. The asker hears back when they answer.",
+  answer_intro:
+    "Record this person's yes or no to the pending introduction shown in your context. Call it FIRST, before send_message. On yes a group chat is opened for the two of them.",
 };
 
 export function openAiTools() {

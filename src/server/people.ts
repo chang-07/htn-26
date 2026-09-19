@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import { upsertProfile } from "./tools/match";
+import { INTRO_TTL_MS, type Intro, type IntroStatus } from "./intros";
+import { removeProfile, upsertProfile } from "./tools/match";
 
 /**
  * What the agent knows about a person, keyed by phone handle so it follows
@@ -28,8 +29,9 @@ export type Profile = {
   dmChat?: string;
   /** Set once they have connected a wallet for purchases they approve. Never any card detail. */
   payments?: "connected";
-  /** What reading the links THEY shared turned up: a few interests and one line. */
-  online?: { interests: string[]; line: string; from: string[] };
+  /** What reading the links THEY shared turned up: interests, one line, and a
+   *  few observations worth having when planning for them. */
+  online?: { interests: string[]; line: string; notes?: string[]; from: string[] };
   /** The links that `online` was read from, so they are re-read only when they change. */
   onlineReadOf?: string;
   updated: number;
@@ -68,6 +70,7 @@ export class People extends DurableObject<Env> {
     super(ctx, env);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS profiles (handle TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, handle TEXT UNIQUE NOT NULL)`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS intros (id TEXT PRIMARY KEY, from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, json TEXT NOT NULL)`);
   }
 
   private read(handle: string): Profile | null {
@@ -119,10 +122,79 @@ export class People extends DurableObject<Env> {
     this.write(handle, { ...p, facts: [...p.facts, clean].slice(-MAX_FACTS) });
   }
 
-  /** Deletes the profile and retires the link. */
+  /** Deletes the profile, retires the link, and takes them out of matching. */
   async forget(handle: string) {
     this.ctx.storage.sql.exec(`DELETE FROM profiles WHERE handle = ?`, handle);
     this.ctx.storage.sql.exec(`DELETE FROM tokens WHERE handle = ?`, handle);
+    this.ctx.storage.sql.exec(`DELETE FROM intros WHERE from_handle = ? OR to_handle = ?`, handle, handle);
+    await removeProfile(this.env, handle).catch(() => {}); // the pool is best-effort; the profile is gone either way
+  }
+
+  // ----------------------------------------------------------------- intros
+  // See intros.ts for the flow. One row per ask, whatever became of it, so the
+  // same two people are never offered to each other twice.
+
+  private introsWhere(where: string, ...args: string[]): Intro[] {
+    return this.ctx.storage.sql
+      .exec<{ json: string }>(`SELECT json FROM intros WHERE ${where}`, ...args)
+      .toArray()
+      .map((r) => JSON.parse(r.json) as Intro)
+      .map((i) => (i.status === "pending" && Date.now() - i.created > INTRO_TTL_MS ? { ...i, status: "expired" as const } : i));
+  }
+
+  async createIntro(intro: Intro) {
+    this.ctx.storage.sql.exec(`INSERT INTO intros (id, from_handle, to_handle, json) VALUES (?, ?, ?, ?)`, intro.id, intro.from, intro.to, JSON.stringify(intro));
+  }
+
+  async getIntro(id: string): Promise<Intro | null> {
+    return this.introsWhere(`id = ?`, id)[0] ?? null;
+  }
+
+  async updateIntro(id: string, patch: { status?: IntroStatus; chat?: string }): Promise<Intro | null> {
+    const intro = this.introsWhere(`id = ?`, id)[0];
+    if (!intro) return null;
+    const next = { ...intro, ...patch };
+    this.ctx.storage.sql.exec(`UPDATE intros SET json = ? WHERE id = ?`, JSON.stringify(next), id);
+    return next;
+  }
+
+  /**
+   * The pool without Vectorize: everyone opted in, ranked by shared words. Far
+   * cruder than embeddings ("climbing" will not find "bouldering"), but it needs
+   * no Cloudflare login, so pairing still works on a laptop and when the index
+   * is down.
+   */
+  async scanPool(query: string, exclude: string[], topK = 3) {
+    const words = (s: string) => new Set(s.toLowerCase().match(/[a-z]{3,}/g) ?? []);
+    const want = words(query);
+    return this.ctx.storage.sql
+      .exec<{ handle: string; json: string }>(`SELECT handle, json FROM profiles`)
+      .toArray()
+      .map((r) => ({ id: r.handle, profile: { ...EMPTY, ...(JSON.parse(r.json) as Profile) } }))
+      .filter(({ id, profile }) => profile.matchOptIn && !exclude.includes(id) && matchBlurb(profile))
+      .map(({ id, profile }) => {
+        const blurb = matchBlurb(profile);
+        const shared = [...words(blurb)].filter((w) => want.has(w)).length;
+        return { id, name: profile.name ?? "", blurb, score: Number((shared / Math.max(want.size, 1)).toFixed(3)) };
+      })
+      .filter((m) => m.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  /** Asks waiting on this person. They are asked about one at a time. */
+  async pendingTo(handle: string): Promise<Intro[]> {
+    return this.introsWhere(`to_handle = ?`, handle).filter((i) => i.status === "pending");
+  }
+
+  /** Asks this person has out that nobody has answered yet. */
+  async pendingFrom(handle: string): Promise<Intro[]> {
+    return this.introsWhere(`from_handle = ?`, handle).filter((i) => i.status === "pending");
+  }
+
+  /** Everyone this person has been paired with or offered, in either direction. */
+  async pairedWith(handle: string): Promise<string[]> {
+    return this.introsWhere(`from_handle = ? OR to_handle = ?`, handle, handle).map((i) => (i.from === handle ? i.to : i.from));
   }
 }
 
@@ -139,6 +211,9 @@ export function profileLines(p: Profile): string {
     p.payments === "connected" && "has payments set up",
     p.links.length && `links: ${p.links.join(", ")}`,
     p.online?.interests.length && `their ${p.online.from.join(" + ")} shows: ${p.online.interests.join(", ")}`,
+    // The notes are the part worth planning around — an interest tag says
+    // "climbing", a note says they climb most weekends.
+    p.online?.notes?.length && `noted from their links: ${p.online.notes.join("; ")}`,
     p.facts.length && `mentioned: ${p.facts.join("; ")}`,
   ].filter(Boolean);
   return parts.join(" · ").slice(0, 420);
@@ -149,7 +224,11 @@ export function profileLines(p: Profile): string {
  * Returns false when the pool could not be reached, which must not lose the save.
  */
 export async function syncMatchPool(env: Env, handle: string, p: Profile): Promise<boolean> {
-  if (!p.matchOptIn || !matchBlurb(p)) return true;
+  if (!p.matchOptIn || !matchBlurb(p)) {
+    // Un-ticking the box has to take them out, not just stop updating them.
+    await removeProfile(env, handle).catch(() => {});
+    return true;
+  }
   try {
     await upsertProfile(env, { id: handle, name: p.name ?? "", blurb: matchBlurb(p) });
     return true;
@@ -160,5 +239,7 @@ export async function syncMatchPool(env: Env, handle: string, p: Profile): Promi
 
 /** The blurb the match pool embeds, from the same profile. */
 export function matchBlurb(p: Profile): string {
-  return [p.interests, p.online?.interests.join(", "), p.about, p.area && `Based in ${p.area}`].filter(Boolean).join(". ");
+  return [p.interests, p.online?.interests.join(", "), p.online?.notes?.join(". "), p.about, p.area && `Based in ${p.area}`]
+    .filter(Boolean)
+    .join(". ");
 }

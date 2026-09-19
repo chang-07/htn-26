@@ -31,6 +31,8 @@ export type OnlineSummary = {
   interests: string[];
   /** One line in plain words, for the profile. */
   line: string;
+  /** Observations worth remembering when planning, e.g. "climbs most weekends". */
+  notes: string[];
   read: string[];
   skipped: { label: string; why: string }[];
   tokens: number;
@@ -71,6 +73,25 @@ export function parseLinks(links: string[]): LinkSource[] {
   }).slice(0, 4);
 }
 
+/** How many posts to open for their captions. Each is a page load. */
+const IG_POSTS = 5;
+
+/**
+ * Reads a public Instagram profile the way a person skimming it would: the bio,
+ * what their highlights are called, the grid, and then a few posts opened for
+ * their captions.
+ *
+ * The grid alone gives image alt text, which Instagram writes automatically and
+ * describes the picture but not the person's own words, so the first few posts
+ * are opened for their captions — a page load each, which is why it is only a
+ * few.
+ *
+ * Highlight titles are read best-effort. They would say a lot per character —
+ * they are what someone chose to keep pinned — but on the two accounts tested
+ * (both brand accounts) nothing matched this selector even signed in, so treat
+ * an empty highlights section as normal rather than as a bug, and check here
+ * first if it never appears for personal accounts either.
+ */
 export async function readInstagram(browser: Browser, handle: string): Promise<Omit<ReadOutcome, "source">> {
   const page = await browser.newPage();
   try {
@@ -87,7 +108,16 @@ export async function readInstagram(browser: Browser, handle: string): Promise<O
         .map((img) => (img.alt ?? "").replace(/\s+/g, " ").trim())
         .filter((alt) => alt.length > 25)
         .slice(0, 14);
-      return { path: location.pathname, body: body.slice(0, 1500), header: header.slice(0, 700), alts };
+      // Pinned story highlights: what they chose to keep on the profile. Any
+      // element, not just anchors — the markup differs signed in and out.
+      const highlights = Array.from(document.querySelectorAll<HTMLElement>('[href*="/stories/highlights/"]'))
+        .map((a) => (a.innerText ?? "").replace(/\s+/g, " ").trim())
+        .filter((t) => t && t.length < 40)
+        .slice(0, 12);
+      const posts = Array.from(document.querySelectorAll<HTMLAnchorElement>('main a[href*="/p/"], main a[href*="/reel/"]'))
+        .map((a) => a.href)
+        .slice(0, 12);
+      return { path: location.pathname, body: body.slice(0, 1500), header: header.slice(0, 700), alts, highlights, posts };
     });
 
     if (seen.path.startsWith("/accounts/login") || /log in to (see|continue)/i.test(seen.body)) return { ok: false, skipped: "login_wall" };
@@ -95,7 +125,32 @@ export async function readInstagram(browser: Browser, handle: string): Promise<O
     if (/page isn.t available|page not found/i.test(seen.body)) return { ok: false, skipped: "not_found" };
     if (!seen.header && !seen.alts.length) return { ok: false, skipped: "unreadable" };
 
-    return { ok: true, text: `PROFILE HEADER:\n${seen.header}\n\nRECENT POSTS (image descriptions):\n${seen.alts.map((a) => `- ${a}`).join("\n")}`.slice(0, 3500) };
+    // Captions, by loading each post rather than clicking the grid open — the
+    // modal's markup changes constantly, the post page's og:description does not.
+    const captions: string[] = [];
+    for (const href of seen.posts.slice(0, IG_POSTS)) {
+      try {
+        await page.goto(href, { waitUntil: "domcontentloaded", timeout: 20_000 });
+        await new Promise((r) => setTimeout(r, 900));
+        const caption = await page.evaluate(() => {
+          const meta = document.querySelector<HTMLMetaElement>('meta[property="og:description"]')?.content ?? "";
+          const article = document.querySelector<HTMLElement>("article h1")?.innerText ?? "";
+          return (article || meta).replace(/\s+/g, " ").trim().slice(0, 400);
+        });
+        if (caption) captions.push(caption);
+      } catch {
+        // One unreadable post should not lose the rest of the profile.
+      }
+    }
+
+    const parts = [
+      `PROFILE HEADER:\n${seen.header}`,
+      seen.highlights.length ? `PINNED HIGHLIGHTS (what they keep on their profile):\n${seen.highlights.map((h) => `- ${h}`).join("\n")}` : "",
+      seen.alts.length ? `RECENT POSTS (image descriptions):\n${seen.alts.map((a) => `- ${a}`).join("\n")}` : "",
+      captions.length ? `POST CAPTIONS (their own words):\n${captions.map((c) => `- ${c}`).join("\n")}` : "",
+    ].filter(Boolean);
+
+    return { ok: true, text: parts.join("\n\n").slice(0, 6000) };
   } finally {
     await page.close().catch(() => {});
   }
@@ -104,6 +159,12 @@ export async function readInstagram(browser: Browser, handle: string): Promise<O
 const Summary = z.object({
   interests: z.array(z.string()).max(6).describe("Short phrases for things they evidently enjoy: 'film photography', 'bouldering', 'ramen'"),
   line: z.string().describe("One plain sentence a friend might say about what they are into, under 140 characters"),
+  notes: z
+    .array(z.string())
+    .max(5)
+    .describe(
+      "Observations a friend would find useful when planning something, in their own words but never quoting: 'climbs most weekends', 'keeps a highlight for Tokyo trips', 'cooks more than eats out'. Empty if the pages say little.",
+    ),
 });
 
 const SYSTEM = `You read pages a person shared about themselves (their own socials and sites) and note what they enjoy, so a friend planning an outing can pick something they would like.
@@ -116,7 +177,7 @@ const SYSTEM = `You read pages a person shared about themselves (their own socia
 /** Reads each link and boils them down to a handful of interests. Never throws. */
 export async function readLinks(env: Env, links: string[]): Promise<OnlineSummary> {
   const sources = parseLinks(links);
-  const empty: OnlineSummary = { interests: [], line: "", read: [], skipped: [], tokens: 0 };
+  const empty: OnlineSummary = { interests: [], line: "", notes: [], read: [], skipped: [], tokens: 0 };
   if (!sources.length) return empty;
 
   const outcomes: ReadOutcome[] = [];
@@ -154,6 +215,7 @@ export async function readLinks(env: Env, links: string[]): Promise<OnlineSummar
     return {
       interests: res.value.interests.map((i) => i.trim().slice(0, 40)).filter(Boolean).slice(0, 6),
       line: res.value.line.trim().slice(0, 160),
+      notes: res.value.notes.map((n) => n.trim().slice(0, 120)).filter(Boolean).slice(0, 5),
       read: read.map((o) => o.source.label),
       skipped,
       tokens: res.tokens,

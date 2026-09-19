@@ -1,4 +1,4 @@
-import { Agent, callable } from "agents";
+import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
@@ -7,10 +7,11 @@ import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
+import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
@@ -92,6 +93,11 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   FIRST, before send_message: sending ends your turn, so anything after it is
   lost. In a group, anyone can text you directly and say "profile" to set theirs up.
 - Only add someone to the match pool when they themselves asked to join.
+- Pairing people up ("find me someone to climb with") is for direct chats:
+  find_matches, then describe the candidates WITHOUT identifying them and ask
+  which one; request_intro only for the one they pick. You never learn or share
+  a candidate's name or number: the two meet in a new group chat only after the
+  other person says yes. If asked in a group, tell them to text you directly.
 - In a group you sleep while people talk among themselves, and are woken only
   when someone @mentions you, replies to one of your messages, or answers a
   question you asked. You have still read everything said while you slept — use
@@ -590,11 +596,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     const started = Date.now();
     const found = await readLinks(this.env, profile.links);
-    this.note("info", "links.read", { read: found.read, skipped: found.skipped, interests: found.interests.length, tokens: found.tokens, ms: Date.now() - started });
+    this.note("info", "links.read", { read: found.read, skipped: found.skipped, interests: found.interests.length, notes: found.notes.length, tokens: found.tokens, ms: Date.now() - started });
 
     const saved = await store.save(person.handle, {
       onlineReadOf: signature,
-      online: found.interests.length ? { interests: found.interests, line: found.line, from: found.read } : undefined,
+      online: found.interests.length || found.notes.length
+        ? { interests: found.interests, line: found.line, notes: found.notes, from: found.read }
+        : undefined,
     });
     await syncMatchPool(this.env, person.handle, saved);
 
@@ -604,6 +612,61 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.say("your instagram's private, so i left it alone");
     }
     // Anything else (a login wall, a dead link) is ours to deal with, not theirs to hear about.
+  }
+
+  // ------------------------------------------------------------------ intros
+  // The cross-chat half of pairing (see intros.ts). Each of these runs on a
+  // different chat's agent than the one whose tool call caused it.
+
+  /** B's direct chat: someone wants to meet them. Asked by code, answered through the model (answer_intro). */
+  async introAsk(intro: Intro) {
+    this.setMeta("pending_intro", intro.id);
+    this.setMeta("pending_intro_common", intro.common.map((c) => c.text).join(", "));
+    this.setMeta("pending_intro_at", String(intro.created));
+    this.note("info", "intro.asked", { intro: intro.id });
+    await this.say(askText(intro));
+  }
+
+  /** A's direct chat: the answer came back. `chat` is the new group chat, or null for a no. */
+  async introAnswered(intro: Intro, chat: string | null) {
+    this.note("info", "intro.answered", { intro: intro.id, accepted: Boolean(chat) });
+    await this.schedule(ANSWER_RELAY_SECONDS, "relayIntroAnswer", { accepted: Boolean(chat) });
+  }
+
+  /** Scheduler callback. */
+  async relayIntroAnswer(payload?: { accepted?: boolean }) {
+    await this.say(payload?.accepted ? "they said yes. i've put you two in a group chat, go say hi" : declinedText);
+  }
+
+  /** Scheduler callback on the asker's chat, INTRO_TTL after asking: close the loop if nobody answered. */
+  async introExpired(payload?: { id?: string }) {
+    const store = peopleStore(this.env);
+    const intro = payload?.id ? await store.getIntro(payload.id) : null;
+    // getIntro already reports an over-age pending ask as expired.
+    if (!intro || intro.status !== "expired") return;
+    await store.updateIntro(intro.id, { status: "expired" });
+    this.note("info", "intro.expired", { intro: intro.id });
+    await this.say(expiredText);
+  }
+
+  /** The new group chat: remember who is in it and post the introduction ticket. */
+  async introOpened(intro: Intro, a: string, b: string) {
+    this.setMeta("is_group", "1");
+    for (const [handle, name] of [[intro.from, a], [intro.to, b]] as const) {
+      this.sql`INSERT OR IGNORE INTO participants (handle, name) VALUES (${handle}, ${name === "someone" ? null : name})`;
+    }
+    this.note("info", "intro.opened", { intro: intro.id });
+    await this.postTicket("match", matchTicket(a, b, intro.common));
+  }
+
+  private pendingIntroContext() {
+    const id = this.getMeta("pending_intro");
+    if (!id) return "";
+    if (Date.now() - Number(this.getMeta("pending_intro_at") ?? 0) > INTRO_TTL_MS) {
+      this.setMeta("pending_intro", ""); // nobody answered in time; the asker has been told
+      return "";
+    }
+    return ` PENDING INTRODUCTION: you asked this person whether they want to be introduced to someone who shares: ${this.getMeta("pending_intro_common")}. If their latest message answers that, call answer_intro FIRST. If they ask who it is, you do not know and cannot say until they agree.`;
   }
 
   /** Called by the profile form when it is saved. */
@@ -942,7 +1005,7 @@ ${
     : votesIn
     ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
     : this.getMeta("is_group") === "0"
-      ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}`
+      ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}${this.pendingIntroContext()}`
       : ""
 }
 
@@ -1475,10 +1538,102 @@ this.rememberCardId(id);
       }
 
       case "find_matches": {
-        const { blurb } = parseToolArgs("find_matches", rawArgs);
-        const matches = await findMatches(this.env, blurb);
-        // Handles are the vector ids; keep them out of the model's context.
-        return JSON.stringify(matches.map(({ id: _id, ...rest }) => rest));
+        const { who, lookingFor } = parseToolArgs("find_matches", rawArgs);
+        if (this.getMeta("is_group") !== "0") return "Not in a group: pairing is private. Tell them to text you directly.";
+        const person = this.participants().find((p) => this.label(p.handle) === who);
+        if (!person) return `No participant labelled ${who}`;
+        const store = peopleStore(this.env);
+        const profile = (await store.getMany([person.handle]))[person.handle];
+        // Searching the pool means being findable in it: same consent both ways.
+        if (!profile?.matchOptIn) return "They are not in the match pool themselves. Ask whether they want to be introduced to people (save_profile matchOptIn) before searching.";
+        const query = [lookingFor, profile.interests, profile.area && `Based in ${profile.area}`].filter(Boolean).join(". ");
+        const exclude = [person.handle, ...(await store.pairedWith(person.handle))];
+        // Vectorize understands meaning ("bouldering" finds "climbing") but takes a
+        // minute or two to index a new profile, and is absent without a login; the
+        // shared-word scan is instant and always there. Meaning first, then words.
+        const [semantic, lexical] = await Promise.all([
+          findMatches(this.env, query, exclude).catch((err) => {
+            this.note("warn", "match.index_unavailable", errorFields(err));
+            return [];
+          }),
+          store.scanPool(query, exclude),
+        ]);
+        const matches = [...semantic, ...lexical.filter((l) => !semantic.some((m) => m.id === l.id))].slice(0, 3);
+        if (!matches.length) return "Nobody new in the pool fits yet. Say so plainly; more people join over time.";
+
+        // The model gets refs and blurbs. Handles and names stay here, keyed by
+        // ref, until the other person has said yes.
+        const candidates: Record<string, string> = {};
+        const shown: Candidate[] = matches.map((m, i) => {
+          candidates[`c${i + 1}`] = m.id;
+          return { ref: `c${i + 1}`, blurb: m.blurb, score: m.score };
+        });
+        this.setMeta("match_candidates", JSON.stringify(candidates));
+        this.note("info", "match.search", { candidates: shown.length, top: shown[0]?.score });
+        return JSON.stringify(shown);
+      }
+
+      case "request_intro": {
+        const { candidate, common } = parseToolArgs("request_intro", rawArgs);
+        const asker = this.participants()[0];
+        if (this.getMeta("is_group") !== "0" || !asker) return "Not in a group: pairing is private.";
+        const to = (JSON.parse(this.getMeta("match_candidates") || "{}") as Record<string, string>)[candidate];
+        if (!to) return `No candidate ${candidate}. Call find_matches first and use one of its refs.`;
+        const store = peopleStore(this.env);
+        if ((await store.pendingFrom(asker.handle)).length >= MAX_PENDING_PER_ASKER) {
+          return "They already have an introduction waiting on an answer. One at a time: tell them you will let them know when it comes back.";
+        }
+        const target = (await store.getMany([to]))[to];
+        if (!target?.matchOptIn || !target.dmChat) return "That person can no longer be reached for introductions. Offer another candidate.";
+        // One question at a time for them too; a second ask would overwrite the first.
+        if ((await store.pendingTo(to)).length) return "That person cannot be asked right now. Offer another candidate, or suggest trying again in a day or two. Do not say why.";
+
+        const intro: Intro = { id: crypto.randomUUID().slice(0, 12), from: asker.handle, fromChat: this.name, to, common, status: "pending", created: Date.now() };
+        await store.createIntro(intro);
+        const theirs = await getAgentByName<Env, PlanAgent>(this.env.PlanAgent, target.dmChat);
+        await theirs.introAsk(intro);
+        await this.schedule(Math.ceil(INTRO_TTL_MS / 1000), "introExpired", { id: intro.id });
+        this.note("info", "intro.requested", { intro: intro.id });
+        return "Asked them privately. Tell the asker you have asked and will report back; do not promise a yes.";
+      }
+
+      case "answer_intro": {
+        const { answer } = parseToolArgs("answer_intro", rawArgs);
+        const id = this.getMeta("pending_intro");
+        if (!id) return "No introduction is waiting on this person.";
+        this.setMeta("pending_intro", "");
+        this.setMeta("pending_intro_common", "");
+        const store = peopleStore(this.env);
+        const intro = await store.getIntro(id);
+        if (!intro || intro.status !== "pending") return "That introduction is no longer open. Tell them so, kindly.";
+
+        const asker = await getAgentByName<Env, PlanAgent>(this.env.PlanAgent, intro.fromChat);
+        if (answer === "no") {
+          await store.updateIntro(id, { status: "declined" });
+          await asker.introAnswered(intro, null);
+          this.note("info", "intro.declined", { intro: id });
+          return "Recorded. The other person is only told it did not work out, not who. Acknowledge in one short line.";
+        }
+
+        const profiles = await store.getMany([intro.from, intro.to]);
+        const a = profiles[intro.from]?.name ?? "someone";
+        const b = profiles[intro.to]?.name ?? "someone";
+        let chat: string;
+        try {
+          chat = await createGroupChat(this.env, [intro.from, intro.to], openingText(a, b, intro));
+        } catch (err) {
+          // Their yes still stands: put the question back so a retry needs no re-asking.
+          this.setMeta("pending_intro", id);
+          this.setMeta("pending_intro_common", intro.common.map((c) => c.text).join(", "));
+          this.note("error", "intro.chat_failed", errorFields(err));
+          return "Failed: the group chat could not be opened. This is a system problem. Tell them you hit a snag opening the chat and will try again if they say yes once more.";
+        }
+        await store.updateIntro(id, { status: "accepted", chat });
+        const room = await getAgentByName<Env, PlanAgent>(this.env.PlanAgent, chat);
+        await room.introOpened(intro, a, b);
+        await asker.introAnswered(intro, chat);
+        this.note("info", "intro.accepted", { intro: id, chat: short(chat) });
+        return "Done: a group chat with the two of them is open and the introduction is posted there. Tell them to look for it, in one short line.";
       }
     }
   }
@@ -1503,6 +1658,13 @@ this.rememberCardId(id);
   /** Called over RPC by ResearchWorkflow as it moves through its stages. */
   async researchProgress(stage: string, fields: Fields = {}) {
     this.setMeta("research_progress_at", String(Date.now()));
+    if (stage === "browser" && typeof fields.liveUrl === "string") {
+      // Same treatment as a booking: the url itself stays out of run history —
+      // it carries a session token — and /live/<chat> redirects to it instead.
+      this.setMeta("live_url", fields.liveUrl);
+      this.note("info", "research.browser", { provider: fields.provider, live: true });
+      return;
+    }
     this.note("info", `research.${stage}`, fields);
   }
 
