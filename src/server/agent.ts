@@ -454,16 +454,6 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const me = people[0];
     const missing = me ? missingFields(profiles[me.handle]) : [];
     if (!missing.length) {
-      if (me && this.getMeta("onboarded") !== "1" && profiles[me.handle]) {
-        this.setMeta("onboarded", "1");
-        // The form is the "edit anytime" door, so it arrives once they are done.
-        await this.schedule(6, "offerProfile");
-        return {
-          text,
-          onboarding:
-            "\nOnboarding just finished: every question is answered or skipped. Tell them in one or two short lines that they're set, and that they can add you to any group chat and you'll plan around everyone. Do not ask anything.",
-        };
-      }
       return { text, onboarding: "" };
     }
     const first = missing.length === ONBOARDING.length;
@@ -809,6 +799,16 @@ ${transcript}`,
         if (!person) return "Nobody to save it for yet.";
         const store = peopleStore(this.env);
         const before = (await store.getMany([person.handle]))[person.handle];
+        // Being introduced to strangers needs a clear yes to that question. A
+        // stray "yeah sure" to something else must not count, so the opt-in is
+        // only accepted when it was the question asked, or they raised it.
+        const lastIn = this.sql<{ body: string | null }>`SELECT body FROM messages WHERE direction = 'in' ORDER BY id DESC LIMIT 1`[0]?.body ?? "";
+        const askedAboutMatching = missingFields(before)[0]?.key === "matchOptIn" || /match|introduc|meet (new )?people/i.test(lastIn);
+        let refused = "";
+        if (fields.matchOptIn !== undefined && !askedAboutMatching) {
+          delete fields.matchOptIn;
+          refused = " matchOptIn was NOT saved: they have not been asked that question yet.";
+        }
         const saved = await store.save(person.handle, {
           ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined && v !== "")),
           skipped: [...new Set([...(before?.skipped ?? []), ...(skipped ?? [])])],
@@ -816,7 +816,12 @@ ${transcript}`,
         if (fields.name) this.sql`UPDATE participants SET name = ${fields.name} WHERE handle = ${person.handle}`;
         if (!(await syncMatchPool(this.env, person.handle, saved))) this.note("warn", "match_pool.failed", {});
         const left = missingFields(saved);
-        return left.length ? `Saved. Still unknown: ${left.map((m) => m.key).join(", ")}. Ask only about ${left[0].key} next.` : "Saved. Nothing left to ask: tell them they're set.";
+        if (!left.length && this.getMeta("onboarded") !== "1") {
+          this.setMeta("onboarded", "1");
+          // The form is the "edit anytime" door, so it follows the last answer.
+          await this.schedule(8, "offerProfile");
+        }
+        return (left.length ? `Saved. Still unknown: ${left.map((m) => m.key).join(", ")}. Ask only about ${left[0].key} next.` : "Saved. Nothing left to ask: tell them they're set.") + refused;
       }
 
       case "send_profile_link": {

@@ -68,7 +68,7 @@ export const toolSchemas = {
   }),
   save_profile: z.object({
     name: z.string().optional().describe("What they go by"),
-    area: z.string().optional().describe("Neighbourhood or city"),
+    area: z.string().optional().describe("Neighbourhood or city, exactly as they said it. Do not add a city they did not name."),
     diet: z.string().optional().describe("Food rules in their words, or 'none'"),
     budget: z.string().optional().describe("What a night out costs them, in their words"),
     interests: z.string().optional().describe("Comma-separated, in their words"),
