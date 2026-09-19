@@ -26,6 +26,12 @@ export type Profile = {
   skipped?: string[];
   /** Their one-to-one chat with the agent, so saving the form can be acknowledged there. */
   dmChat?: string;
+  /**
+   * Where their orders ship, and the email a store sends the receipt to. Typed
+   * by them into their own form; used only to fill a checkout they asked for.
+   * Never part of what the model reads.
+   */
+  shipTo?: { name: string; email: string; line1: string; line2?: string; city: string; region: string; postal: string; country: string };
   /** Set once they have connected a wallet for purchases they approve. Never any card detail. */
   payments?: "connected";
   /** What reading the links THEY shared turned up: a few interests and one line. */

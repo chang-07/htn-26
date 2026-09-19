@@ -148,6 +148,24 @@ await check("wrong code is refused, right code connects, the code never reaches 
   expect(!/\b(123456|000000)\b/.test(bodies), "a verification code was left in the transcript");
 });
 
+console.log("\npaying (guards only: no browser, no wallet, no store)");
+await check("a thumbs up on a cart from someone with no wallet starts nothing", async () => {
+  const c = chat("payguard");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/react", { chat: c, on: "cart", shop: "example-store.com", from: "+15550007777", reaction: "like" });
+  await post("/api/dev/react", { chat: c, on: "cart", shop: "example-store.com", from: "+15550007777", reaction: "laugh" });
+  const text = await logs(c);
+  expect(text.includes("pay.needs_wallet"), "no wallet check happened");
+  expect(!text.includes("pay.started"), "a payment started for someone with no wallet");
+  expect(count(text, "pay.asked") === 1, "a non-pay tapback was treated as an offer to pay");
+});
+await check("\"i'll pay\" with no cart in the chat is ordinary conversation", async () => {
+  const c = chat("paytext");
+  await post("/api/dev/message", { chat: c, group: true, from: "+15550007777", text: "i'll pay" });
+  await sleep(500);
+  expect(!(await logs(c)).includes("pay.asked"), "treated as a payment with nothing to pay for");
+});
+
 console.log("\nrun history");
 await check("run history is locked for anyone arriving by a public hostname", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";

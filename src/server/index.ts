@@ -6,6 +6,7 @@ import type {
 } from "@linqapp/sdk/resources/webhooks";
 import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
+import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
 import { parseLinks, readInstagram, readLinks } from "./social";
@@ -279,8 +280,13 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   if (url.pathname === "/api/dev/react") {
     // Reacts to whatever the plan card's id currently is, real or dry.
     // {"on":"rsvp"} reacts to the open Who's in ticket instead.
-    const messageId = (body.on === "rsvp" ? await agent.currentRsvpId() : await agent.currentCardId()) ?? "dry-plan";
+    // {"on":"cart","shop":"…"} reacts to a cart instead: a thumbs up there means "I'll pay".
+    const messageId = (body.on === "rsvp" ? await agent.currentRsvpId() : body.on === "cart" ? await agent.currentCartMessageId(body.shop) : await agent.currentCardId()) ?? "dry-plan";
     await agent.ingestReaction({ messageId, from: body.from, reactionType: body.reaction });
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/seedcart") {
+    await agent.devSeedCart(String(body.shop), String(body.total ?? "$10.00"));
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/tool") {
@@ -313,6 +319,34 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
       depth: body.depth === "deep" ? "deep" : "quick",
     });
     return Response.json({ ok: true, started });
+  }
+  if (url.pathname === "/api/dev/checkout") {
+    // Fill a real checkout with a made-up buyer and report the total. Stops
+    // before the card form, always: nothing here can pay.
+    //   /api/dev/checkout?url=https://store/cart/c/…&country=US&region=CA&postal=94043&city=Mountain+View&line1=1600+Amphitheatre+Pkwy
+    const q = url.searchParams;
+    const session = await openBrowser(env, { timeoutSeconds: 240 });
+    try {
+      const page = await session.browser.newPage();
+      const steps: string[] = [];
+      const priced = await fillCheckout(
+        page,
+        q.get("url") ?? "",
+        { name: q.get("name") ?? "Test Person", email: "prefill.check@plan-agent.test", line1: q.get("line1") ?? "", city: q.get("city") ?? "", region: q.get("region") ?? "", postal: q.get("postal") ?? "", country: q.get("country") ?? "US" },
+        (line) => steps.push(line),
+      ).catch((err: unknown) => ({ error: String((err as Error).message ?? err) }));
+      const cardForm = await hasCardForm(page);
+      // ?card=test types Stripe's public test number into the card frames, to prove
+      // they can be reached. Nothing presses Pay: this route has no code that could.
+      let typed: string | undefined;
+      if (cardForm && q.get("card") === "test") {
+        typed = await typeCard(page, { number: "4242424242424242", expMonth: "12", expYear: "2030", cvc: "123" }, "Test Person").then(() => "ok", (err: unknown) => String((err as Error).message));
+      }
+      if (q.get("shot") === "1") return new Response((await page.screenshot({ type: "jpeg", quality: 60, fullPage: true })) as unknown as ArrayBuffer, { headers: { "content-type": "image/jpeg" } });
+      return Response.json({ priced, cardForm, typed, steps, frames: page.frames().map((f) => f.name()).filter(Boolean) });
+    } finally {
+      await session.close();
+    }
   }
   if (url.pathname === "/api/dev/pilot") {
     // Drive one site with the browser pilot, outside any chat or workflow:
@@ -357,6 +391,12 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     } finally {
       await session.close();
     }
+  }
+  if (url.pathname === "/api/dev/shipto") {
+    // Dev only: a person's private address-page link, which in real use only ever reaches them.
+    //   /api/dev/shipto?handle=+15550004242&chat=<chat>
+    const handle = url.searchParams.get("handle") ?? "";
+    return Response.json({ url: `/p/${await env.People.get(env.People.idFromName("global")).tokenFor(handle)}/ship?chat=${encodeURIComponent(url.searchParams.get("chat") ?? "")}` });
   }
   if (url.pathname === "/api/dev/links") {
     // Try the link reader on its own:  /api/dev/links?l=@natgeo+on+instagram&l=letterboxd.com/someone
