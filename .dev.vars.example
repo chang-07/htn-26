@@ -39,7 +39,7 @@ RESEARCH_MIN_RELEVANCE=2
 RESEARCH_MIN_CONFIDENCE=0.5
 
 # --- Public URL of this Worker (card images, vote page, Shopify agent profile) ---
-PUBLIC_BASE_URL=https://htn-planner.<your-subdomain>.workers.dev
+PUBLIC_BASE_URL=https://whim.<your-subdomain>.workers.dev
 
 # --- Browserbase context holding the bot account's Instagram login (scripts/ig-login.mjs) ---
 BROWSERBASE_CONTEXT_ID=

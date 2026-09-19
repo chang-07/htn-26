@@ -830,7 +830,7 @@ Only one subscription may be active at a time — see *Which agent is live* belo
 
 ## Deploy
 
-Live at **https://htn-planner.schangchang-li.workers.dev**. A redeploy takes
+Live at **https://whim.schangchang-li.workers.dev**. A redeploy takes
 about ten seconds:
 
 ```sh
