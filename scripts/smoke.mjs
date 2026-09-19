@@ -89,6 +89,13 @@ await check("a voter's latest tapback replaces their earlier one", async () => {
   expect(votes.length === 1, `${votes.length} votes stored for one voter`);
   expect(Object.values(state.counts).reduce((x, y) => x + y, 0) === 1, "counts do not sum to 1");
 });
+await check("a tapback on the plan photo counts as a vote", async () => {
+  await post("/api/dev/react", { chat: a, from: "+15550002222", reaction: "like" });
+  await post("/api/dev/react", { chat: a, on: "photo", from: "+15550003333", reaction: "laugh" });
+  await sleep(500);
+  const { votes } = await dump(a);
+  expect(votes.some((v) => v.voter === "+15550003333"), "vote on the photo was dropped");
+});
 await check("plan card renders as a PNG", async () => expect((await get(`/card/${a}?v=1`)).headers.get("content-type") === "image/png", "not a PNG"));
 await check("every ticket design renders", async () => {
   for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice", "icon"]) {

@@ -192,7 +192,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
- *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
+ *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", or "cart"+"shop"
  *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
  *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
@@ -328,7 +328,15 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     // Reacts to whatever the plan card's id currently is, real or dry.
     // {"on":"rsvp"} reacts to the open Who's in ticket instead.
     // {"on":"cart","shop":"…"} reacts to a cart instead: a thumbs up there means "I'll pay".
-    const messageId = (body.on === "rsvp" ? await agent.currentRsvpId() : body.on === "cart" ? await agent.currentCartMessageId(body.shop) : await agent.currentCardId()) ?? "dry-plan";
+    // {"on":"photo"} reacts to the plan ticket photo rather than the card under it.
+    const messageId =
+      (body.on === "rsvp"
+        ? await agent.currentRsvpId()
+        : body.on === "cart"
+          ? await agent.currentCartMessageId(body.shop)
+          : body.on === "photo"
+            ? await agent.currentPlanPhotoId()
+            : await agent.currentCardId()) ?? "dry-plan";
     await agent.ingestReaction({ messageId, from: body.from, reactionType: body.reaction });
     return Response.json({ ok: true });
   }

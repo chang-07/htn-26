@@ -381,7 +381,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.startPay(shopKey(cart.shop), r.from, "reaction");
       return;
     }
-    if (!this.cardIds().includes(r.messageId)) {
+    // The ballot is two messages: the ticket photo and the card under it. A
+    // phone reacts to the photo far more often than to the card, so both count.
+    const onPlanPhoto = this.sql<Row>`SELECT 1 FROM tickets WHERE kind = 'plan' AND message_id = ${r.messageId}`.length > 0;
+    if (!onPlanPhoto && !this.cardIds().includes(r.messageId)) {
       this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
       return;
     }
@@ -2347,6 +2350,12 @@ this.rememberCardId(id);
   async currentRsvpId() {
     return this.sql<{ message_id: string }>`
       SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
+  }
+
+  /** Simulator only: the plan ticket photo, which is what a phone most often tapbacks. */
+  async currentPlanPhotoId() {
+    return this.sql<{ message_id: string }>`
+      SELECT message_id FROM tickets WHERE kind = 'plan' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
   }
 
   /** Simulator only: the open ballot's id, so its nudge can be fired on demand. */
