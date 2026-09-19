@@ -72,6 +72,12 @@ const RUN_START = "turn.start";
 const RUN_END = new Set(["turn.end", "turn.crashed"]);
 /** Loose events waiting to be adopted by the next turn are flushed after this. */
 const ORPHAN_MAX_AGE_MS = 2 * 60 * 1000;
+/**
+ * How long out-of-turn events wait to be adopted by a turn. A message that
+ * wakes the agent is followed by turn.start about two seconds later, so this
+ * has to outlast that; anything still unclaimed afterwards is its own run.
+ */
+const ORPHAN_FLUSH_MS = 6_000;
 const ORPHAN_MAX = 50;
 
 const LEVEL_RANK: Record<Level, number> = { info: 0, warn: 1, error: 2 };
@@ -118,19 +124,48 @@ export class RunRecorder {
 
     if (!this.runId) {
       this.orphans.push({ ts, level, event, fields });
-      // Nothing is coming to adopt these. Give them their own run so the
-      // viewer shows the research/booking callback that happened out of band.
       const stale = ts - this.orphans[0].ts > ORPHAN_MAX_AGE_MS;
-      if (stale || this.orphans.length >= ORPHAN_MAX) {
-        this.open({ trigger: this.orphans[0].event });
-        this.emit(this.drainOrphans());
-        this.close();
-      }
+      if (stale || this.orphans.length >= ORPHAN_MAX) this.flushOrphans();
+      else this.armFlush();
       return;
     }
 
     this.emit([{ ts, level, event, fields }]);
     if (RUN_END.has(event)) this.close(level, fields);
+  }
+
+  private flushArmed = false;
+
+  /**
+   * Out-of-turn events used to be flushed only when a LATER event happened to
+   * arrive — so a vote, a research callback or a message stored while the agent
+   * slept stayed invisible until something else occurred, and was lost outright
+   * if the Durable Object was evicted first. A timer flushes them on their own.
+   */
+  private armFlush() {
+    if (this.flushArmed) return;
+    this.flushArmed = true;
+    this.background(
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          this.flushArmed = false;
+          // A turn that opened meanwhile has already adopted them.
+          if (!this.runId && this.orphans.length) this.flushOrphans();
+          resolve();
+        }, ORPHAN_FLUSH_MS),
+      ),
+    );
+  }
+
+  /** Give unclaimed events a run of their own, labelled as what it is. */
+  private flushOrphans() {
+    if (!this.orphans.length) return;
+    const rank: Record<Level, number> = { info: 0, warn: 1, error: 2 };
+    const worst = this.orphans.reduce<Level>((w, o) => (rank[o.level] > rank[w] ? o.level : w), "info");
+    this.open({ trigger: this.orphans[0].event });
+    this.emit(this.drainOrphans());
+    // Not a crash: nothing ran. Without an outcome close() would call it one.
+    this.close(worst, { outcome: "background" });
   }
 
   private open(fields: Fields) {

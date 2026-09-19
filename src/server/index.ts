@@ -50,7 +50,15 @@ export default {
     }
 
     // WebSocket + RPC traffic from useAgent() on the vote page.
-    return (await routeAgentRequest(request, env)) ?? new Response("Not found", { status: 404 });
+    return (
+      (await routeAgentRequest(request, env, {
+        // The run viewer's live feed is the same data as /api/runs, so it takes
+        // the same token. Chat agents (the vote page) stay open by design: their
+        // unguessable chat id is the capability.
+        onBeforeConnect: (req, route) =>
+          route.className === "RunHub" ? (requireRunsAuth(req, new URL(req.url), env) ?? undefined) : undefined,
+      })) ?? new Response("Not found", { status: 404 })
+    );
   },
 } satisfies ExportedHandler<Env>;
 

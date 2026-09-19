@@ -38,6 +38,10 @@ export function Runs() {
   const [chat, setChat] = useState<string>("");
   const [follow, setFollow] = useState(true);
   const [live, setLive] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // /runs?token=… — the API and the live socket both need it when RUNS_TOKEN is set.
+  const token = useMemo(() => new URLSearchParams(window.location.search).get("token") ?? "", []);
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
   // `follow` is read inside the socket callback, which is created once.
   const followRef = useRef(follow);
   followRef.current = follow;
@@ -67,6 +71,7 @@ export function Runs() {
   useAgent({
     agent: "run-hub",
     name: "global",
+    query: token ? { token } : undefined,
     onOpen: () => setLive(true),
     onClose: () => setLive(false),
     onMessage: (e: MessageEvent) => {
@@ -103,17 +108,25 @@ export function Runs() {
 
   // Past runs, and a refresh whenever the chat filter changes.
   useEffect(() => {
-    const url = `/api/runs?limit=100${chat ? `&chat=${encodeURIComponent(chat)}` : ""}`;
+    const url = `/api/runs?limit=100${chat ? `&chat=${encodeURIComponent(chat)}` : ""}${tokenParam}`;
     fetch(url)
-      .then((r) => r.json() as Promise<{ runs: RunSummary[] }>)
-      .then((d) => setRuns(d.runs))
-      .catch(() => {});
-  }, [chat]);
+      .then(async (r) => {
+        if (r.status === 401) throw new Error("locked");
+        if (!r.ok) throw new Error(`the server answered ${r.status}`);
+        return r.json() as Promise<{ runs: RunSummary[] }>;
+      })
+      .then((d) => {
+        setProblem(null);
+        setRuns(d.runs);
+      })
+      // A blank list with no explanation is indistinguishable from "no runs yet".
+      .catch((e: Error) => setProblem(e.message));
+  }, [chat, tokenParam]);
 
   // A run picked from the list has its events in D1, not in memory.
   useEffect(() => {
     if (!selected || events[selected]) return;
-    fetch(`/api/runs/${selected}`)
+    fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`)
       .then((r) => (r.ok ? (r.json() as Promise<{ events: TimelineEvent[] }>) : null))
       .then((d) => d && setEvents((prev) => ({ ...prev, [selected]: d.events })))
       .catch(() => {});
@@ -129,6 +142,11 @@ export function Runs() {
         <header style={{ padding: "16px 16px 12px", position: "sticky", top: 0, background: COLOR.bg, borderBottom: `1px solid ${COLOR.line}` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h1 style={{ fontSize: 16, margin: 0, flex: 1 }}>Agent runs</h1>
+            {problem ? (
+              <span style={{ fontSize: 12, color: COLOR.error }}>
+                {problem === "locked" ? "Locked — open /runs?token=<RUNS_TOKEN>" : `Couldn't load: ${problem}`}
+              </span>
+            ) : null}
             <span title={live ? "connected" : "disconnected"} style={{ width: 8, height: 8, borderRadius: 8, background: live ? COLOR.good : COLOR.dim }} />
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
