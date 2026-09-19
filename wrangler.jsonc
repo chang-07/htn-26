@@ -35,7 +35,11 @@
   "browser": { "binding": "BROWSER" },
   "ai": { "binding": "AI" },
   "vectorize": [{ "binding": "PEOPLE_INDEX", "index_name": "htn-people" }],
-  "r2_buckets": [{ "binding": "CARDS", "bucket_name": "htn-cards" }],
+  // R2 caches rendered card PNGs. It is off because R2 must first be enabled on
+  // the account (dashboard -> R2, needs a payment method). To turn it on:
+  //   npx wrangler r2 bucket create htn-cards   then uncomment, `npm run types`, deploy.
+  // Without it cards are simply rendered on every request.
+  // "r2_buckets": [{ "binding": "CARDS", "bucket_name": "htn-cards" }],
 
   "vars": {
     // "demo" = OpenAI credits. "dev" = whatever DEV_LLM_* points at (Workers AI,

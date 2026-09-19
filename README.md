@@ -159,17 +159,44 @@ the `demo` profile only.
 
 ## Deploy
 
+Live at **https://htn-planner.schangchang-li.workers.dev**. A redeploy takes
+about ten seconds:
+
 ```sh
-npx wrangler login
-npx wrangler r2 bucket create htn-cards
-npx wrangler vectorize create htn-people --dimensions=768 --metric=cosine
-for s in LINQ_API_KEY LINQ_WEBHOOK_SECRET OPENAI_API_KEY PUBLIC_BASE_URL BROWSERBASE_API_KEY; do npx wrangler secret put $s; done
-# set "LLM_PROFILE": "demo" in wrangler.jsonc, then:
-npm run deploy
+npm run deploy      # builds, then deploys with LLM_PROFILE=demo (OpenAI)
 ```
 
-Then create a Linq webhook subscription for `message.received` and
-`reaction.added` pointing at `${PUBLIC_BASE_URL}/api/webhooks/linq`.
+`wrangler.jsonc` keeps `LLM_PROFILE` at `dev` so local work never spends OpenAI
+credits; the deploy script overrides it for production only.
+
+First-time setup on a fresh Cloudflare account:
+
+```sh
+npx wrangler login
+npx wrangler vectorize create htn-people --dimensions=768 --metric=cosine
+npm run deploy
+node scripts/linq-webhook.mjs create https://<worker-url> --deployed   # subscription + its secrets
+for s in LINQ_API_KEY OPENAI_API_KEY BROWSERBASE_API_KEY; do npx wrangler secret put $s; done
+```
+
+R2 (card image caching) is optional and currently off — see the note in
+`wrangler.jsonc`.
+
+### Which agent is live: deployed or your laptop
+
+Linq delivers to every active subscription, and two live agents means two
+replies to every text. Keep exactly one active:
+
+```sh
+node scripts/linq-webhook.mjs list
+node scripts/linq-webhook.mjs use workers.dev          # the deployed Worker answers
+node scripts/linq-webhook.mjs use trycloudflare        # your laptop answers (tunnel must be up)
+node scripts/linq-webhook.mjs create <tunnel-url> --env   # after a tunnel restart: new URL, new secret
+node scripts/linq-webhook.mjs prune                    # delete dead, inactive subscriptions
+```
+
+Production logs: `npx wrangler tail`. The simulator routes (`/api/dev/*`) are
+localhost-only and return 404 on the deployed Worker.
 
 ## Things that will bite you
 

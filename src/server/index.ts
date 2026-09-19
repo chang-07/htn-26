@@ -184,11 +184,13 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
 
   const cart = url.searchParams.get("kind") === "cart" ? plan.cart : undefined;
   const key = `${name}/${cart ? "cart-" : ""}${plan.version}.png`;
-  const cached = await env.CARDS.get(key);
+  // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
+  const bucket = (env as { CARDS?: R2Bucket }).CARDS;
+  const cached = await bucket?.get(key);
   if (cached) return new Response(cached.body, { headers: pngHeaders });
 
   const png = await (cart ? renderCartCard(cart) : renderCard(plan)).arrayBuffer();
-  ctx.waitUntil(env.CARDS.put(key, png));
+  if (bucket) ctx.waitUntil(bucket.put(key, png));
   return new Response(png, { headers: pngHeaders });
 }
 
