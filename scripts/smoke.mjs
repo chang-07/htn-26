@@ -89,12 +89,24 @@ await check("a voter's latest tapback replaces their earlier one", async () => {
   expect(votes.length === 1, `${votes.length} votes stored for one voter`);
   expect(Object.values(state.counts).reduce((x, y) => x + y, 0) === 1, "counts do not sum to 1");
 });
-await check("a tapback on the plan photo counts as a vote", async () => {
+await check("a tapback on the plan photo counts as a vote, in that slot", async () => {
   await post("/api/dev/react", { chat: a, from: "+15550002222", reaction: "like" });
   await post("/api/dev/react", { chat: a, on: "photo", from: "+15550003333", reaction: "laugh" });
-  await sleep(500);
-  const { votes } = await dump(a);
-  expect(votes.some((v) => v.voter === "+15550003333"), "vote on the photo was dropped");
+  const { state, votes } = await dump(a);
+  const v = votes.find((x) => x.voter === "+15550003333");
+  expect(v?.option_id === state.options[2].id && v.source === "reaction", `vote on the photo: ${JSON.stringify(v ?? "dropped")}`);
+});
+await check("a new ballot forgets the old photo; a booking's confirmation photo takes no votes", async () => {
+  const b = chat("reballot");
+  await tool(b, "propose_plan", PLAN);
+  const first = (await dump(b)).planPhotos;
+  await tool(b, "propose_plan", { ...PLAN, title: "Take two", options: PLAN.options.slice(0, 2) });
+  const second = (await dump(b)).planPhotos;
+  expect(first.length === 1 && second.length === 1 && second[0] !== first[0], `photos: first=${first.length} second=${second.length} same=${second[0] === first[0]}`);
+  await post("/api/dev/booked", { chat: b });
+  expect((await dump(b)).planPhotos.length === 0, "the confirmation photo was kept as a vote target");
+  const res = await post("/api/dev/react", { chat: b, on: "photo", from: "+15550004444", reaction: "love" });
+  expect(res.status === 404, `reacting on a photo that no longer exists answered ${res.status}, not 404`);
 });
 await check("plan card renders as a PNG", async () => expect((await get(`/card/${a}?v=1`)).headers.get("content-type") === "image/png", "not a PNG"));
 await check("every ticket design renders", async () => {
@@ -385,6 +397,13 @@ if (flags.has("--llm")) {
   });
   await check("the agent asks where the group is instead of guessing a city", async () => {
     expect(!(await logs(m)).includes('"tool":"research"'), "started research without knowing the group's area");
+  });
+  await check("a reply to the ballot photo wakes the agent, like a reply to its card", async () => {
+    const r = chat("reply");
+    await tool(r, "propose_plan", PLAN);
+    await post("/api/dev/message", { chat: r, group: true, from: "+15550001111", text: "can we do 8 instead?", replyTo: "photo" });
+    expect((await logs(r)).includes('"wake":"reply"'), "the reply to the photo did not wake the agent");
+    expect(await waitFor(r, "turn.end", 90), "no turn finished within 90s");
   });
 }
 
