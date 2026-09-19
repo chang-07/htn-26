@@ -235,6 +235,41 @@ minutes, nearly all of it LLM time on page extraction; it is much faster on the
 demo profile. Without `BROWSERBASE_API_KEY`, `src/server/browser.ts` falls back
 to Cloudflare Browser Rendering, which search engines tend to block.
 
+### Reading the links people share — `src/server/social.ts`
+
+When someone gives the agent their socials (in onboarding, or on the profile
+form), it reads them and keeps a few interests on their profile, so plans and
+matches fit them: "had a look at your instagram: rock climbing, big wall
+routes, Yosemite. i'll plan with that in mind."
+
+- **Only links a person gave about themselves, in their own chat, are ever
+  read.** Nothing takes a handle from a group, a contact list or another person.
+  "The account is public" is not the permission; the owner asking is.
+- **They are told what was read**, and `forget my links` (handled in code, not by
+  the model) deletes the links and everything derived from them. `forget me`
+  deletes the whole profile.
+- The summariser may only note tastes and hobbies. It is barred from inferring
+  health, religion, politics, sexuality, ethnicity, relationships, money or
+  where someone lives, and returns nothing rather than pad.
+- Public sites (Letterboxd, GitHub, a personal page) are read logged out.
+  **Instagram needs a login**, so it goes through the bot's own throwaway
+  account, held in a persistent Browserbase context:
+
+```sh
+node scripts/ig-login.mjs     # prints a live-view link; log in BY HAND; it saves itself
+```
+
+  The password is typed into the remote browser by a person and never touches
+  the repo, a secret or a prompt — keep it that way. Automation is against
+  Instagram's terms and the account can be challenged or banned at any time, so
+  a login wall, a private account or a dead link all end in a quiet skip.
+  `BROWSERBASE_CONTEXT_ID` names the context (`.env` locally, a secret in prod).
+
+```sh
+curl -G localhost:5173/api/dev/links --data-urlencode 'l=@someone on instagram' --data-urlencode 'l=letterboxd.com/someone'
+curl -G localhost:5173/api/dev/links --data-urlencode raw=<handle>     # the unsummarised text
+```
+
 ### Booking and availability — the browser pilot
 
 `src/server/pilot.ts` drives a venue's own booking page: it lists what a person

@@ -26,6 +26,10 @@ export type Profile = {
   skipped?: string[];
   /** Their one-to-one chat with the agent, so saving the form can be acknowledged there. */
   dmChat?: string;
+  /** What reading the links THEY shared turned up: a few interests and one line. */
+  online?: { interests: string[]; line: string; from: string[] };
+  /** The links that `online` was read from, so they are re-read only when they change. */
+  onlineReadOf?: string;
   updated: number;
 };
 
@@ -131,6 +135,7 @@ export function profileLines(p: Profile): string {
     p.interests && `into: ${p.interests}`,
     p.about && `says: ${p.about}`,
     p.links.length && `links: ${p.links.join(", ")}`,
+    p.online?.interests.length && `their ${p.online.from.join(" + ")} shows: ${p.online.interests.join(", ")}`,
     p.facts.length && `mentioned: ${p.facts.join("; ")}`,
   ].filter(Boolean);
   return parts.join(" · ").slice(0, 420);
@@ -152,5 +157,5 @@ export async function syncMatchPool(env: Env, handle: string, p: Profile): Promi
 
 /** The blurb the match pool embeds, from the same profile. */
 export function matchBlurb(p: Profile): string {
-  return [p.interests, p.about, p.area && `Based in ${p.area}`].filter(Boolean).join(". ");
+  return [p.interests, p.online?.interests.join(", "), p.about, p.area && `Based in ${p.area}`].filter(Boolean).join(". ");
 }

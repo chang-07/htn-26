@@ -15,6 +15,8 @@ interface SecretBindings {
   PUBLIC_BASE_URL: string;
   BROWSERBASE_API_KEY?: string;
   BROWSERBASE_PROJECT_ID?: string;
+  /** Persistent context holding the bot account's Instagram login. */
+  BROWSERBASE_CONTEXT_ID?: string;
 }
 
 interface Env extends SecretBindings {}

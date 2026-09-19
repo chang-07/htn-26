@@ -25,7 +25,18 @@ export type BrowserSession = {
   close: () => Promise<void>;
 };
 
-export async function openBrowser(env: Env, opts: { timeoutSeconds?: number } = {}): Promise<BrowserSession> {
+export async function openBrowser(
+  env: Env,
+  opts: {
+    timeoutSeconds?: number;
+    /**
+     * Use the persistent context that holds the bot account's logins (see
+     * scripts/ig-login.mjs). Only for reading a profile its owner handed over —
+     * never for research or booking, which have no business being signed in.
+     */
+    signedIn?: boolean;
+  } = {},
+): Promise<BrowserSession> {
   if (!env.BROWSERBASE_API_KEY) {
     const browser = await puppeteer.launch(env.BROWSER);
     log("info", "browse", "session.open", { provider: "cloudflare" });
@@ -40,7 +51,12 @@ export async function openBrowser(env: Env, opts: { timeoutSeconds?: number } = 
       ...(env.BROWSERBASE_PROJECT_ID ? { projectId: env.BROWSERBASE_PROJECT_ID } : {}),
       // A hard ceiling: a crashed run must not leave a session billing for hours.
       timeout: opts.timeoutSeconds ?? 300,
-      browserSettings: { solveCaptchas: true, blockAds: true },
+      browserSettings: {
+        solveCaptchas: true,
+        blockAds: true,
+        // persist: cookies refreshed during the run are written back, which keeps the login alive.
+        ...(opts.signedIn && env.BROWSERBASE_CONTEXT_ID ? { context: { id: env.BROWSERBASE_CONTEXT_ID, persist: true } } : {}),
+      },
     }),
   });
   if (!res.ok) throw new Error(`Browserbase session create failed: ${res.status} ${(await res.text()).slice(0, 300)}`);

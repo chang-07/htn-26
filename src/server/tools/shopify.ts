@@ -138,7 +138,7 @@ export type Cart = {
   id: string;
   checkoutUrl: string;
   total: string;
-  lines: { title: string; quantity: number; price: string; imageUrl?: string }[];
+  lines: { variantId: string; title: string; quantity: number; price: string; imageUrl?: string }[];
   /** Anything the store wants the buyer told, e.g. an item that sold out. */
   messages: string[];
 };
@@ -165,6 +165,8 @@ export async function setCart(
     checkoutUrl: c.continue_url,
     total: total === undefined ? "" : money(total, c.currency),
     lines: ((c.line_items ?? []) as any[]).map((l) => ({
+      // Carried through so a cart can be re-sent with changed quantities.
+      variantId: String(l.item.id),
       title: l.item.title,
       quantity: l.quantity,
       price: typeof l.item.price === "number" ? money(l.item.price, c.currency) : "",

@@ -3,6 +3,7 @@ import type OpenAI from "openai";
 import { ZodError } from "zod";
 import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
 import { llmFor } from "./llm";
+import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
 import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
@@ -216,6 +217,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // request, or once on its own when onboarding finishes.
     if (msg.isGroup === false) {
       if (/^\s*(my\s+)?profile\b/i.test(msg.text)) await this.sendProfileLink();
+      // A promise made to the person ("say forget my links"), so it is kept in
+      // code rather than left to the model to interpret.
+      if (/\bforget (my )?(links|socials|insta(gram)?)\b/i.test(msg.text)) {
+        await peopleStore(this.env).save(msg.from, { links: [], online: undefined, onlineReadOf: undefined });
+        this.note("info", "links.forgotten", { who: mask(msg.from) });
+        await this.say("done. your links and what i read from them are gone");
+        return;
+      }
 
     }
 
@@ -450,8 +459,46 @@ export class PlanAgent extends Agent<Env, PlanState> {
     }
   }
 
+  /**
+   * Scheduler callback, direct chats only: read the links this person shared
+   * about themselves and keep a few interests on their profile. Runs when links
+   * are given in conversation or saved on the form, and only when they changed.
+   *
+   * Two rules hold the line here. The only links ever read are the ones on the
+   * person's OWN profile, in their OWN chat — never a handle lifted from a group
+   * or supplied by someone else. And they are told what was read, in plain
+   * words, so none of it is a surprise later.
+   */
+  async enrichFromLinks() {
+    if (this.getMeta("is_group") !== "0") return;
+    const person = this.participants()[0];
+    if (!person) return;
+    const store = peopleStore(this.env);
+    const profile = (await store.getMany([person.handle]))[person.handle];
+    const signature = (profile?.links ?? []).join("|");
+    if (!profile || !signature || profile.onlineReadOf === signature) return;
+
+    const started = Date.now();
+    const found = await readLinks(this.env, profile.links);
+    this.note("info", "links.read", { read: found.read, skipped: found.skipped, interests: found.interests.length, tokens: found.tokens, ms: Date.now() - started });
+
+    const saved = await store.save(person.handle, {
+      onlineReadOf: signature,
+      online: found.interests.length ? { interests: found.interests, line: found.line, from: found.read } : undefined,
+    });
+    await syncMatchPool(this.env, person.handle, saved);
+
+    if (found.interests.length) {
+      await this.say(`had a look at your ${found.read.join(" and ")}: ${found.interests.slice(0, 4).join(", ")}. i'll plan with that in mind. say "forget my links" if you'd rather i didn't`);
+    } else if (found.skipped.some((k) => k.why === "private")) {
+      await this.say("your instagram's private, so i left it alone");
+    }
+    // Anything else (a login wall, a dead link) is ours to deal with, not theirs to hear about.
+  }
+
   /** Called by the profile form when it is saved. */
   async profileSaved(name?: string) {
+    await this.schedule(3, "enrichFromLinks"); // no-op unless the links changed
     // A double-tapped Save posts the form several times within a second or two;
     // one save deserves one text.
     const recent = Date.now() - Number(this.getMeta("profile_ack_at") ?? 0) < 60_000;
@@ -521,6 +568,72 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   // ------------------------------------------------------------ shopping list
+
+  /**
+   * Records a cart and puts its card in the thread — posting the first time,
+   * redrawing in place after that. Shared by the shop tool and by an edit made
+   * from the run viewer, so the two cannot drift apart.
+   *
+   * The items are logged with their variant ids: that is what lets the viewer
+   * send the same cart back with different quantities.
+   */
+  private async postCartCard(shop: string, mine: CartSummary): Promise<string | undefined> {
+    this.note("info", "cart.updated", {
+      shop,
+      lines: mine.lines.length,
+      total: mine.total,
+      checkoutUrl: mine.checkoutUrl,
+      imageUrl: mine.lines.find((l) => l.imageUrl)?.imageUrl,
+      items: mine.lines.map((l) => ({
+        variantId: l.variantId,
+        title: l.title,
+        quantity: l.quantity,
+        price: l.price,
+        imageUrl: l.imageUrl,
+      })),
+    });
+    // The photo first, so the pay card lands directly under what it is for.
+    await this.postTicket("cart", cartTicket(mine, this.headcount()));
+
+    const messageId = this.getMeta(`cart_message_id:${shop}`);
+    if (messageId) {
+      // updateCard returns the card's new id; the old one is dead after a redraw.
+      const newId = await timed("agent", "cart.update", { shop, version: this.state.version }, () =>
+        updateCard(this.env, messageId, this.name, this.state, 0, "cart", shop),
+        this.note,
+      ).catch(() => undefined);
+      if (newId) this.setMeta(`cart_message_id:${shop}`, newId);
+    } else {
+      const id = await sendCard(this.env, this.name, this.name, this.state, 0, "cart", shop);
+      this.setMeta(`cart_message_id:${shop}`, id);
+    }
+    // Empty the first time round: the caller uses it to say "posted" vs "redrawn".
+    return messageId || undefined;
+  }
+
+  /**
+   * Change a cart's quantities from the run viewer. This is a person acting
+   * inside the group's chat from outside it: the store cart is rewritten, the
+   * card in the thread is redrawn, and the checkout link changes. Gated by
+   * RUNS_TOKEN at the route, and a quantity of 0 drops that line.
+   */
+  async editCart(shop: string, lines: { variantId: string; quantity: number }[]) {
+    const key = shopKey(shop);
+    const wanted = lines.filter((l) => l.variantId && l.quantity > 0);
+    if (!wanted.length) return { ok: false, detail: "a cart needs at least one line" };
+
+    const cart = await setCart(this.env, key, wanted, this.getMeta(`cart_id:${key}`) || undefined);
+    this.setMeta(`cart_id:${key}`, cart.id);
+    if (!cart.lines.length) return { ok: false, detail: cart.messages.join("; ") || "the store rejected every line" };
+
+    const mine = { shop: key, checkoutUrl: cart.checkoutUrl, total: cart.total, lines: cart.lines };
+    const before = this.carts();
+    const at = before.findIndex((c) => shopKey(c.shop) === key);
+    this.saveCarts(at === -1 ? [...before, mine] : before.map((c, i) => (i === at ? mine : c)));
+    this.note("info", "cart.edited", { shop: key, lines: mine.lines.length, total: mine.total, source: "run-viewer" });
+    await this.postCartCard(key, mine);
+    return { ok: true, total: mine.total, lines: mine.lines.length };
+  }
 
   /** Every store's cart. Reads pre-multi-store state (a single `cart`) too. */
   private carts(): CartSummary[] {
@@ -878,6 +991,7 @@ ${transcript}`,
           skipped: [...new Set([...(before?.skipped ?? []), ...(skipped ?? [])])],
         });
         if (fields.name) this.sql`UPDATE participants SET name = ${fields.name} WHERE handle = ${person.handle}`;
+        if (fields.links?.length) await this.schedule(3, "enrichFromLinks");
         if (!(await syncMatchPool(this.env, person.handle, saved))) this.note("warn", "match_pool.failed", {});
         const left = missingFields(saved);
         if (!left.length && this.getMeta("onboarded") !== "1") {
@@ -1053,27 +1167,7 @@ ${transcript}`,
         // The catalog already hands back a product image per line; recording one
         // gives the run viewer something to show for a step with no browser
         // behind it — UCP is plain JSON-RPC, so there is no page to capture.
-        this.note("info", "cart.updated", {
-          shop,
-          lines: mine.lines.length,
-          total: mine.total,
-          imageUrl: mine.lines.find((l) => l.imageUrl)?.imageUrl,
-        });
-        // The photo first, so the pay card lands directly under what it is for.
-        await this.postTicket("cart", cartTicket(mine, this.headcount()));
-
-        const messageId = this.getMeta(`cart_message_id:${shop}`);
-        if (messageId) {
-          // updateCard returns the card's new id; the old one is dead after a redraw.
-          const newId = await timed("agent", "cart.update", { shop, version: this.state.version }, () =>
-            updateCard(this.env, messageId, this.name, this.state, 0, "cart", shop),
-            this.note,
-          ).catch(() => undefined);
-          if (newId) this.setMeta(`cart_message_id:${shop}`, newId);
-        } else {
-          const id = await sendCard(this.env, this.name, this.name, this.state, 0, "cart", shop);
-          this.setMeta(`cart_message_id:${shop}`, id);
-        }
+        const messageId = await this.postCartCard(shop, mine);
         const summary = cart.lines.map((l) => `${l.quantity}x ${l.title} (${l.price})`).join(", ");
         return `Cart card for ${shop} ${messageId ? "redrawn" : "posted"} with its checkout link. ${summary}. Total ${cart.total}.${
           cart.messages.length ? ` Store says: ${cart.messages.join("; ")}` : ""

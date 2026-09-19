@@ -18,7 +18,7 @@ export type CartSummary = {
   checkoutUrl: string;
   /** Display strings, already formatted ("$36.00"). */
   total: string;
-  lines: { title: string; quantity: number; price: string; imageUrl?: string }[];
+  lines: { variantId?: string; title: string; quantity: number; price: string; imageUrl?: string }[];
   /** Display name of whoever said they paid. Cleared when the cart is edited. */
   paidBy?: string;
 };

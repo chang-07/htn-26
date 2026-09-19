@@ -8,6 +8,7 @@ import { linqClient } from "./linq";
 import type { PlanAgent as PlanAgentClass } from "./agent";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
+import { parseLinks, readInstagram, readLinks } from "./social";
 import { renderAvatar, cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
@@ -356,6 +357,20 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     } finally {
       await session.close();
     }
+  }
+  if (url.pathname === "/api/dev/links") {
+    // Try the link reader on its own:  /api/dev/links?l=@natgeo+on+instagram&l=letterboxd.com/someone
+    const links = url.searchParams.getAll("l");
+    const raw = url.searchParams.get("raw"); // ?raw=<handle>: the text pulled from one Instagram profile, unsummarised
+    if (raw) {
+      const session = await openBrowser(env, { timeoutSeconds: 120, signedIn: true });
+      try {
+        return Response.json(await readInstagram(session.browser, raw));
+      } finally {
+        await session.close();
+      }
+    }
+    return Response.json({ parsed: parseLinks(links), ...(url.searchParams.get("parse") ? {} : await readLinks(env, links)) });
   }
   if (url.pathname === "/api/dev/browse") {
     const session = await openBrowser(env, { timeoutSeconds: 120 });
