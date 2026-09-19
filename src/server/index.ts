@@ -63,7 +63,7 @@ export default Sentry.withSentry(sentryOptions, {
       if (!chat) return new Response("Not found", { status: 404 });
       const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
       if (!action && request.method === "GET") {
-        return Response.json(await agent.state, { headers: { "cache-control": "no-store" } });
+        return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
       }
       if (action === "vote" && request.method === "POST") {
         const body = (await request.json().catch(() => ({}))) as { optionId?: string; voter?: string };
@@ -73,7 +73,7 @@ export default Sentry.withSentry(sentryOptions, {
         } catch (err) {
           return new Response(err instanceof Error ? err.message : "vote failed", { status: 400 });
         }
-        return Response.json(await agent.state, { headers: { "cache-control": "no-store" } });
+        return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
       }
       return new Response("Not found", { status: 404 });
     }
