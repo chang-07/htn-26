@@ -424,6 +424,8 @@ export function RunTape({
     for (const n of nodes) fresh.add(n.seq);
   });
 
+  const { blocks, hidden } = useMemo(() => toBlocks(nodes, raw, liveSeq), [nodes, raw, liveSeq]);
+
   return (
     <div style={{ padding: "6px 0 60px" }}>
       {problem && (
@@ -432,39 +434,202 @@ export function RunTape({
         </p>
       )}
 
-      {nodes.filter((n) => raw || !["trace.start", "trace.end", "provider.response", "llm.usage"].includes(n.event) || n.level === "error").map((n) => (
-        <Row
-          key={n.seq}
-          node={n}
-          t0={t0}
-          chat={run.chat}
-          isNew={running && !fresh.has(n.seq)}
-          showLive={n.seq === liveSeq}
-          selected={picked === n.seq}
-          onPick={() => onPick(picked === n.seq ? null : n.seq)}
-          raw={raw}
-          qtyOf={qtyOf}
-          dirty={dirty}
-          pushing={pushing}
-          onStep={(li, by, items) =>
-            setEdits((e) => ({ ...e, [`${n.seq}:${li}`]: Math.max(0, qtyOf(n, li, items) + by) }))
-          }
-          onPush={(items) => pushCart(n, items)}
-        />
-      ))}
-
-      {running && (
-        <div className="rv-row is-static" aria-live="polite">
-          <span style={timeStyle}>…</span>
-          <i className="rv-mark rv-live" style={{ background: "var(--soft)" }} />
-          <span style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--soft)" }}>
-            {nodes.length ? "still going" : "waiting for the first step"}
-          </span>
-        </div>
+      {blocks.map((b) =>
+        b.kind === "head" ? (
+          <button
+            key={b.id}
+            className={`rv-phase${b.pick !== null && picked === b.pick ? " is-selected" : ""}`}
+            onClick={() => b.pick !== null && onPick(picked === b.pick ? null : b.pick)}
+          >
+            <i style={{ width: 9, height: 9, background: `var(${SERVICES[b.svc].v})`, flex: "none", alignSelf: "center" }} />
+            <b>{b.label}</b>
+            <span>{b.meta.join("  ·  ")}</span>
+          </button>
+        ) : b.kind === "pages" ? (
+          <Pages key={`p${b.nodes[0].seq}`} nodes={b.nodes} t0={t0} chat={run.chat} picked={picked} onPick={onPick} />
+        ) : (
+          <Row
+            key={b.node.seq}
+            node={b.node}
+            t0={t0}
+            chat={run.chat}
+            isNew={running && !fresh.has(b.node.seq)}
+            showLive={b.node.seq === liveSeq}
+            selected={picked === b.node.seq}
+            onPick={() => onPick(picked === b.node.seq ? null : b.node.seq)}
+            raw={raw}
+            qtyOf={qtyOf}
+            dirty={dirty}
+            pushing={pushing}
+            onStep={(li, by, items) =>
+              setEdits((e) => ({ ...e, [`${b.node.seq}:${li}`]: Math.max(0, qtyOf(b.node, li, items) + by) }))
+            }
+            onPush={(items) => pushCart(b.node, items)}
+          />
+        ),
       )}
+      {hidden > 0 && !running && (
+        <p style={{ margin: "18px 0 0 8px", fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)" }}>
+          {hidden} bookkeeping row{hidden === 1 ? "" : "s"} folded away. All events shows every recorded event.
+        </p>
+      )}
+
+      {running && <Typing last={nodes[nodes.length - 1]} inTurn={nodes.map((n) => n.event).lastIndexOf("turn.start") > nodes.map((n) => n.event).lastIndexOf("turn.end")} />}
       {!nodes.length && !running && (
         <p style={{ margin: 0, padding: "12px 4px", color: "var(--soft)", fontSize: 13.5 }}>Nothing was recorded for this run.</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The tape, arranged for reading. The event log is flat and says most things
+ * twice — the model "chose send_message", the message went out, and the tool
+ * call returned are three events for one thing that happened — and one run can
+ * hold a turn, the research it started, and the turn that used the findings.
+ * So: each act gets a head that carries its totals, rows that only repeat a
+ * neighbour are folded, and the pages research read become one contact sheet.
+ * Raw turns all of this off and prints the log as it was written.
+ */
+type Block =
+  | { kind: "head"; id: string; svc: ServiceId; label: string; meta: string[]; pick: number | null }
+  | { kind: "row"; node: Node }
+  | { kind: "pages"; nodes: Node[] };
+
+const ACTS: Record<string, { label: string; svc: ServiceId }> = {
+  research: { label: "Research", svc: "browser" },
+  booking: { label: "Booking", svc: "booking" },
+  pay: { label: "Checkout", svc: "shop" },
+};
+
+function toBlocks(nodes: Node[], raw: boolean, liveSeq: number | null): { blocks: Block[]; hidden: number } {
+  const blocks: Block[] = [];
+  let hidden = 0;
+  let turns = 0;
+  let inTurn = false;
+  let act: string | null = null;
+
+  const folded = (n: Node) =>
+    n.seq !== liveSeq && n.level !== "error" && (
+      n.event === "presence" || n.event === "turn.start" || n.event === "turn.end" ||
+      ["trace.start", "trace.end", "provider.response", "llm.usage"].includes(n.event) ||
+      // A step with nothing to say for itself: the tool rows after it are what it chose.
+      (n.event === "turn.step" && !str(n.fields.decision)) ||
+      // Already on the tape in its own words: the message that went out, the research that started.
+      (n.event === "tool" && (n.fields.tool === "send_message" || n.fields.tool === "research")) ||
+      // The act's head already carries these totals, and picks this event.
+      (n.event === "research.finished" && n.fields.ok !== false)
+    );
+
+  nodes.forEach((n, i) => {
+    if (n.event === "turn.start") {
+      inTurn = true;
+      act = null;
+      const end = nodes.slice(i + 1).find((x) => x.event === "turn.end" || x.event === "turn.crashed" || x.event === "turn.start");
+      const done = end && end.event !== "turn.start" ? end : undefined;
+      blocks.push({
+        kind: "head", id: `t${n.seq}`, svc: "model", label: `Turn ${++turns}`, pick: done?.seq ?? n.seq,
+        meta: [
+          str(n.fields.llm),
+          done ? (str(done.fields.outcome) ?? "crashed").replace(/_/g, " ") : "running",
+          done?.ms != null ? dur(done.ms) : null,
+          num(done?.fields.tokens) ? `${num(done?.fields.tokens)!.toLocaleString()} tok` : null,
+        ].filter(Boolean) as string[],
+      });
+    } else if (!inTurn) {
+      const key = n.event.split(".")[0];
+      if (ACTS[key] && key !== act) {
+        act = key;
+        const end = nodes.slice(i).find((x) => x.event === `${key}.finished`);
+        blocks.push({
+          kind: "head", id: `a${n.seq}`, svc: ACTS[key].svc, label: ACTS[key].label, pick: end?.seq ?? null,
+          meta: [
+            end ? null : "in progress",
+            num(end?.fields.pagesRead) != null ? `${num(end?.fields.pagesRead)} pages read` : null,
+            num(end?.fields.candidates) != null ? `${num(end?.fields.candidates)} kept` : null,
+            str(end?.fields.status)?.replace(/_/g, " "),
+            end?.ms != null ? dur(end.ms) : null,
+            num(end?.fields.tokens) ? `${num(end?.fields.tokens)!.toLocaleString()} tok` : null,
+          ].filter(Boolean) as string[],
+        });
+      }
+    }
+    if (n.event === "turn.end" || n.event === "turn.crashed") inTurn = false;
+
+    if (raw) return void blocks.push({ kind: "row", node: n });
+    if (folded(n)) return void hidden++;
+    const last = blocks[blocks.length - 1];
+    if (n.event === "research.read" && str(n.fields.shotId)) {
+      if (last?.kind === "pages") last.nodes.push(n);
+      else blocks.push({ kind: "pages", nodes: [n] });
+    } else blocks.push({ kind: "row", node: n });
+  });
+  return { blocks, hidden };
+}
+
+/**
+ * The bottom of a tape that is still printing: the chat's own typing dots, in
+ * the ink of whichever service is working, and a guess at what it is doing —
+ * read off the last event, since nothing announces the step that is underway.
+ */
+function Typing({ last, inTurn }: { last?: Node; inTurn: boolean }) {
+  const e = last?.event ?? "";
+  const [svc, doing]: [ServiceId, string] =
+    !last ? ["chat", "waiting for the first step"] :
+    e === "research.browser" || e === "research.read" || e === "research.selected" ? ["browser", "reading pages"] :
+    e === "research.planned" ? ["browser", "searching"] :
+    e === "research.started" || e === "research.searched" ? ["model", e === "research.started" ? "writing search queries" : "choosing which pages to open"] :
+    e.startsWith("booking.") ? ["booking", "working through the booking page"] :
+    e.startsWith("pay.") ? ["shop", "working through checkout"] :
+    e === "message.in" || e === "presence" ? ["model", "waking up"] :
+    inTurn || e === "tool" || e.startsWith("turn.") || e.startsWith("llm.") ? ["model", "thinking"] :
+    [last.svc, "working"];
+  return (
+    <div className="rv-row is-static" role="status" aria-label={`Still running: ${doing}`}>
+      <span style={timeStyle} />
+      <i className="rv-mark rv-live" style={{ background: `var(${SERVICES[svc].v})` }} />
+      <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span className="rv-typing" style={{ color: `var(${SERVICES[svc].v})` }}><i /><i /><i /></span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--soft)" }}>{doing}</span>
+      </span>
+    </div>
+  );
+}
+
+/** A capture that failed to load leaves its frame, not a broken-image glyph. */
+const hideBroken = (e: React.SyntheticEvent<HTMLImageElement>) => {
+  e.currentTarget.style.visibility = "hidden";
+};
+
+function Pages({ nodes, t0, chat, picked, onPick }: { nodes: Node[]; t0: number; chat: string; picked: number | null; onPick: (seq: number | null) => void }) {
+  const found = nodes.reduce((s, n) => s + (num(n.fields.candidates) ?? 0), 0);
+  return (
+    <div className="rv-row is-static" style={{ paddingBottom: 12 }}>
+      <span style={timeStyle}>+{dur(nodes[0].ts - t0)}</span>
+      <i className="rv-mark" style={{ background: "var(--s-browser)" }} title="Browser" />
+      <span style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
+        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 600, fontSize: 14.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>
+          {nodes.length === 1 ? "page read" : `${nodes.length} pages read`}
+        </span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)" }}>{found} possible venue{found === 1 ? "" : "s"} pulled off them</span>
+      </span>
+      <div className="rv-media rv-pages">
+        {nodes.map((n) => {
+          const c = num(n.fields.candidates) ?? 0;
+          return (
+            <button
+              key={n.seq}
+              className={`rv-page${picked === n.seq ? " is-selected" : ""}${c ? "" : " is-empty"}`}
+              onClick={() => onPick(picked === n.seq ? null : n.seq)}
+              aria-pressed={picked === n.seq}
+              title={str(n.fields.url)}
+            >
+              <span className="rv-thumb"><img src={shotFor(n.fields, chat)} alt="" loading="lazy" onError={hideBroken} /></span>
+              <span className="rv-cap"><span>{(str(n.fields.host) ?? "").replace(/^www\./, "")}</span><span>{c ? `${c} found` : "nothing"}</span></span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -528,7 +693,7 @@ function Row({
       {text && !items && <p className="rv-media rv-quote">{text}</p>}
       {shot && !items && (
         <span className="rv-media rv-frame" style={{ maxWidth: 460 }}>
-          <img src={shot} alt={`What the agent saw at ${node.event}`} loading="lazy" style={{ maxHeight: 260, objectFit: "cover", objectPosition: "top" }} />
+          <img src={shot} alt={`What the agent saw at ${node.event}`} loading="lazy" onError={hideBroken} style={{ maxHeight: 260, objectFit: "cover", objectPosition: "top" }} />
         </span>
       )}
       {showLive && (
@@ -612,7 +777,7 @@ function CartLines({
 }
 
 /** The step's plain-English side. Rendered by the page beside the tape, or in a sheet. */
-export function StepDetail({ node, t0, chat, onClose }: { node: Node; t0: number; chat: string; onClose?: () => void }) {
+export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: Node; t0: number; chat: string; onClose?: () => void; onPrev?: () => void; onNext?: () => void }) {
   const f = node.fields;
   const shot = shotFor(f, chat);
   const svc = SERVICES[node.svc];
@@ -650,7 +815,11 @@ export function StepDetail({ node, t0, chat, onClose }: { node: Node; t0: number
           </p>
         </div>
         {onClose && (
-          <button className="rv-btn is-quiet" onClick={onClose} aria-label="Close">Close</button>
+          <span style={{ display: "flex", gap: 6, flex: "none" }}>
+            <button className="rv-btn is-quiet" onClick={onPrev} disabled={!onPrev} aria-label="Previous step" title="Previous step (←)">←</button>
+            <button className="rv-btn is-quiet" onClick={onNext} disabled={!onNext} aria-label="Next step" title="Next step (→)">→</button>
+            <button className="rv-btn is-quiet" onClick={onClose} aria-label="Close" title="Close (Esc)">Close</button>
+          </span>
         )}
       </div>
       <hr className="rv-perf" style={{ margin: "0 22px" }} />

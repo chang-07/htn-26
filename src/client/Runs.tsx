@@ -55,10 +55,14 @@ export function Runs() {
     } catch {
       /* no storage */
     }
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    return "light";
   });
   const [showBackground, setShowBackground] = useState(false);
-  const [picked, setPicked] = useState<number | null>(null);
+  // ?step=<seq> opens that step's panel, so one step of a run can be linked to.
+  const [picked, setPicked] = useState<number | null>(() => {
+    const step = Number(new URLSearchParams(window.location.search).get("step") ?? NaN);
+    return Number.isInteger(step) ? step : null;
+  });
   // On a phone the rail and the tape take turns; this is which one is up.
   const [railOpen, setRailOpen] = useState(false);
   const wide = useMedia("(min-width: 1180px)");
@@ -157,6 +161,11 @@ export function Runs() {
       } else if (msg.type === "events") {
         const incoming = msg.events as RunEventRow[];
         if (!incoming.length) return;
+        // The summary of a run that opened over the socket has no text yet; its first message does.
+        for (const ev of incoming) {
+          const text = ev.event === "message.in" || ev.event === "message.stored" ? ev.fields.text : undefined;
+          if (typeof text === "string") setRuns((prev) => prev.map((r) => (r.runId === ev.runId && !r.said ? { ...r, said: text } : r)));
+        }
         setEvents((prev) => {
           const next = { ...prev };
           for (const ev of incoming) {
@@ -249,16 +258,25 @@ export function Runs() {
   const pickedNode = picked === null ? null : (nodes.find((n) => n.seq === picked) ?? null);
   const t0 = nodes[0]?.ts ?? detail?.started ?? 0;
 
-  // The stage lives beside the tape when the window is wide; otherwise it is a
-  // sheet, which closes on Escape like any other.
+  // A picked step opens in a panel over the middle of the page. Escape closes
+  // it; the arrow keys walk the tape without leaving it.
+  const stepBy = (by: number) => {
+    const i = nodes.findIndex((n) => n.seq === picked);
+    const next = nodes[i + by];
+    return i === -1 || !next ? undefined : () => setPicked(next.seq);
+  };
   useEffect(() => {
-    if (wide || picked === null) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPicked(null);
+    if (picked === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPicked(null);
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") stepBy(-1)?.(), e.preventDefault();
+      else if (e.key === "ArrowRight" || e.key === "ArrowDown") stepBy(1)?.(), e.preventDefault();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [wide, picked]);
+  });
 
-  const columns = wide && pickedNode ? "280px minmax(0,1fr) 360px" : mid ? "280px minmax(0,1fr)" : "minmax(0,1fr)";
+  const columns = mid ? (wide ? "300px minmax(0,1fr)" : "280px minmax(0,1fr)") : "minmax(0,1fr)";
   const showRail = mid || railOpen || !detail;
   const showTape = mid || !showRail;
 
@@ -358,7 +376,7 @@ export function Runs() {
       )}
 
       {showTape && (
-        <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, borderRight: wide && pickedNode ? "2px dotted var(--rule)" : 0 }}>
+        <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, }}>
           {detail ? (
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
@@ -375,26 +393,10 @@ export function Runs() {
         </section>
       )}
 
-      {wide && pickedNode && (
-        <aside style={{ minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {pickedNode && detail ? (
-            <StepDetail node={pickedNode} t0={t0} chat={detail.chat} onClose={() => setPicked(null)} />
-          ) : (
-            <div style={{ padding: "22px 22px 0" }}>
-              <p className="rv-meta">This step</p>
-              <p style={{ margin: "10px 0 0", fontSize: 14.5, lineHeight: 1.55, color: "var(--soft)", maxWidth: "36ch" }}>
-                Pick a row on the tape and this side explains it in plain words: what that kind of step is for, what this one's numbers say, and whatever it produced.
-              </p>
-              <Legend />
-            </div>
-          )}
-        </aside>
-      )}
-
-      {!wide && pickedNode && detail && (
+      {pickedNode && detail && (
         <div className="rv-scrim" onClick={(e) => e.target === e.currentTarget && setPicked(null)}>
           <div className="rv-sheet" role="dialog" aria-modal="true" aria-label="Step detail">
-            <StepDetail node={pickedNode} t0={t0} chat={detail.chat} onClose={() => setPicked(null)} />
+            <StepDetail node={pickedNode} t0={t0} chat={detail.chat} onClose={() => setPicked(null)} onPrev={stepBy(-1)} onNext={stepBy(1)} />
           </div>
         </div>
       )}
@@ -405,16 +407,24 @@ export function Runs() {
 /** The six inks, named once, so a projected page needs no explaining. */
 function Legend() {
   return (
-    <dl style={{ margin: "26px 0 0", display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 12, rowGap: 8, alignItems: "center", fontFamily: "var(--mono)", fontSize: 12 }}>
+    <p style={{ margin: "0 0 12px", display: "flex", flexWrap: "wrap", gap: "4px 14px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)" }}>
       {(Object.keys(SERVICES) as (keyof typeof SERVICES)[]).map((k) => (
-        <div key={k} style={{ display: "contents" }}>
-          <dt><i style={{ display: "block", width: 11, height: 11, background: `var(${SERVICES[k].v})` }} /></dt>
-          <dd style={{ margin: 0 }}>{SERVICES[k].label}</dd>
-        </div>
+        <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <i style={{ width: 8, height: 8, background: `var(${SERVICES[k].v})` }} />
+          {SERVICES[k].label}
+        </span>
       ))}
-    </dl>
+    </p>
   );
 }
+
+/** A run is named by what was said to it; failing that, by what woke it. */
+const runTitle = (run: RunSummary) =>
+  // The rail is what a projector shows first, so an address typed into a chat stays off it.
+  run.said?.trim().replace(/\s+/g, " ").replace(/\S+@\S+/g, "(email)") || (run.outcome !== "background" && OUTCOME_TITLE[run.outcome ?? ""]) || (run.trigger ?? "run").replace(/[._]/g, " ");
+
+/** The outcome as one word, for beside a title that no longer says it. */
+const OUTCOME_WORD: Record<string, string> = { replied: "replied", silent: "stayed quiet", llm_failed: "model failed", max_steps: "step ceiling", background: "background" };
 
 type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
 type ShownSession = Session & { visible: RunSummary[] };
@@ -486,7 +496,7 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
       <span style={{ flex: 1, minWidth: 0 }}>
         <span style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <span style={{ fontFamily: "var(--sans)", fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-            {session.chat}
+            <span title={session.chat} style={{ fontFamily: "var(--mono)", fontSize: 12.5, fontWeight: 500 }}>{session.chat.slice(0, 8)}</span>
           </span>
           <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--faint)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{clock(session.to)}</span>
         </span>
@@ -523,7 +533,9 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
   const running = run.ended === null;
   const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
   const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
-  const title = running ? "Running now" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "Run");
+  const asked = nodes.find((n) => (n.event === "message.in" || n.event === "message.stored") && typeof n.fields.text === "string");
+  const title = (asked?.fields.text as string | undefined)?.trim() || run.said?.trim() || (running ? "Running now" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "Run"));
+  const verdict = running ? "running now" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
   const facts = [
     wall != null ? `${dur(wall)} wall` : null,
     run.ms != null ? `${dur(run.ms)} in turn` : null,
@@ -538,17 +550,20 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
             {onBack && (
               <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
             )}
-            <span style={{ color: run.level === "error" ? "var(--error)" : running ? "var(--ink)" : undefined }}>{running ? "live" : (run.outcome ?? "run")}</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{run.chat}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
+              <i className={running ? "rv-live" : undefined} style={{ width: 8, height: 8, background: running ? "var(--ink)" : levelColor(run.level) }} />
+              {verdict}
+            </span>
+            <span title={run.chat}>chat {run.chat.slice(0, 8)}</span>
             <span style={{ fontVariantNumeric: "tabular-nums" }}>{new Date(run.started).toLocaleString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" })}</span>
           </div>
-          <h1 style={{ margin: "8px 0 0", fontFamily: "var(--sans)", fontWeight: 800, fontSize: 28, lineHeight: 1, letterSpacing: "-0.02em", color: run.level === "error" && !running ? "var(--error)" : undefined, display: "flex", alignItems: "center", gap: 12 }}>
-            {running && <i className="rv-live" style={{ width: 12, height: 12, background: "var(--ink)", flex: "none" }} />}
+          <h1 className="rv-clamp2" title={title} style={{ margin: "10px 0 0", fontFamily: "var(--sans)", fontWeight: 800, fontSize: title.length > 60 ? 20 : 25, lineHeight: 1.12, letterSpacing: "-0.02em", textWrap: "balance", maxWidth: "34ch" }}>
             {title}
           </h1>
-          <p style={{ margin: "10px 0 14px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
+          <p style={{ margin: "10px 0 8px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
             {facts.map((f) => <span key={f}>{f}</span>)}
           </p>
+          <Legend />
         </div>
         <div className="rv-stub" style={{ marginBottom: 14 }}>
           <b>{run.tokens ? run.tokens.toLocaleString() : "—"}</b>
@@ -561,10 +576,11 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
 
 function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean; onClick: () => void }) {
   const running = run.ended === null;
+  const quiet = run.outcome === "silent" || run.outcome === "background";
   const facts = [
+    running ? "running" : run.outcome && run.outcome !== "replied" ? (OUTCOME_WORD[run.outcome] ?? run.outcome) : null,
     run.ms !== null ? dur(run.ms) : null,
     run.tokens ? `${run.tokens.toLocaleString()} tok` : null,
-    `${run.events} step${run.events === 1 ? "" : "s"}`,
   ].filter(Boolean) as string[];
   return (
     <button className={`rv-run${selected ? " is-selected" : ""}`} onClick={onClick} aria-current={selected ? "true" : undefined}>
@@ -573,8 +589,8 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
           className={running ? "rv-live" : undefined}
           style={{ width: 7, height: 7, background: running ? "var(--ink)" : levelColor(run.level), flexShrink: 0 }}
         />
-        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500 }}>
-          {running ? "running…" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "—")}
+        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500, color: quiet && !selected ? "var(--soft)" : undefined }}>
+          {runTitle(run)}
         </span>
         <span style={{ color: "var(--faint)", fontFamily: "var(--mono)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{clock(run.started)}</span>
       </span>
