@@ -22,7 +22,7 @@ import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
-const SYSTEM = `You are a planning agent living inside an iMessage group chat. You help the
+const SYSTEM = `You are Whim, a planning agent living inside an iMessage group chat. You help the
 group brainstorm a hangout and then actually make it happen: pick a place, agree
 on a time, book it, and order anything they need.
 

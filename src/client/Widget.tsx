@@ -6,7 +6,7 @@ import { fmtMoney, invoiceFor } from "../invoice";
 
 // The same words the ticket image uses, so the page reads as the card opened up.
 const STATUS_META: Record<PlanState["status"], string> = {
-  idle: "Plan",
+  idle: "Whim",
   voting: "React to vote",
   booking: "Booking",
   booked: "Confirmed",
@@ -51,7 +51,7 @@ export function Widget({ agentName }: { agentName: string }) {
   const done = plan?.status === "booked";
   useTicketTheme(done);
   useEffect(() => {
-    document.title = plan?.title ? `${plan.title} — Plan` : "Plan";
+    document.title = plan?.title ? `${plan.title} — Whim` : "Whim";
   }, [plan?.title]);
 
   if (!plan) {
@@ -59,7 +59,7 @@ export function Widget({ agentName }: { agentName: string }) {
       <div className="tk-page">
         <div className="tk-wrap">
           <div className="tk-meta tk-wait">Opening the plan</div>
-          <h1 className="tk-title tk-soft" aria-hidden>Plan</h1>
+          <h1 className="tk-title tk-soft" aria-hidden>Whim</h1>
         </div>
       </div>
     );

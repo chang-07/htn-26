@@ -68,7 +68,7 @@ the design and the card is just the vote target?
 Still on the laptop agent. One flow at a time; note every awkward message, not
 just failures — tone problems are demo problems.
 
-1. **Plan → research → vote → availability.** "@plan dinner friday, ramen,
+1. **Plan → research → vote → availability.** "@whim dinner friday, ramen,
    4 of us" → it asks where you are once → research returns real places →
    card + ticket → vote → ask "does it have space at 7?" → `check_availability`
    returns real times. *Pass:* no invented venue, no repeated question, area

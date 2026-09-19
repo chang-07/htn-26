@@ -47,7 +47,7 @@ export function Landing() {
   const votes = frame.votes.reduce((a, b) => a + b, 0);
 
   useEffect(() => {
-    document.title = "Plan";
+    document.title = "Whim";
     document.documentElement.style.colorScheme = "light";
     document.body.style.background = PALETTE.paper;
   }, []);
@@ -60,7 +60,7 @@ export function Landing() {
 
       <main className="ld-wrap">
         <header>
-          <p className="tk-meta">Plan, an agent in your iMessage group chat</p>
+          <p className="tk-meta">Whim, an agent in your iMessage group chat</p>
           <h1 className="ld-title">The group chat books the table.</h1>
           <p className="tk-lede">
             Add one number to the thread. It reads along, finds real places, posts a ticket to vote on, counts the tapbacks, books the winner and builds the carts for whatever else the night needs.

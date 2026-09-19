@@ -1,4 +1,4 @@
-# Plan: complete the outing inside the conversation
+# Whim: complete the outing inside the conversation
 
 Keep the current product and its scope. Improve the full journey from a group request to verified bookings, purchases, and an actionable final itinerary. This is an implementation brief, not a claim that these changes are built.
 

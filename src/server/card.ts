@@ -159,7 +159,7 @@ export async function renderPlanIcon(emoji: string, venue: string): Promise<Resp
 // ------------------------------------------------------------------ builders
 
 const STATUS_META: Record<PlanState["status"], string> = {
-  idle: "Plan",
+  idle: "Whim",
   voting: "React to vote",
   booking: "Booking…",
   booked: "Confirmed",
