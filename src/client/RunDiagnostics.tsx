@@ -1,59 +1,90 @@
 import { useMemo, useState } from "react";
-import { diagnose, operationLabel, traceTimeline } from "../shared/run-diagnostics";
+import { diagnose } from "../shared/run-diagnostics";
 import type { TapeEvent } from "./RunTape";
 import { dur } from "./ui";
 
-export function RunDiagnostics({ events, onPick, finished }: { events: TapeEvent[]; onPick: (seq: number) => void; finished: boolean }) {
+/**
+ * Timing and errors for the run, as one line until someone wants more. A run
+ * recorded before spans existed has nothing to say here, so it says nothing —
+ * a grid of zeros above the tape only pushes the tape down.
+ */
+export function RunDiagnostics({ events, onPick }: { events: TapeEvent[]; onPick: (seq: number) => void }) {
   const d = useMemo(() => diagnose(events), [events]);
-  const timeline = useMemo(() => traceTimeline(events), [events]);
-  const [view, setView] = useState<"overview" | "traces">("overview");
-  const hasMetric = (key: string) => events.some((e) => ["turn.step", "llm.usage"].includes(e.event) && typeof e.fields[key] === "number");
-  const hasUsage = hasMetric("inputTokens") && hasMetric("outputTokens");
-  const hasTraces = timeline.rows.length > 0;
-  const note = { fontSize: 12, color: "var(--soft)", lineHeight: 1.5 };
-  return <section aria-label="Run analytics" style={{ margin: "12px 0 24px", border: "1px solid var(--rule)", padding: 18 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-      <h2 style={{ fontSize: 18, margin: 0 }}>Run analytics</h2>
-      <div role="group" aria-label="Analytics view" style={{ display: "flex", gap: 6 }}>
-        {(["overview", "traces"] as const).map((v) => <button key={v} className={`rv-btn${view === v ? " is-on" : ""}`} aria-pressed={view === v} onClick={() => setView(v)}>{v === "overview" ? "Overview" : `Traces (${timeline.rows.length})`}</button>)}
-      </div>
-    </div>
-    {!hasTraces && <p style={note}>Detailed timings were not recorded for this run. Its recorded activity is still available below.</p>}
-    {view === "overview" ? <>
-      <dl style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 16, margin: "20px 0" }}>
-        {[
-          ["Model calls", hasTraces ? String(d.modelCalls) : "—", "Completed model requests"],
-          ["Typical response", d.p50 === null ? "—" : dur(d.p50), "Median model request time"],
-          ["Tokens used", hasUsage ? (d.totals.inputTokens + d.totals.outputTokens).toLocaleString() : "—", hasUsage ? "Input + output tokens" : "Not recorded"],
-          ["Error events", String(d.errors.length), "May share the same root cause"],
-        ].map(([label, value, hint]) => <div key={label}><dt style={note}>{label}</dt><dd style={{ margin: "5px 0", fontSize: 25, fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>{value}</dd><div style={{ ...note, fontSize: 11 }}>{hint}</div></div>)}
-      </dl>
-      {(d.errors.length > 0 || d.pending.length > 0 || d.retries.length > 0) && <div style={{ padding: 12, background: "var(--paper2)", marginBottom: 18 }}>
-        <h3 style={{ margin: "0 0 8px", fontSize: 13 }}>Needs a look</h3>
-        {d.errors.slice(-3).map((e) => <button key={e.seq} className="rv-btn is-quiet" onClick={() => onPick(e.seq)} style={{ display: "block", textAlign: "left", color: "var(--error)", overflowWrap: "anywhere" }}>{operationLabel(String(e.fields.operation ?? e.event))} — {String(e.fields.error ?? e.fields.errorType ?? "Error recorded").slice(0, 140)} →</button>)}
-        {d.errors.length > 3 && <p style={note}>{d.errors.length - 3} more error events are recorded in the activity below.</p>}
-        {d.retries.length > 0 && <p style={note}>{d.retries.length} retries after the model returned invalid structured data.</p>}
-        {d.pending.length > 0 && <p style={note}>{d.pending.length} operations have no recorded end.{finished ? " They may have been interrupted or their final event was not saved." : " They may still be running."}</p>}
-      </div>}
-      {d.ranked.length > 0 && <>
-        <h3 style={{ fontSize: 13, margin: "16px 0 8px" }}>Where time went</h3>
-        {d.ranked.slice(0, 5).map((g) => <button key={g.name} onClick={() => onPick(g.seq)} className="rv-btn is-quiet" style={{ display: "flex", width: "100%", justifyContent: "space-between", gap: 12, padding: "10px 8px", marginBottom: 4, textAlign: "left", background: `linear-gradient(to right, var(--paper2) ${g.ms / Math.max(1, d.ranked[0].ms) * 100}%, transparent 0)` }}><span>{operationLabel(g.name)}<small style={{ display: "block", color: "var(--soft)" }}>{g.count} {g.count === 1 ? "call" : "calls"}{g.errors ? ` · ${g.errors} failed` : ""}</small></span><span style={{ whiteSpace: "nowrap" }}>{dur(g.ms)}</span></button>)}
-        <p style={note}>Time is summed per operation. Calls can overlap, so these numbers do not add up to the run’s elapsed time.</p>
-      </>}
-      <details style={{ marginTop: 16 }}><summary style={{ cursor: "pointer", fontSize: 13 }}>Token breakdown & more metrics</summary>
-        <dl style={{ fontSize: 13, lineHeight: 1.8 }}>
-          {[["Input tokens", hasMetric("inputTokens") ? d.totals.inputTokens.toLocaleString() : "Not recorded"], ["Output tokens", hasMetric("outputTokens") ? d.totals.outputTokens.toLocaleString() : "Not recorded"], ["Cached input tokens", hasMetric("cachedTokens") ? d.totals.cachedTokens.toLocaleString() : "Not recorded"], ["Reasoning tokens", hasMetric("reasoningTokens") ? d.totals.reasoningTokens.toLocaleString() : "Not recorded"], ["95th-percentile model time", d.p95 === null ? "Not recorded" : dur(d.p95)]].map(([label, value]) => <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><dt>{label}</dt><dd style={{ margin: 0 }}>{value}</dd></div>)}
-        </dl><p style={note}>Cached tokens are part of input; reasoning tokens are part of output. Percentiles describe this run only.</p>
-      </details>
-    </> : <>
-      <p style={note}>Each row is one operation. Bars show when it ran relative to the other operations. Select a row for details.</p>
-      {hasTraces && <div style={{ overflowX: "auto" }}><div style={{ minWidth: 340 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", ...note, marginBottom: 8 }}><span>First operation · 0s</span><span>{dur(timeline.duration)}</span></div>
-        {timeline.rows.map(({ event: e, start, duration }) => <button key={e.seq} className="rv-btn is-quiet" onClick={() => onPick(e.seq)} style={{ display: "block", width: "100%", padding: "10px 0", borderBottom: "1px solid var(--rule)", textAlign: "left" }}>
-          <span style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><span>{operationLabel(String(e.fields.operation ?? e.event))}</span><span style={{ color: e.fields.status === "error" ? "var(--error)" : "var(--soft)", whiteSpace: "nowrap" }}>{duration === null ? "No end recorded" : `${dur(duration)}${e.fields.status === "error" ? " · failed" : ""}`}</span></span>
-          <span aria-hidden="true" style={{ display: "block", height: 6, background: "var(--paper2)", marginTop: 8, position: "relative" }}><span style={{ position: "absolute", left: `${Math.min(99, (start - timeline.start) / timeline.duration * 100)}%`, width: `${Math.min(100 - Math.min(99, (start - timeline.start) / timeline.duration * 100), Math.max(1, (duration ?? 0) / timeline.duration * 100))}%`, height: "100%", background: e.fields.status === "error" ? "var(--error)" : "var(--ink)", opacity: duration === null ? 0.3 : 0.65 }} /></span>
-        </button>)}
-      </div></div>}
-    </>}
-  </section>;
+  // Errors open it by themselves; otherwise it waits to be asked.
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  if (!d.spans.length && !d.errors.length && !d.retries.length) return null;
+  const open = toggled ?? d.errors.length > 0;
+
+  const headline = [
+    d.modelCalls ? `${d.modelCalls} model call${d.modelCalls === 1 ? "" : "s"}` : null,
+    d.p50 != null ? `p50 ${dur(d.p50)}` : null,
+    d.p95 != null ? `p95 ${dur(d.p95)}` : null,
+    d.retries.length ? `${d.retries.length} JSON retr${d.retries.length === 1 ? "y" : "ies"}` : null,
+    d.pending.length ? `${d.pending.length} unfinished` : null,
+  ].filter(Boolean) as string[];
+  // Zeros are not news: only the counters that counted something are printed.
+  const stats = ([
+    ["Input tokens", d.totals.inputTokens],
+    ["Output tokens", d.totals.outputTokens],
+    ["Cached tokens", d.totals.cachedTokens],
+    ["Reasoning tokens", d.totals.reasoningTokens],
+  ] as [string, number][]).filter(([, v]) => v > 0);
+
+  return (
+    <section aria-label="Run performance and errors" style={{ margin: "10px 0 14px 4px", background: "var(--paper2)" }}>
+      <button className="rv-diag" aria-expanded={open} onClick={() => setToggled(!open)}>
+        <span className="rv-meta" style={{ color: "var(--ink)" }}>Diagnostics</span>
+        <span style={{ display: "flex", gap: 14, flexWrap: "wrap", minWidth: 0, color: "var(--soft)" }}>
+          {headline.map((h) => <span key={h}>{h}</span>)}
+          {d.errors.length > 0 && <span style={{ color: "var(--error)" }}>{d.errors.length} error{d.errors.length === 1 ? "" : "s"}</span>}
+        </span>
+        <span aria-hidden style={{ marginLeft: "auto", color: "var(--soft)" }}>{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "4px 14px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {stats.length > 0 && (
+            <dl style={{ margin: 0, display: "flex", gap: 28, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12 }}>
+              {stats.map(([label, value]) => (
+                <div key={label}>
+                  <dt style={{ color: "var(--soft)" }}>{label}</dt>
+                  <dd style={{ margin: "3px 0 0", fontSize: 16, fontVariantNumeric: "tabular-nums" }}>{value.toLocaleString()}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {d.ranked.length > 0 && (
+            <div>
+              <p className="rv-meta" style={{ margin: "0 0 6px" }}>Slowest operations</p>
+              {d.ranked.slice(0, 6).map((g) => (
+                <button key={g.name} onClick={() => onPick(g.seq)} className="rv-bar" style={{ background: `linear-gradient(to right, var(--paper3) ${Math.max(2, (g.ms / Math.max(1, d.ranked[0].ms)) * 100)}%, transparent 0)` }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{g.name}</span>
+                  <span style={{ marginLeft: "auto", color: g.errors ? "var(--error)" : "var(--soft)", whiteSpace: "nowrap" }}>
+                    {dur(g.ms)} · {g.count}×{g.errors ? ` · ${g.errors} failed` : ""}
+                  </span>
+                </button>
+              ))}
+              <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--soft)" }}>
+                Cumulative; spans may overlap. Occupied: {dur(d.occupiedMs)}.
+              </p>
+            </div>
+          )}
+          {d.errors.length > 0 && (
+            <div>
+              <p className="rv-meta" style={{ margin: "0 0 6px", color: "var(--error)" }}>Errors</p>
+              {d.errors.slice(-15).map((e) => (
+                <button key={e.seq} onClick={() => onPick(e.seq)} className="rv-bar" style={{ overflowWrap: "anywhere" }}>
+                  <span>{String(e.fields.operation ?? e.event)}: {String(e.fields.error ?? e.fields.errorType ?? "failed").slice(0, 180)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {d.insights.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5, color: "var(--soft)" }}>
+              {d.insights.map((s) => <li key={s}>{s}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
