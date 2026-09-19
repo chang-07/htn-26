@@ -11,7 +11,7 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import { RunRecorder } from "./runs";
-import type { BookingParams, BookingResult } from "./booking";
+import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
 const SYSTEM = `You are a planning agent living inside an iMessage group chat. You help the
@@ -608,7 +608,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const { client, model, profile } = llmFor(this.env);
     // Why this turn is running. A vote-triggered turn has a specific job; with
     // no stated purpose the model fills the silence with chatter.
-    const votesIn = this.getMeta("turn_reason") === "votes_in";
+    const reason = this.getMeta("turn_reason");
+    const votesIn = reason === "votes_in";
+    const availabilityIn = reason === "availability_in";
     this.setMeta("turn_reason", "");
     const people = this.participants();
 
@@ -638,7 +640,9 @@ Headcount: ${this.headcountContext()}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
-  votesIn
+  availabilityIn
+    ? "You were woken because the availability check just finished; each option's real open times are in its availability field in the plan above, read from the venue's own booking page. Tell the group in one or two lines which options have which times, plainly, including any that have nothing open or could not be checked. Say nothing else."
+    : votesIn
     ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
     : this.getMeta("is_group") === "0"
       ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}`
@@ -899,6 +903,20 @@ ${transcript}`,
         });
       }
 
+      case "check_availability": {
+        const args = parseToolArgs("check_availability", rawArgs);
+        const checks = args.optionIds
+          .map((id) => this.state.options.find((o) => o.id === id))
+          .filter((o): o is PlanOption => Boolean(o?.bookingUrl))
+          .map((o) => ({ optionId: o.id, title: o.title, url: o.bookingUrl! }));
+        if (!checks.length) return "None of those options has an online booking link, so there is nothing to check. Say so.";
+
+        const params: AvailabilityParams = { mode: "availability", partySize: args.partySize, isoTime: args.isoTime, checks };
+        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+        this.note("info", "availability.started", { workflowId: short(workflowId), options: checks.map((c) => c.title) });
+        return `Checking ${checks.length} booking page${checks.length === 1 ? "" : "s"} now; it takes a minute or two each and the results arrive on their own. Tell the group you're checking in one short line, then stop.`;
+      }
+
       case "book_option": {
         const args = parseToolArgs("book_option", rawArgs);
         const option = this.state.options.find((o) => o.id === args.optionId);
@@ -907,12 +925,15 @@ ${transcript}`,
           return `Already ${this.state.status}`;
         }
 
-        this.publish({ status: "booking", chosenOptionId: option.id });
-        await this.syncCard();
-
+        // Validate before touching state: a refused call must leave the plan as it was.
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {
           return "That is not a real email address. Ask the person booking for theirs; do not invent one.";
         }
+        if (!option.bookingUrl) return "This option has no online booking link, so there is nothing to drive. Tell the group they will need to call or book it themselves.";
+
+        this.publish({ status: "booking", chosenOptionId: option.id });
+        await this.syncCard();
+
         // The booker's own number, from whoever spoke last: venues ask for one.
         const lastSpeaker = this.sql<{ author: string | null }>`
           SELECT author FROM messages WHERE direction = 'in' ORDER BY id DESC LIMIT 1`[0]?.author;
@@ -924,7 +945,7 @@ ${transcript}`,
           contact: {
             name: args.contactName,
             email: args.contactEmail,
-            phone: lastSpeaker && /^\+?\d{8,}$/.test(lastSpeaker) ? lastSpeaker : undefined,
+            phone: args.contactPhone ?? (lastSpeaker && /^\+?\d{8,}$/.test(lastSpeaker) ? lastSpeaker : undefined),
           },
         };
         const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
@@ -955,6 +976,15 @@ ${transcript}`,
         const before = this.carts();
         const at = before.findIndex((c) => shopKey(c.shop) === shop);
         this.saveCarts(at === -1 ? [...before, mine] : before.map((c, i) => (i === at ? mine : c)));
+        // The catalog already hands back a product image per line; recording one
+        // gives the run viewer something to show for a step with no browser
+        // behind it — UCP is plain JSON-RPC, so there is no page to capture.
+        this.note("info", "cart.updated", {
+          shop,
+          lines: mine.lines.length,
+          total: mine.total,
+          imageUrl: mine.lines.find((l) => l.imageUrl)?.imageUrl,
+        });
         // The photo first, so the pay card lands directly under what it is for.
         await this.postTicket("cart", cartTicket(mine, this.headcount()));
 
@@ -1258,6 +1288,35 @@ ${transcript}`,
   }
 
   /** Called over RPC by BookingWorkflow when it finishes, either way. */
+  /**
+   * A workflow that throws outside its own error handling never reports back,
+   * and whatever the agent told the group it was doing just never happens.
+   * Record it, and say so, instead of leaving the chat waiting.
+   */
+  async onWorkflowError(workflowName: string, workflowId: string, error: string) {
+    this.note("error", "workflow.crashed", { workflow: workflowName, id: short(workflowId), error: String(error).slice(0, 400) });
+    if (workflowName === "BOOKING_WORKFLOW") {
+      if (this.state.status === "booking") this.publish({ status: "failed", bookingNote: "the booking run crashed" });
+      await this.say("that didn't work on my end, sorry. something broke while I was on the booking site.");
+    }
+  }
+
+  /** Called over RPC by BookingWorkflow when an availability check finishes. */
+  async availabilityFinished(results: AvailabilityResult[]) {
+    this.note("info", "availability.finished", { results: results.map((r) => ({ option: r.title.slice(0, 40), ok: r.ok, slots: r.slots })) });
+    const byId = new Map(results.map((r) => [r.optionId, r]));
+    this.publish({
+      options: this.state.options.map((o) => {
+        const r = byId.get(o.id);
+        if (!r) return o;
+        return { ...o, availability: r.ok ? (r.slots.length ? `open: ${r.slots.join(", ")}` : "nothing open that day") : `couldn't check (${r.summary.slice(0, 80)})` };
+      }),
+    });
+    // Nobody texted, but there is news: give the model a turn to share it.
+    this.setMeta("turn_reason", "availability_in");
+    await this.schedule(1, "runTurn");
+  }
+
   /** Called over RPC by BookingWorkflow while the pilot works. */
   async bookingProgress(stage: string, fields: Fields = {}) {
     if (stage === "browser" && typeof fields.liveUrl === "string") {
@@ -1297,6 +1356,9 @@ ${transcript}`,
       steps: result.steps,
       tokens: result.tokens,
       replay: result.replayUrl,
+      // The pilot's last frame is already saved and served; carrying its id
+      // here is what lets the run viewer show how far the booking actually got.
+      shotId: result.shotId,
     });
 
     // Three outcomes, not two: confirmed, taken as far as the agent is allowed

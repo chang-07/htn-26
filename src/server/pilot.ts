@@ -87,6 +87,7 @@ Each turn you see the page's interactive elements, each with an id. Reply with O
 Rules:
 - Use only ids from the current list. They change after every action.
 - Never enter payment card details. If the site demands payment to continue, use give_up and say so.
+- Never invent personal details. Type only the name, email and phone given in the task. If a required field needs something you were not given (a phone number, a postal code, a date of birth), use give_up and name the missing field so a person can supply it.
 - Do not create accounts or log in. If that is required, give_up.
 - Decline optional extras, newsletters and upsells. Accept cookie banners only to clear them.
 - If the requested time is unavailable, pick the closest available time and say so in your summary.
@@ -371,6 +372,26 @@ async function perform(page: Page, a: Action): Promise<string> {
   }
 }
 
+/**
+ * One line saying what is in the basket, read from the page the pilot stopped
+ * on. A hand-off is only useful if it says exactly what was set up — "Wed Oct
+ * 14, 6:40 PM, 4 players, $167.24" — so the person finishing it can check it.
+ */
+async function basketLine(env: Env, seen: Observed, addTokens: (n: number) => void): Promise<string> {
+  try {
+    const res = await askJson(
+      env,
+      z.object({ line: z.string().describe("e.g. 'Wed Oct 14 at 6:40 PM, 4 players, $167.24 total.'") }),
+      "You read a booking checkout page and state what is being booked in one short line: date, time, party size and total price, exactly as the page shows them. If a detail is not on the page, leave it out. No other words.",
+      seen.text,
+    );
+    addTokens(res.tokens);
+    return res.value.line.trim().replace(/\.?$/, ".");
+  } catch {
+    return "The booking is set up.";
+  }
+}
+
 export async function runPilot(
   env: Env,
   page: Page,
@@ -403,7 +424,7 @@ export async function runPilot(
 
     // Enforced here, not requested in the prompt: the pilot never pays.
     if (seen.hasPayment && goal.mode === "book") {
-      return finish("needs_payment", "The site wants payment to finish the booking, so a person has to complete it from here.");
+      return finish("needs_payment", `${await basketLine(env, seen, (t) => (tokens += t))} All that's left is payment, which a person has to do.`);
     }
 
     const user = `TASK: ${goal.task}
@@ -457,7 +478,7 @@ ${steps.join("\n") || "(none)"}`;
         continue;
       }
       if (goal.dryRun) {
-        return finish("ready", "Everything is filled in and ready to confirm. Stopped one click short because this is a dry run.");
+        return finish("ready", `${await basketLine(env, seen, (t) => (tokens += t))} Filled in and ready to confirm; stopped one click short.`);
       }
       submitted = true;
     }

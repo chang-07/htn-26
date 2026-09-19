@@ -39,12 +39,18 @@ export const toolSchemas = {
       .max(4),
   }),
   get_votes: z.object({}),
+  check_availability: z.object({
+    optionIds: z.array(z.string()).min(1).max(3).describe("Options from the current plan that have a booking link"),
+    partySize: z.number().int().min(1),
+    isoTime: z.string().describe("ISO 8601 local date and time the group wants"),
+  }),
   book_option: z.object({
     optionId: z.string(),
     partySize: z.number().int().min(1),
     isoTime: z.string().describe("ISO 8601 local time of the reservation"),
     contactName: z.string().describe("Full name the reservation goes under — a real person in the chat, as they gave it"),
     contactEmail: z.string().describe("That person's email, exactly as they typed it. Never invent one."),
+    contactPhone: z.string().optional().describe("Their phone number, only if they gave one in the chat. Never invent one."),
   }),
   shop_search: z.object({
     shop: z.string().describe("Shopify store domain, e.g. partycity.com"),
@@ -134,6 +140,8 @@ const descriptions: Record<ToolName, string> = {
   propose_plan:
     "Post the plan card with 2-4 concrete options and open voting. Calling it again redraws the same card in place, so use it whenever the options change.",
   get_votes: "Read the current tally and who has not voted yet.",
+  check_availability:
+    "Open each option's own booking page in a real browser and read which times are actually free for this party size and date. Read-only: it never books or enters details. Takes a minute or two per option and the results arrive on their own — say you're checking, then stop. Use it before a vote when timing matters, or when someone asks if a place has space.",
   book_option:
     "Make a real reservation for the winning option. Only after voting has clearly settled, and only once.",
   shop_search:

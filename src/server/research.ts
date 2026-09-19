@@ -128,7 +128,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
         try {
           for (const url of picked.urls) {
             try {
-              const page = await readPage(session.browser, url, budget.pageChars);
+              const page = await readPage(session.browser, url, budget.pageChars, true);
               const r = await askJson(
                 this.env,
                 z.object({ candidates: z.array(Candidate).max(6) }),
@@ -137,7 +137,10 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
               );
               used += r.tokens;
               out.push({ url: page.url, candidates: r.value.candidates });
-              await progress("read", { host: new URL(url).host, candidates: r.value.candidates.length });
+              // Kept on the chat agent and served from /shot, so the run viewer
+              // can show what the browser actually landed on.
+              const shotId = page.shot ? await this.agent.saveShot(page.shot).catch(() => undefined) : undefined;
+              await progress("read", { host: new URL(url).host, candidates: r.value.candidates.length, shotId, url: page.url });
             } catch (err) {
               failed++;
               log("warn", "research", "page.failed", { url, ...errorFields(err) });

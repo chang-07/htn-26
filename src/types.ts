@@ -9,6 +9,8 @@ export type PlanOption = {
   subtitle?: string;
   /** Where the booking workflow should go for this option. */
   bookingUrl?: string;
+  /** Open times read off the venue's own booking page, e.g. "open Fri: 6:40 PM, 9:20 PM". */
+  availability?: string;
 };
 
 export type CartSummary = {

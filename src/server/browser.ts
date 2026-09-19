@@ -90,21 +90,39 @@ function nativeSocket(url: string): Promise<ConnectionTransport> {
   });
 }
 
-export type PageText = { url: string; title: string; text: string; links: { text: string; href: string }[] };
+export type PageText = {
+  url: string;
+  title: string;
+  text: string;
+  links: { text: string; href: string }[];
+  /** base64 JPEG of the page as loaded, when the caller asked for one. */
+  shot?: string;
+};
 
 /**
  * Loads a page and returns what a model needs to read it: visible text and the
- * outbound links, not HTML. Images, fonts and media are never fetched — they
- * are most of a page's weight and none of its meaning.
+ * outbound links, not HTML.
+ *
+ * `capture` adds a JPEG of the page and, to make that worth looking at, lets
+ * images load — so it is slower and heavier than a plain read. Ask for it when
+ * someone will look at the result, not on every page in a batch.
  */
-export async function readPage(browser: Browser, url: string, maxChars = 6000): Promise<PageText> {
+export async function readPage(browser: Browser, url: string, maxChars = 6000, capture = false): Promise<PageText> {
   const page = await browser.newPage();
   try {
-    await lightweight(page);
+    await lightweight(page, capture);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 });
     // Give client-rendered pages a moment; don't wait for network idle, which
     // ad-heavy listing sites never reach.
     await new Promise((r) => setTimeout(r, 1200));
+    // Taken before the DOM is stripped below: the capture has to show the page
+    // a person would recognise, not one with its nav and footer torn out.
+    const shot = capture
+      ? await page
+          .screenshot({ type: "jpeg", quality: 55, encoding: "base64" })
+          .then((b) => String(b))
+          .catch(() => undefined)
+      : undefined;
     const out = await page.evaluate(() => {
       document.querySelectorAll("script,style,noscript,svg,nav,footer,iframe").forEach((el) => el.remove());
       const links = [...document.querySelectorAll<HTMLAnchorElement>("a[href]")]
@@ -112,16 +130,22 @@ export async function readPage(browser: Browser, url: string, maxChars = 6000): 
         .filter((l) => l.text && l.href.startsWith("http"));
       return { title: document.title, text: (document.body?.innerText ?? "").replace(/\n{3,}/g, "\n\n"), links };
     });
-    return { url: page.url(), title: out.title, text: out.text.slice(0, maxChars), links: out.links.slice(0, 60) };
+    return { url: page.url(), title: out.title, text: out.text.slice(0, maxChars), links: out.links.slice(0, 60), shot };
   } finally {
     await page.close().catch(() => {});
   }
 }
 
-async function lightweight(page: Page) {
+/**
+ * Images, fonts and media are most of a page's weight and none of its meaning,
+ * so they are dropped — unless the caller wants a screenshot, where an
+ * image-less render is a picture of nothing anyone would recognise.
+ */
+async function lightweight(page: Page, keepImages = false) {
   await page.setRequestInterception(true);
+  const drop = keepImages ? ["media", "font"] : ["image", "media", "font"];
   page.on("request", (req) => {
-    if (["image", "media", "font"].includes(req.resourceType())) req.abort().catch(() => {});
+    if (drop.includes(req.resourceType())) req.abort().catch(() => {});
     else req.continue().catch(() => {});
   });
 }

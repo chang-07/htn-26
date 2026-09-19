@@ -33,8 +33,11 @@ type LaneId = (typeof LANES)[number]["id"];
 /** Tools that are really a hand-off to another service belong on its lane. */
 const TOOL_LANE: Record<string, LaneId> = { research: "browser", book_option: "booking" };
 
-const LANE_H = 92;
+const LANE_H = 96;
 const NODE_H = 34;
+/** A node carrying a picture is taller and wider, to hold the thumbnail. */
+const SHOT_H = 58;
+const SHOT_W = 86;
 const MIN_GAP = 34;
 /** Below this, node labels stop being readable. */
 const MIN_K = 0.72;
@@ -56,6 +59,9 @@ type GNode = {
   x: number;
   y: number;
   w: number;
+  h: number;
+  /** A page capture or product image to show inside the node, if this step has one. */
+  shot?: string;
 };
 
 /** Which lane an event sits on, and what to call it there. */
@@ -97,8 +103,22 @@ function classify(e: GraphEvent): { lane: LaneId; label: string; sub?: string } 
 const nodeWidth = (label: string, sub?: string) =>
   Math.max(104, Math.min(210, Math.max(label.length, (sub?.length ?? 0) + 1) * 7 + 30));
 
+/**
+ * The picture behind a step, when there is one.
+ *
+ * Browser work has a real capture: research page reads and the booking pilot
+ * both save a JPEG on the chat agent, served from /shot. Shopify has no browser
+ * at all — UCP is plain JSON-RPC — but the catalog hands back a product image,
+ * so a cart step shows what is going in it.
+ */
+function shotFor(fields: Record<string, unknown>, chat: string): string | undefined {
+  if (typeof fields.shotId === "string") return `/shot/${encodeURIComponent(chat)}/${fields.shotId}.jpg`;
+  if (typeof fields.imageUrl === "string") return fields.imageUrl;
+  return undefined;
+}
+
 /** Events -> positioned nodes. Time drives x; the lane drives y. */
-function layout(events: GraphEvent[]) {
+function layout(events: GraphEvent[], chat: string) {
   const used = new Set<LaneId>();
   const raw = events.map((e) => {
     const c = classify(e);
@@ -113,20 +133,25 @@ function layout(events: GraphEvent[]) {
 
   let cursor = 0;
   const nodes: GNode[] = raw.map(({ e, c }, i) => {
-    const w = nodeWidth(c.label, c.sub);
+    const shot = shotFor(e.fields, chat);
+    const w = nodeWidth(c.label, c.sub) + (shot ? SHOT_W + 8 : 0);
     // Proportional to real elapsed time, but never so tight that two nodes touch.
     const wanted = ((e.ts - t0) / span) * TIME_BUDGET;
     const x = i === 0 ? 0 : Math.max(wanted, cursor + MIN_GAP);
     cursor = x + w;
     const ms = typeof e.fields.ms === "number" ? (e.fields.ms as number) : undefined;
-    return { seq: e.seq, lane: c.lane, label: c.label, sub: c.sub, ts: e.ts, ms, level: e.level, event: e.event, fields: e.fields, x, y: laneY.get(c.lane)!, w };
+    return {
+      seq: e.seq, lane: c.lane, label: c.label, sub: c.sub, ts: e.ts, ms,
+      level: e.level, event: e.event, fields: e.fields,
+      x, y: laneY.get(c.lane)!, w, h: shot ? SHOT_H : NODE_H, shot,
+    };
   });
 
   return { nodes, lanes, height: lanes.length * LANE_H, width: cursor + 40 };
 }
 
 export function RunGraph({ run, events }: { run: RunSummary; events: GraphEvent[] }) {
-  const { nodes, lanes, height, width } = useMemo(() => layout(events), [events]);
+  const { nodes, lanes, height, width } = useMemo(() => layout(events, run.chat), [events, run.chat]);
   const [picked, setPicked] = useState<number | null>(null);
   const [view, setView] = useState({ x: GUTTER + 14, y: 34, k: 1 });
   const [fitMode, setFitMode] = useState<FitMode>("follow");
@@ -312,14 +337,36 @@ function Edge({ from, to }: { from: GNode; to: GNode }) {
 function Node({ node, t0, picked, live, onPick }: { node: GNode; t0: number; picked: boolean; live: boolean; onPick: () => void }) {
   const tone = node.level === "error" ? COLOR.error : node.level === "warn" ? COLOR.warn : live ? COLOR.accent : COLOR.text;
   const edge = node.level === "error" ? COLOR.error : node.level === "warn" ? COLOR.warn : picked || live ? COLOR.accent : COLOR.lineHi;
+  const h = node.h;
+  // The thumbnail sits left, the text beside it; without one the text starts at
+  // the node's own edge, so both shapes share a baseline grid.
+  const textX = node.shot ? SHOT_W + 17 : 11;
+  const clip = `clip-${node.seq}`;
   return (
-    <g className="node" transform={`translate(${node.x},${node.y - NODE_H / 2})`} onClick={onPick} style={{ cursor: "pointer" }}>
-      {live && <rect width={node.w} height={NODE_H} rx={7} fill="none" stroke={COLOR.accent} strokeWidth={1.5} filter="url(#glow)" className="pulse" />}
-      <rect width={node.w} height={NODE_H} rx={7} fill={picked ? COLOR.panelHi : COLOR.panel} stroke={edge} strokeWidth={picked || live ? 1.5 : 1} />
-      <text x={11} y={14} fill={tone} fontSize={11} fontFamily={MONO}>
+    <g className="node" transform={`translate(${node.x},${node.y - h / 2})`} onClick={onPick} style={{ cursor: "pointer" }}>
+      {live && <rect width={node.w} height={h} rx={7} fill="none" stroke={COLOR.accent} strokeWidth={1.5} filter="url(#glow)" className="pulse" />}
+      <rect width={node.w} height={h} rx={7} fill={picked ? COLOR.panelHi : COLOR.panel} stroke={edge} strokeWidth={picked || live ? 1.5 : 1} />
+      {node.shot && (
+        <>
+          <clipPath id={clip}>
+            <rect x={7} y={7} width={SHOT_W} height={h - 14} rx={4} />
+          </clipPath>
+          <image
+            href={node.shot}
+            x={7}
+            y={7}
+            width={SHOT_W}
+            height={h - 14}
+            preserveAspectRatio="xMidYMin slice"
+            clipPath={`url(#${clip})`}
+          />
+          <rect x={7} y={7} width={SHOT_W} height={h - 14} rx={4} fill="none" stroke={COLOR.lineHi} />
+        </>
+      )}
+      <text x={textX} y={h / 2 - 3} fill={tone} fontSize={11} fontFamily={MONO}>
         {node.label}
       </text>
-      <text x={11} y={26} fill={COLOR.dimmer} fontSize={9} fontFamily={MONO}>
+      <text x={textX} y={h / 2 + 9} fill={COLOR.dimmer} fontSize={9} fontFamily={MONO}>
         {[node.sub, node.ms !== undefined ? dur(node.ms) : null].filter(Boolean).join(" · ").slice(0, 28)}
       </text>
       <text x={node.w} y={-6} fill={COLOR.dimmer} fontSize={8.5} fontFamily={MONO} textAnchor="end">
@@ -346,10 +393,10 @@ function Legend({ run, nodes, fitMode, onToggleFit }: { run: RunSummary; nodes: 
   );
 }
 
-/** Clicking a node opens the raw event behind it — the old timeline row. */
+/** Clicking a node opens the raw event behind it, and the picture if it has one. */
 function Inspector({ node, t0, onClose }: { node: GNode; t0: number; onClose: () => void }) {
   return (
-    <div style={{ position: "absolute", left: 16, right: 16, bottom: 16, background: COLOR.panel, border: `1px solid ${COLOR.lineHi}`, borderRadius: 10, padding: "12px 14px", maxHeight: "38%", overflowY: "auto" }}>
+    <div style={{ position: "absolute", left: 16, right: 16, bottom: 16, background: COLOR.panel, border: `1px solid ${COLOR.lineHi}`, borderRadius: 10, padding: "12px 14px", maxHeight: "48%", overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
         <span style={{ fontFamily: MONO, fontSize: 12, color: COLOR.text }}>{node.event}</span>
         <span style={{ fontFamily: MONO, fontSize: 10, color: COLOR.dimmer, flex: 1 }}>
@@ -360,6 +407,13 @@ function Inspector({ node, t0, onClose }: { node: GNode; t0: number; onClose: ()
           ×
         </button>
       </div>
+      {node.shot && (
+        <img
+          src={node.shot}
+          alt={`What the agent saw at ${node.event}`}
+          style={{ display: "block", maxWidth: "min(100%, 420px)", marginTop: 10, borderRadius: 6, border: `1px solid ${COLOR.lineHi}` }}
+        />
+      )}
       {Object.keys(node.fields).length ? <FieldList fields={node.fields} lines={6} /> : <p style={{ color: COLOR.dimmer, fontSize: 11, margin: "6px 0 0" }}>no fields</p>}
     </div>
   );

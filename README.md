@@ -24,7 +24,7 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
    │     ├─ shop_search · shop_build_cart   → Shopify UCP (JSON-RPC, no key)
    │     ├─ join_match_pool · find_matches  → Workers AI embeddings + Vectorize
    │     └─ book_option ──► BookingWorkflow (durable, retried)
-   │                          └─ Browser Rendering (Puppeteer)
+   │                          └─ browser pilot on Browserbase (src/server/pilot.ts)
    └─ card PNG: workers-og, cached in R2 per plan version  src/server/card.ts
 ```
 
@@ -33,7 +33,7 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
 | Workers | Webhook ingress, routing, card rendering, serving the vote page |
 | Durable Objects (Agents SDK) | One stateful agent per chat: memory, state, scheduling |
 | Workflows | The booking run: multi-step, survives restarts, never books twice |
-| Browser Rendering | Drives the reservation site |
+| Browser Rendering | Fallback browser when no Browserbase key is set |
 | Vectorize + Workers AI | Interest embeddings and nearest-neighbour matchmaking |
 | R2 | Rendered card images |
 
@@ -235,6 +235,38 @@ minutes, nearly all of it LLM time on page extraction; it is much faster on the
 demo profile. Without `BROWSERBASE_API_KEY`, `src/server/browser.ts` falls back
 to Cloudflare Browser Rendering, which search engines tend to block.
 
+### Booking and availability — the browser pilot
+
+`src/server/pilot.ts` drives a venue's own booking page: it lists what a person
+could interact with (across iframes), the model picks one action, the pilot
+performs it and looks again. Two tools use it:
+
+| Tool | What it does |
+|---|---|
+| `check_availability` | Read-only. Reaches the date, reads the open times for the party size, stores them on the option (`availability`) and wakes the agent to tell the group. Never books or types details. |
+| `book_option` | Fills the reservation through to the end. Needs the booker's real name and email (invented ones are refused). |
+
+A booking ends one of three ways, and the plan status says which: **booked**
+(confirmed), **handoff** (taken as far as the agent may go — a dry run, or the
+payment page — with a line saying exactly what was set up, the venue's link and
+a screenshot), or **failed**.
+
+The rails are code, not prompt: payment fields are never shown to the model and
+reaching one ends the run; the final submit is its own action, so a dry run
+stops one click short and a read-only run refuses it; invented contact details
+are forbidden; runs are capped and end early when they repeat themselves. The
+workflow's pilot step has no retries, because a retry could submit twice.
+
+While a booking runs the group gets `${PUBLIC_BASE_URL}/live/<chat>`, a redirect
+to Browserbase's live view of the browser being driven.
+
+```sh
+# Drive one site directly, always as a dry run (localhost only):
+curl -G localhost:5173/api/dev/pilot --data-urlencode mode=availability \
+  --data-urlencode 'url=https://…' --data-urlencode 'task=Find times for 4 on Saturday evening'
+# mode=book fills the form; mode=inspect&find=<word> shows what the pilot sees and the raw markup
+```
+
 ### LLM usage sources
 
 `LLM_PROFILE` picks where tokens are spent:
@@ -326,9 +358,14 @@ localhost-only and return 404 on the deployed Worker.
   `${PUBLIC_BASE_URL}/.well-known/ucp-agent.json` to validate every call, so a
   localhost URL fails with `profile_unreachable`. A tunnel is enough — see
   "Real iMessage from your laptop" above.
-- **The booking flow is a stub.** `BookingWorkflow.reserve` fails loudly until
-  you script the selectors for the one site you will book on stage.
-  `BOOKING_DRY_RUN` is `"true"` by default.
+- **A dry run still touches the venue.** With `BOOKING_DRY_RUN` on (the
+  default) the pilot stops one click before confirming, but by then the slot is
+  in the venue's basket, which holds real inventory for a while, and the
+  contact step may have created a customer record. Repeated test runs made
+  times vanish from a real calendar. Test sparingly, on far-out dates.
+- **Many venues block datacenter IPs.** Two of three escape rooms tried answered
+  "Access from unauthorized IP address" (their booking widget, not the pilot).
+  Browserbase residential proxies fix this but need a paid plan.
 - **Cards render through Linq's "Agent Apps" iMessage app.** With no
   `IMESSAGE_TEAM_ID` / `IMESSAGE_BUNDLE_ID`, cards go out as Linq *experiences*
   (`link` for the plan, `agentpay` then `link` for the cart) — no Xcode or Apple
