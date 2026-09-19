@@ -15,7 +15,7 @@ const STATUS_META: Record<PlanState["status"], string> = {
 };
 
 /** Mounts the ticket look once: fonts, stylesheet, and the page ground behind it. */
-function useTicketTheme(done: boolean) {
+export function useTicketTheme(done: boolean) {
   useEffect(() => {
     if (!document.getElementById("tk-fonts")) {
       const link = Object.assign(document.createElement("link"), { id: "tk-fonts", rel: "stylesheet", href: TICKET_FONTS });
@@ -330,6 +330,7 @@ function waitingLine(awaiting: string[]) {
 }
 
 /** Stand-in identity for the web fallback: one vote per browser. */
+let sessionVoter: string | undefined;
 function voterId() {
   const key = "plan-voter";
   try {
@@ -340,6 +341,8 @@ function voterId() {
     }
     return id;
   } catch {
-    return "anonymous";
+    // Storage can be unavailable inside an in-app webview. A per-session id
+    // keeps each phone a distinct voter; "anonymous" made them all one.
+    return (sessionVoter ??= crypto.randomUUID());
   }
 }

@@ -47,6 +47,8 @@ export type PlanState = {
   carts?: CartSummary[];
   /** @deprecated Pre-multi-store state. Read through cartsOf(); never written. */
   cart?: CartSummary;
+  /** The group playlist, oldest first. Lives here so the music page gets it over the same socket. */
+  playlist?: Track[];
   bookingNote?: string;
   /**
    * Money paid outside any cart and logged from the conversation (the bill,
@@ -60,6 +62,17 @@ export type PlanState = {
   going?: string[];
   /** Bumped on every change; used to bust the card image cache. */
   version: number;
+};
+
+/** One song on the group playlist. Preview and art come from the iTunes Search API. */
+export type Track = {
+  title: string;
+  artist: string;
+  artUrl?: string;
+  /** 30-second m4a preview; some tracks have none. */
+  previewUrl?: string;
+  /** Display name of whoever asked for it. */
+  addedBy?: string;
 };
 
 export const EMPTY_PLAN: PlanState = {

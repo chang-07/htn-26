@@ -27,6 +27,10 @@ export function planIconUrl(env: Env, agentName: string, version: number) {
   return `${env.PUBLIC_BASE_URL}/card/${encodeURIComponent(agentName)}/icon.png?v=${version}`;
 }
 
+export function musicUrl(env: Env, agentName: string) {
+  return `${env.PUBLIC_BASE_URL}/music/${encodeURIComponent(agentName)}`;
+}
+
 /** True when a Messages extension identity is configured. */
 export function hasAppIdentity(env: Env) {
   return Boolean(env.IMESSAGE_TEAM_ID && env.IMESSAGE_BUNDLE_ID);
@@ -71,7 +75,9 @@ export function appCardPart(
       bundle_id: env.IMESSAGE_BUNDLE_ID,
     },
     url: widgetUrl(env, agentName),
-    fallback_text: `${plan.title} — ${statusLabel(plan, participantCount)}`,
+    // Static on purpose: a body with dates, addresses or day words ("Friday")
+    // makes iMessage drop the whole card to plain text. Detail lives in layout.
+    fallback_text: "Open the plan",
     layout: {
       caption: plan.title,
       subcaption: winner ? winner.title : `${plan.options.length} options`,
@@ -93,7 +99,10 @@ export function cartCardPart(env: Env, agentName: string, plan: PlanState, shop?
   const items = cart.lines.reduce((n, l) => n + l.quantity, 0);
   return {
     ...appCardPart(env, agentName, plan, 0),
-    url: cart.checkoutUrl,
+    // The widget's shopping view, not the raw Shopify checkout: a checkout form
+    // crammed into the bubble panel is unusable, and the view has the checkout
+    // link one tap further for whoever is paying.
+    url: `${widgetUrl(env, agentName)}?cart=${encodeURIComponent(shopKey(cart.shop))}`,
     fallback_text: `Cart at ${cart.shop} — ${cart.total}\n${cart.checkoutUrl}`,
     // The thing being bought, not a drawing of a receipt: its photo and name
     // when the store sent them, the rendered order ticket when it did not.
@@ -251,6 +260,24 @@ export async function sendLinkCard(
     log("info", "linq", "dry.link_card", { chat: short(chatId), title: card.title, url: card.url.replace(/\/p\/[0-9a-f]+/, "/p/<token>") });
     return `dry-${crypto.randomUUID().slice(0, 8)}`;
   }
+  // With our own extension configured, link cards ride it too: same tap-to-open,
+  // but rendered as our app — and, unlike link experiences, legal in group chats.
+  if (hasAppIdentity(env)) {
+    const res = await linqClient(env).chats.messages.send(chatId, {
+      message: {
+        parts: [{
+          type: "imessage_app" as const,
+          app: { name: env.IMESSAGE_APP_NAME, team_id: env.IMESSAGE_TEAM_ID, bundle_id: env.IMESSAGE_BUNDLE_ID },
+          url: card.url,
+          // The button label is the one part guaranteed free of dates and
+          // addresses, which would knock the card down to plain text.
+          fallback_text: card.button?.slice(0, 24) || "Open",
+          layout: { caption: card.title.slice(0, 64), subcaption: card.subtitle?.slice(0, 120), trailing_caption: card.button?.slice(0, 24) },
+        }],
+      },
+    });
+    return res.message.id;
+  }
   const res = await linqClient(env).chats.messages.send(chatId, {
     message: {
       experience: {
@@ -260,6 +287,60 @@ export async function sendLinkCard(
       },
     },
   });
+  return res.message.id;
+}
+
+// ------------------------------------------------------------------- music
+
+/** The playlist as an app card: our extension renders the player from /music/<chat>. */
+function musicPart(env: Env, agentName: string, trackCount: number) {
+  return {
+    type: "imessage_app" as const,
+    app: {
+      name: env.IMESSAGE_APP_NAME,
+      team_id: env.IMESSAGE_TEAM_ID,
+      bundle_id: env.IMESSAGE_BUNDLE_ID,
+    },
+    url: musicUrl(env, agentName),
+    // Static on purpose — see appCardPart.
+    fallback_text: "Open the playlist",
+    layout: {
+      caption: "Group playlist",
+      subcaption: trackCount ? `${trackCount} track${trackCount === 1 ? "" : "s"}` : "name a song to add it",
+      trailing_caption: "▶",
+    },
+  };
+}
+
+/**
+ * Posts the playlist card. With no app identity it falls back to a link
+ * experience, which only ever works in one-to-one chats — groups reject it.
+ */
+export async function sendMusicCard(env: Env, chatId: string, agentName: string, trackCount: number): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.music_card", { chat: short(chatId), tracks: trackCount });
+    return `dry-music-${crypto.randomUUID().slice(0, 8)}`;
+  }
+  if (!hasAppIdentity(env)) {
+    return sendLinkCard(env, chatId, {
+      title: "Group playlist",
+      subtitle: trackCount ? `${trackCount} track${trackCount === 1 ? "" : "s"} · tap to play` : "tap to open the player",
+      button: "Play",
+      url: musicUrl(env, agentName),
+    });
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, { message: { parts: [musicPart(env, agentName, trackCount)] } });
+  return res.message.id;
+}
+
+/** Redraws the playlist card's track count in place. Returns the card's NEW id, or undefined when it could not. */
+export async function updateMusicCard(env: Env, messageId: string, agentName: string, trackCount: number): Promise<string | undefined> {
+  if (isDry(env, agentName) || !hasAppIdentity(env)) {
+    log("info", "linq", "dry.music_card_update", { messageId, tracks: trackCount });
+    return undefined;
+  }
+  const part = musicPart(env, agentName, trackCount);
+  const res = await linqClient(env).messages.updateAppCard(messageId, { url: part.url, fallback_text: part.fallback_text, layout: part.layout });
   return res.message.id;
 }
 
