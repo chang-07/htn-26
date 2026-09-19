@@ -307,6 +307,7 @@ ${transcript}`,
     this.note("info", "turn.start", { llm: `${profile}/${model}`, history: history.length });
     let spoke = false;
     let reminded = false;
+    const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
       try {
@@ -346,6 +347,19 @@ ${transcript}`,
         let output: string;
         const tool = call.function.name;
         toolsUsed.push(tool);
+
+        // A model that loses track can send the same line twice in one turn;
+        // in a group chat that reads as a glitch, so the repeat is swallowed.
+        if (tool === "send_message") {
+          const key = call.function.arguments.toLowerCase().replace(/[^a-z0-9]+/g, "");
+          if (sentThisTurn.has(key)) {
+            this.note("warn", "turn.duplicate_send_skipped", {});
+            messages.push({ role: "tool", tool_call_id: call.id, content: "Already sent this turn. Do not repeat it." });
+            continue;
+          }
+          sentThisTurn.add(key);
+        }
+
         try {
           output = await timed(
             "agent",

@@ -52,10 +52,34 @@ curl -X POST localhost:5173/api/dev/message -H 'content-type: application/json' 
   -d '{"chat":"demo","from":"+15550001111","text":"dinner friday? ramen downtown"}'
 curl -X POST localhost:5173/api/dev/react -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","reaction":"like"}'
+curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
+  -d '{"chat":"demo","tool":"propose_plan","args":{"title":"Friday dinner","options":[{"title":"A"},{"title":"B"}]}}'
+                                                  # run any agent tool directly: no LLM, no tokens
 curl 'localhost:5173/api/dev/dump?chat=demo'      # state, transcript, votes
 open  'http://localhost:5173/w/demo'              # live vote page
 open  'http://localhost:5173/card/demo'           # the card image
 ```
+
+### Real iMessage from your laptop
+
+Keep hot reload and the free dev LLM, but receive real texts: expose the dev
+server with a quick tunnel and point a Linq webhook subscription at it.
+
+```sh
+cloudflared tunnel --url http://127.0.0.1:5173    # prints https://<words>.trycloudflare.com
+```
+
+Put that URL in `.env` as `PUBLIC_BASE_URL`, create a Linq webhook subscription
+for `message.received` + `reaction.added` targeting
+`<url>/api/webhooks/linq`, and store the `signing_secret` from the create
+response as `LINQ_WEBHOOK_SECRET` — Linq shows it once and it cannot be fetched
+again. Restart `npm run dev` so the new values load.
+
+The URL changes whenever the tunnel restarts, which means a new subscription and
+secret each time. If the tunnel answers 404 for everything, an existing
+`~/.cloudflared/config.yml` is hijacking it: move it aside. Chat ids that are not
+UUIDs always stay on the dry transport, so the simulator never texts anyone even
+with a live key.
 
 ### Logging — "why didn't it reply?"
 
@@ -149,17 +173,24 @@ Then create a Linq webhook subscription for `message.received` and
 
 ## Things that will bite you
 
-- **Shopify tools only work when deployed.** Shopify fetches
+- **Shopify needs a public URL, not a deploy.** Shopify fetches
   `${PUBLIC_BASE_URL}/.well-known/ucp-agent.json` to validate every call, so a
-  localhost URL fails with `profile_unreachable`.
+  localhost URL fails with `profile_unreachable`. A tunnel is enough — see
+  "Real iMessage from your laptop" above.
 - **The booking flow is a stub.** `BookingWorkflow.reserve` fails loudly until
   you script the selectors for the one site you will book on stage.
   `BOOKING_DRY_RUN` is `"true"` by default.
-- **Interactive cards need an app identity.** With `IMESSAGE_TEAM_ID` /
-  `IMESSAGE_BUNDLE_ID` unset, the card goes out as a plain image plus a link and
-  cannot be redrawn in place. A *wrong* identity renders as plain text with no
-  error. Ask Linq whether their `experience` cards remove the need for your own
-  extension.
+- **Cards render through Linq's "Agent Apps" iMessage app.** With no
+  `IMESSAGE_TEAM_ID` / `IMESSAGE_BUNDLE_ID`, cards go out as Linq *experiences*
+  (`link` for the plan, `agentpay` then `link` for the cart) — no Xcode or Apple
+  developer account. A phone without Agent Apps installed shows only the static
+  captions under an "Open in Agent Apps" header: no image, no button. Install it
+  on every demo phone. (Setting your own identity instead requires your own
+  Messages extension on each phone; a *wrong* identity renders as plain text
+  with no error.)
+- **A card's message id changes on every redraw.** `updateCard` returns the new
+  id and the caller must store it, or the next redraw and every tapback after
+  it will miss. The agent keeps all of a card's ids for tapback matching.
 - **Everyone in the chat needs iMessage**, and on a shared Linq line each person
   must text the number first (inbound-first).
 - `src/server/tools/places.ts` returns stub venues — wire a real provider.
