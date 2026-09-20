@@ -96,6 +96,21 @@ export default Sentry.withSentry(sentryOptions, {
       const chat = decodeURIComponent(chatEnc ?? "");
       if (!chat) return new Response("Not found", { status: 404 });
       const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
+      // Probe the agent from the widget: the prompt enters the same pipeline
+      // as an iMessage text, and the reply lands in the chat for everyone.
+      if (action === "agent" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { text?: string; name?: string };
+        const text = (body.text ?? "").trim();
+        if (!text) return new Response("text is required", { status: 400 });
+        ctx.waitUntil(agent.ingestMessage({
+          linqId: `widget-${crypto.randomUUID()}`,
+          from: body.name?.trim() || "the widget",
+          text,
+          isGroup: true,
+          mentionsMe: true,
+        }));
+        return Response.json({ status: "sent" });
+      }
       // Games: prompt creation can produce a game or a safe surface picker; card views are redacted per player.
       if (action === "game") {
         if (!extra && request.method === "POST") {

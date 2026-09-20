@@ -26,6 +26,7 @@ struct HomeView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let chat {
+                    AskWhimView(base: base, chat: chat)
                     GameComposerView(base: base, chat: chat)
 
                     HStack(spacing: 8) {
@@ -66,6 +67,60 @@ struct HomeView: View {
         }
         .background(Whim.paper)
         .whimPage()
+        }
+    }
+
+    /// Talk to the agent from the drawer: the prompt enters the chat pipeline
+    /// and Whim answers in the thread, same as texting it.
+    private struct AskWhimView: View {
+        let base: URL
+        let chat: String
+        @State private var prompt = ""
+        @State private var working = false
+        @State private var sent = false
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Ask Whim", systemImage: "sparkles")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                if sent {
+                    HStack {
+                        Label("Whim's on it — watch the chat", systemImage: "checkmark.seal.fill")
+                            .font(.subheadline.weight(.medium)).foregroundStyle(Whim.green)
+                        Spacer()
+                        Button("Ask another") { sent = false }
+                            .font(.caption.weight(.semibold))
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        TextField("Plan something, find tickets…", text: $prompt)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(working)
+                        Button {
+                            Task { await send() }
+                        } label: {
+                            if working { ProgressView() } else { Text("Send") }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(working || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+        }
+
+        private func send() async {
+            working = true
+            defer { working = false }
+            var req = URLRequest(url: base.appendingPathComponent("api/widget/\(chat)/agent"))
+            req.httpMethod = "POST"
+            req.timeoutInterval = 15
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": prompt, "name": UIDevice.current.name])
+            if let (_, resp) = try? await URLSession.shared.data(for: req),
+               (resp as? HTTPURLResponse)?.statusCode == 200 {
+                prompt = ""
+                sent = true
+            }
         }
     }
 
