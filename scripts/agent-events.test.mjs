@@ -66,9 +66,48 @@ test('generated item edits survive publish; invalid final documents leave state 
  const state = JSON.stringify(h.state), overrides = meta.event_item_overrides;
  assert.throws(() => h.publish({}, { 'itinerary:ride': { startsAt: '2026-10-03T10:00:00Z', endsAt: '2026-10-01T10:00:00Z' } }));
  assert.equal(JSON.stringify(h.state), state); assert.equal(meta.event_item_overrides, overrides);
- // Validation must also happen after merging custom and generated items.
- await assert.rejects(h.runTool('save_event', JSON.stringify({ event: { title: 'Trip', items: [{ id: 'itinerary:ride', kind: 'ride', title: 'Duplicate' }] } })));
+ // Genuine duplicate IDs in the submitted event still fail atomically.
+ await assert.rejects(h.runTool('save_event', JSON.stringify({ event: { title: 'Trip', items: [
+  { id: 'itinerary:ride', kind: 'ride', title: 'Taxi' },
+  { id: 'itinerary:ride', kind: 'ride', title: 'Duplicate' },
+ ] } })));
  assert.equal(JSON.stringify(h.state), state);
+});
+
+test('save_event can cancel existing options with and without booking links', async () => {
+ const { h } = fixture();
+ h.publish({ options: [
+  { id: 'e765ca88', title: 'Fleetway Fun', bookingUrl: 'https://fleetwayfun.com/groups/booking' },
+  { id: '7428feff', title: 'Palasad North', bookingUrl: 'https://example.com/palasad-north' },
+  { id: '58c7b0b3', title: 'Palasad South' },
+  { id: '7b2b89e8', title: 'Fairmont Lanes' },
+ ] });
+ const event = { ...h.state.event, title: 'Monday birthday', status: 'cancelled',
+  items: h.state.event.items.map(item => ({ ...item, status: 'cancelled' })),
+ };
+ await h.runTool('save_event', JSON.stringify({ event }));
+ h.publish({});
+ assert.equal(h.state.event.status, 'cancelled');
+ assert.equal(h.state.event.items.length, 4);
+ assert.equal(new Set(h.state.event.items.map(item => item.id)).size, 4);
+ assert.ok(h.state.event.items.every(item => item.status === 'cancelled'));
+ assert.ok(eventInputSchema.safeParse(h.state.event).success);
+});
+
+test('saved itinerary and cart items override generated copies by ID even when links change', async () => {
+ const { h, meta } = fixture();
+ h.publish({
+  itinerary: [{ id: 'ride', kind: 'ride', title: 'Taxi', status: 'confirmed' }],
+  carts: [{ shop: 'pizza.test', total: '$40', checkoutUrl: 'https://pizza.test/checkout', lines: [] }],
+ });
+ await h.runTool('update_event_item', JSON.stringify({ id: 'itinerary:ride', fields: { location: 'Old pickup' } }));
+ await h.runTool('save_event', JSON.stringify({ event: { title: 'Updated plan', items:
+  h.state.event.items.map(item => ({ ...item, status: 'cancelled', location: 'New pickup', links: [] })),
+ } }));
+ h.publish({});
+ assert.equal(h.state.event.items.length, 2);
+ assert.ok(h.state.event.items.every(item => item.status === 'cancelled' && item.location === 'New pickup' && item.links.length === 0));
+ assert.deepEqual(JSON.parse(meta.event_item_overrides), {});
 });
 
 test('sync uses current roster, excludes former participants and fails closed during provider outages', async () => {

@@ -295,6 +295,7 @@ export function Runs() {
       {showRail && (
         <aside style={{ borderRight: mid ? "1px solid var(--hair)" : 0, overflowY: "auto", minHeight: 0 }}>
           <header style={{ padding: "18px 18px 14px", position: "sticky", top: 0, background: "var(--ground)", zIndex: 2 }}>
+            <LandingBackLink />
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
               <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16, letterSpacing: "-0.01em", lineHeight: 1 }}>Whim</a>
               <span className="rv-meta">Telemetry</span>
@@ -384,6 +385,14 @@ export function Runs() {
   );
 }
 
+function LandingBackLink() {
+  return (
+    <a href="/" className="rv-btn is-quiet" style={{ textDecoration: "none", marginBottom: 14 }}>
+      <span aria-hidden="true">←</span> Back to home
+    </a>
+  );
+}
+
 function SessionRow({ session, selected, onClick }: { session: RunSession; selected: boolean; onClick: () => void }) {
   const summary = sessionSummary(session);
   const label = runLabel(summary);
@@ -408,6 +417,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
   ].filter(Boolean) as string[];
   return (
     <header style={{ flex: "none", padding: "18px 18px 0", borderBottom: "1px solid var(--hair)" }}>
+      {onBack && <LandingBackLink />}
       <div style={{ display: "flex", alignItems: "stretch", gap: 18 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="rv-meta" style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>

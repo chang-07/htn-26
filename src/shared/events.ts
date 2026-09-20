@@ -46,14 +46,21 @@ const provider = (value?: string) => { try { return { name: new URL(value!).host
 export function eventFromPlan(state: PlanState, groupId: string, id: string, now = Date.now()): EventDocument {
   const previous = state.event;
   const items: EventItem[] = (previous?.items ?? []).filter(i => i.source === "agent");
-  for (const item of state.itinerary ?? []) items.push({
+  // save_event can edit an existing generated item using its stable ID. Its
+  // explicit fields take precedence over rebuilding that item from plan data.
+  const savedIds = new Set(items.map(item => item.id));
+  for (const item of state.itinerary ?? []) {
+    if (savedIds.has(`itinerary:${item.id}`)) continue;
+    items.push({
     id: `itinerary:${item.id}`, kind: item.kind, title: item.title, description: item.subtitle,
     status: item.status === "handoff" ? "needs_confirmation" : item.status === "done" ? "completed" : item.status === "confirmed" ? "booked" : "in_progress",
     provider: provider(item.url), links: link(item.url), price: item.price,
     details: { ...(item.note ? { Note: item.note } : {}), ...(item.lastUpdate ? { Update: item.lastUpdate } : {}), ...(item.paidBy ? { "Paid by": item.paidBy } : {}) }, source: "itinerary",
-  });
+    });
+  }
   const included = new Set(items.flatMap(i => i.links.map(l => l.url)));
   for (const option of state.options) {
+    if (savedIds.has(`option:${option.id}`)) continue;
     if (option.bookingUrl && included.has(option.bookingUrl)) continue;
     const chosen = state.chosenOptionId === option.id;
     items.push({ id: `option:${option.id}`, kind: "activity", title: option.title, description: option.subtitle,
@@ -63,6 +70,7 @@ export function eventFromPlan(state: PlanState, groupId: string, id: string, now
     });
   }
   for (const cart of cartsOf(state)) {
+    if (savedIds.has(`cart:${cart.shop}`)) continue;
     if (included.has(cart.checkoutUrl)) continue;
     items.push({ id: `cart:${cart.shop}`, kind: "food_or_shopping", title: `Order from ${cart.shop}`,
       status: "needs_confirmation", provider: { name: cart.shop }, links: link(cart.checkoutUrl, "checkout"), price: cart.total,
