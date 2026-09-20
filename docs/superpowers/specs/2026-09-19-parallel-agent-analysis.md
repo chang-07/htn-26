@@ -1,6 +1,6 @@
 # Parallelising the agent: where the time goes, and what was changed
 
-Written 2026-09-19 on the `parallel-agent` branch (worktree off `main` at d64d9bb; rebased onto #40, #42 and then #43 to #46 the same evening).
+Written 2026-09-19 on the `parallel-agent` branch (worktree off `main` at d64d9bb; rebased onto #40, #42, #43 to #46 and then #47 to #50 the same evening).
 
 The question: which parts of the agentic flow are serial today but need not be,
 and which of those are worth changing before the demo. Every item below was
