@@ -72,6 +72,8 @@ export default {
           const act =
             sub === "join" ? { type: "join" as const, name: body.name ?? "" }
             : sub === "answer" ? { type: "answer" as const, choice: Number(body.choice) }
+            : sub === "hit" ? { type: "hit" as const }
+            : sub === "stand" ? { type: "stand" as const }
             : sub === "advance" ? { type: "advance" as const }
             : null;
           if (!act) return new Response("Not found", { status: 404 });
