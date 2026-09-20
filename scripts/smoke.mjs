@@ -271,6 +271,15 @@ await check("/reset forgets the introductions of the people in the chat, so they
   expect(after.paired.length === 0, `still paired with ${JSON.stringify(after.paired)} after /reset`);
 });
 
+console.log("\nmatching");
+await check("find_matches in a direct chat finds the person even when the model's label for them is off", async () => {
+  const c = chat("matchlabel");
+  await post("/api/dev/message", { chat: c, from: "+15550008881", text: "/reset" }); // a direct chat with one person, and no model turn
+  const out = await tool(c, "find_matches", { who: "Some Other Name", near: "London" });
+  expect(!/No participant labelled/.test(out), `refused on the label: ${out}`);
+  expect(!/Not in a group/.test(out), `treated a direct chat as a group: ${out}`);
+});
+
 console.log("\npaying (guards only: no browser, no wallet, no store)");
 await check("a thumbs up on a cart from someone with no wallet starts nothing", async () => {
   const c = chat("payguard");
