@@ -95,6 +95,7 @@
   cursor: grabbing;
 }
 
+.tear-ticket[data-reattaching] .tear-ticket__paper--stub,
 .tear-ticket[data-disabled] .tear-ticket__paper--stub {
   cursor: default;
 }
@@ -121,9 +122,6 @@
   transition: filter 700ms ease;
 }
 
-.tear-ticket[data-used] .tear-ticket__image {
-  filter: grayscale(1) brightness(0.75);
-}
 
 .tear-ticket__scrim {
   position: absolute;
@@ -146,9 +144,6 @@
   transition: opacity 500ms ease;
 }
 
-.tear-ticket[data-used] .tear-ticket__content {
-  opacity: 0.55;
-}
 
 .tear-ticket__stub {
   position: absolute;

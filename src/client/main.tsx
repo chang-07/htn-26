@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Widget } from "./Widget";
 import { Runs } from "./Runs";
 import { Landing } from "./Landing";
-import { Dashboard } from "./Dashboard";
+import { AccountDashboard } from "./Account";
 
 function App() {
   // /w/<agent name> — the agent name is the Linq chat id, which doubles as an
@@ -11,7 +11,7 @@ function App() {
   // /runs — the agent-run viewer, full-bleed.
   // Anything else — the front page. The planner lives in the chat; this is
   // where someone who only has the URL finds out what it is.
-  if (window.location.pathname === "/dashboard" || window.location.pathname.startsWith("/dashboard/")) return <Dashboard />;
+  if (window.location.pathname === "/dashboard" || window.location.pathname.startsWith("/dashboard/")) return <AccountDashboard />;
   if (window.location.pathname.startsWith("/runs")) return <Runs />;
 
   const match = window.location.pathname.match(/^\/w\/(.+)$/);

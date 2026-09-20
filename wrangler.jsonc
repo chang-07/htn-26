@@ -21,13 +21,15 @@
       { "name": "PlanAgent", "class_name": "PlanAgent" },
       { "name": "RunHub", "class_name": "RunHub" },
       // One instance ("global"): what each person has told us about themselves.
-      { "name": "People", "class_name": "People" }
+      { "name": "People", "class_name": "People" },
+      { "name": "Website", "class_name": "Website" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["PlanAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["RunHub"] },
-    { "tag": "v3", "new_sqlite_classes": ["People"] }
+    { "tag": "v3", "new_sqlite_classes": ["People"] },
+    { "tag": "v4", "new_sqlite_classes": ["Website"] }
   ],
 
   // Run history: every agent turn, its events, tokens and timings.

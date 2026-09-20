@@ -105,6 +105,7 @@ export default function TearTicket({
   borderWidth = 1,
   stubBackground = '',
   recenter = true,
+  recoil = true,
   disabled = false,
   ariaLabel = 'Tear off the stub',
   className = ''
@@ -114,6 +115,8 @@ export default function TearTicket({
   const [inner, setInner] = useState(defaultTorn);
   const used = controlled ? torn : inner;
   const [grabbing, setGrabbing] = useState(false);
+  const [reattaching, setReattaching] = useState(false);
+  const wasUsed = useRef(used);
   const [instant, setInstant] = useState(used);
   const [fit, setFit] = useState(1);
   const rootRef = useRef(null);
@@ -127,7 +130,7 @@ export default function TearTicket({
     [width, height, stubSize, radius, holes, holeSize, notch, roughness, vertical]
   );
   const cfg = useRef({});
-  cfg.current = { geo, tearAngle, stretch, resistance, height, notch, reduce, onTear, controlled };
+  cfg.current = { geo, tearAngle, stretch, resistance, height, notch, reduce, onTear, controlled, recoil };
   const sim = useRef({
     raf: 0,
     last: 0,
@@ -323,21 +326,36 @@ export default function TearTicket({
         s.phase = 'idle';
         finish();
       }
-    } else if (s.phase === 'return') {
-      s.thetaV += (-300 * s.theta - 24 * s.thetaV) * dt;
+    } else if (s.phase === 'return' || s.phase === 'reattach') {
+      const restoring = s.phase === 'reattach';
+      s.fade += (1 - s.fade) * (1 - Math.exp(-dt / 0.06));
+      const stiffness = restoring ? 480 : 300;
+      const damping = restoring ? 34 : 24;
+      s.thetaV += (-stiffness * s.theta - damping * s.thetaV) * dt;
       s.theta += s.thetaV * dt;
-      s.sx += (0 - s.sx) * (1 - Math.exp(-dt / 0.07));
-      s.sy += (0 - s.sy) * (1 - Math.exp(-dt / 0.07));
+      const settle = restoring ? 0.065 : 0.07;
+      s.sx += (0 - s.sx) * (1 - Math.exp(-dt / settle));
+      s.sy += (0 - s.sy) * (1 - Math.exp(-dt / settle));
       if (Math.abs(s.theta) < 0.0008 && Math.abs(s.thetaV) < 0.01 && Math.hypot(s.sx, s.sy) < 0.05) {
         s.theta = 0;
         s.thetaV = 0;
         s.sx = 0;
         s.sy = 0;
+        s.fade = 1;
+        s.snapped = [];
+        s.snapAt = [];
+        s.span = [];
         s.phase = 'idle';
+        if (restoring) setReattaching(false);
       }
     }
-    s.bv += (-520 * s.bx - 30 * s.bv) * dt;
-    s.bx += s.bv * dt;
+    if (c.recoil) {
+      s.bv += (-520 * s.bx - 30 * s.bv) * dt;
+      s.bx += s.bv * dt;
+    } else {
+      s.bx = 0;
+      s.bv = 0;
+    }
     const busy = paint(now);
     const moving = Math.abs(s.bx) > 0.02 || Math.abs(s.bv) > 0.5;
     if (s.phase !== 'idle' || moving || busy) s.raf = requestAnimationFrame(step);
@@ -356,6 +374,7 @@ export default function TearTicket({
   };
 
   const reset = () => {
+    setReattaching(false);
     const s = sim.current;
     cancelAnimationFrame(s.raf);
     Object.assign(s, {
@@ -378,7 +397,9 @@ export default function TearTicket({
     paint(performance.now());
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const restoring = wasUsed.current && !used;
+    wasUsed.current = used;
     if (used) {
       const s = sim.current;
       if (s.phase === 'idle' && stubRef.current) stubRef.current.style.visibility = 'hidden';
@@ -386,6 +407,19 @@ export default function TearTicket({
     }
     setInstant(false);
     reset();
+    if (restoring && !cfg.current.reduce) {
+      const s = sim.current;
+      s.phase = 'reattach';
+      s.sx = geo.vertical ? 0 : 56;
+      s.sy = 80;
+      s.theta = rad(18);
+      s.fade = 0;
+      // Keep the paper fibres hidden until both pieces meet again.
+      s.snapped = geo.bridges.map(() => true);
+      setReattaching(true);
+      paint(performance.now());
+      run();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [used]);
   useEffect(() => {
@@ -412,7 +446,7 @@ export default function TearTicket({
   };
   const onStubDown = e => {
     const s = sim.current;
-    if (disabled || used || e.button !== 0 || s.id !== null || s.phase === 'drop') return;
+    if (disabled || used || e.button !== 0 || s.id !== null || (s.phase === 'drop' || s.phase === 'reattach')) return;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
@@ -481,7 +515,7 @@ export default function TearTicket({
     run();
   };
   const onStubKey = e => {
-    if (disabled || used || (e.key !== 'Enter' && e.key !== ' ')) return;
+    if (disabled || used || sim.current.phase === 'reattach' || (e.key !== 'Enter' && e.key !== ' ')) return;
     e.preventDefault();
     if (!e.repeat) tearNow();
   };
@@ -510,6 +544,7 @@ export default function TearTicket({
       data-shift={used && recenter ? (vertical ? 'y' : 'x') : undefined}
       data-instant={instant ? '' : undefined}
       data-grabbing={grabbing ? '' : undefined}
+      data-reattaching={reattaching ? '' : undefined}
       data-disabled={disabled ? '' : undefined}
       style={{
         '--tt-w': `${width}px`,
@@ -576,10 +611,10 @@ export default function TearTicket({
             ref={stubRef}
             className="tear-ticket__piece tear-ticket__piece--stub"
             role="button"
-            tabIndex={disabled || used ? -1 : 0}
+            tabIndex={disabled || used || reattaching ? -1 : 0}
             aria-label={ariaLabel}
             aria-hidden={used || undefined}
-            aria-disabled={disabled || undefined}
+            aria-disabled={disabled || reattaching || undefined}
             onPointerDown={onStubDown}
             onPointerMove={onStubMove}
             onPointerUp={onStubUp}
@@ -600,7 +635,7 @@ export default function TearTicket({
         </motion.div>
       </div>
       <span className="tear-ticket__sr" role="status">
-        {used ? 'Used' : ''}
+        {used ? 'Ticket torn' : reattaching ? 'Ticket reattaching' : ''}
       </span>
     </div>
   );

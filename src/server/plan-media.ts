@@ -14,7 +14,7 @@ export function companyDomain(value?: string): string | undefined {
   } catch { return; }
 }
 export function mediaCompanies(state: PlanState) {
-  return [...new Set([...state.options.map(o => companyDomain(o.bookingUrl)), ...cartsOf(state).map(c => companyDomain(c.checkoutUrl) ?? companyDomain(c.shop))].filter((v): v is string => !!v))].sort().slice(0, 8);
+  return [...new Set([...state.options.map(o => companyDomain(o.bookingUrl)), ...(state.itinerary ?? []).map(item => companyDomain(item.url)), ...(state.event?.items ?? []).flatMap(item => [companyDomain(item.provider?.url), ...item.links.map(link => companyDomain(link.url))]), ...cartsOf(state).map(c => companyDomain(c.checkoutUrl) ?? companyDomain(c.shop))].filter((v): v is string => !!v))].sort().slice(0, 8);
 }
 export function mediaKey(state: PlanState) {
   return JSON.stringify(["generated-cover-v1", state.title.trim(), mediaCompanies(state)]);

@@ -1,6 +1,6 @@
 import { traceOperation } from "./telemetry.ts";
 import { z } from "zod";
-import type { PageText, SearchHit } from "./browser";
+import type { PageText, SearchHit } from "./browser.ts";
 
 type SourceEnv = {
   BROWSERBASE_API_KEY?: string;

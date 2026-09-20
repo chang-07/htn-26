@@ -1,3 +1,5 @@
+export { Website } from "./website";
+import { handleWebsite } from "./website-api";
 import { Sentry, sentryOptions } from "./sentry";
 import { UCP_CAPABILITIES, UCP_VERSION } from "./tools/shopify";
 import { getAgentByName, routeAgentRequest } from "agents";
@@ -45,6 +47,7 @@ import { handleDemo } from "./demos";
 export default Sentry.withSentry(sentryOptions, {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/account/") || url.pathname.startsWith("/api/events")) return handleWebsite(request, env);
 
     if (url.pathname === "/api/webhooks/linq" && request.method === "POST") {
       return handleLinqWebhook(request, env);

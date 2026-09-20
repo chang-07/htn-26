@@ -1,17 +1,6 @@
-import { z } from "zod";
-
+import { dashboardSchema, type DashboardState } from "../shared/workspace";
+export { dashboardSchema, type DashboardState, type SavedWidget, type Friend } from "../shared/workspace";
 export const DASHBOARD_KEY = "whim.dashboard.v1";
-const friendSchema = z.object({ id: z.string(), name: z.string(), food: z.string(), budget: z.string() });
-const widgetSchema = z.object({ id: z.string(), title: z.string(), question: z.string(), options: z.array(z.string()).min(2), kind: z.enum(["Poll", "Game"]), sample: z.boolean().default(false), game: z.literal("memory").optional() });
-export const dashboardSchema = z.object({
-  account: z.object({ name: z.string(), city: z.string(), food: z.string(), budget: z.string() }),
-  friends: z.array(friendSchema),
-  widgets: z.array(widgetSchema),
-  plans: z.array(z.object({ id: z.string(), agent: z.string() })),
-});
-export type DashboardState = z.infer<typeof dashboardSchema>;
-export type SavedWidget = DashboardState["widgets"][number];
-export type Friend = DashboardState["friends"][number];
 export const initialDashboard: DashboardState = {
   account: { name: "", city: "", food: "", budget: "Flexible" },
   friends: [], plans: [],
