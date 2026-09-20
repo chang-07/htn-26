@@ -101,17 +101,26 @@ export default Sentry.withSentry(sentryOptions, {
       if (!chat || !id) return new Response("Not found", { status: 404 });
       const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
       if (sub === "state") {
+        // The sandboxed page runs from a null origin, so state sync arrives
+        // cross-origin: CORS on exactly this surface, nowhere else.
+        const cors = {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "GET, PUT, POST, OPTIONS",
+          "access-control-allow-headers": "content-type",
+          "cache-control": "no-store",
+        };
+        if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
         if (request.method === "GET") {
           const s = await agent.gameWebState(id);
-          return s ? Response.json(s, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+          return s ? Response.json(s, { headers: cors }) : new Response("Not found", { status: 404, headers: cors });
         }
         if (request.method === "PUT" || request.method === "POST") {
           const body = (await request.json().catch(() => null)) as { expectedRevision?: number; state?: unknown } | null;
-          if (!body || typeof body.expectedRevision !== "number") return new Response("expectedRevision is required", { status: 400 });
+          if (!body || typeof body.expectedRevision !== "number") return new Response("expectedRevision is required", { status: 400, headers: cors });
           const r = (await agent.gameWebPutState(id, body.expectedRevision, body.state ?? null)) as
             { ok: boolean; revision: number; state: unknown } | null;
-          if (!r) return new Response("Not found", { status: 404 });
-          return Response.json(r, { status: r.ok ? 200 : 409, headers: { "cache-control": "no-store" } });
+          if (!r) return new Response("Not found", { status: 404, headers: cors });
+          return Response.json(r, { status: r.ok ? 200 : 409, headers: cors });
         }
         return new Response("Not found", { status: 404 });
       }
@@ -121,7 +130,12 @@ export default Sentry.withSentry(sentryOptions, {
         return new Response(html, {
           headers: {
             "content-type": "text/html; charset=utf-8",
-            "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'",
+            // sandbox (without allow-same-origin) gives the page a null
+            // origin: generated code cannot reach the agent or widget APIs
+            // even though it is served from this host.
+            "content-security-policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'",
+            "cross-origin-opener-policy": "same-origin",
+            "cross-origin-resource-policy": "same-origin",
             "x-content-type-options": "nosniff",
             "referrer-policy": "no-referrer",
             "cache-control": "no-store",
