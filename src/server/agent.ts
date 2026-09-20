@@ -1955,10 +1955,14 @@ ${transcript}`,
           "agent",
           "tool",
           // Arguments are useful for every tool except the one carrying message text.
-          { tool: call.function.name, step: step + 1, callId: call.id, argsChars: call.function.arguments.length },
+          { tool: call.function.name, step: step + 1, callId: call.id, argsChars: call.function.arguments.length, ...(call.function.name === "send_message" ? {} : this.body(call.function.arguments, "args")) },
           () => this.runTool(call.function.name, call.function.arguments),
           this.note,
-        );
+        ).then((out) => {
+          // What the tool told the model: without it, "why did it say that" has no answer in run history.
+          if (call.function.name !== "send_message") this.note("info", "tool.result", { tool: call.function.name, callId: call.id, chars: out.length, ...this.body(out.slice(0, 600), "result") });
+          return out;
+        });
       // Lookups the model asked for together are fetched together: flights and
       // a hotel, or two stores, searched in one step cost one wait, not two.
       // Everything else keeps its turn in the loop below, where order is the
@@ -2673,7 +2677,10 @@ this.rememberCardId(id);
       case "find_matches": {
         const { who, lookingFor, near } = parseToolArgs("find_matches", rawArgs);
         if (this.getMeta("is_group") !== "0") return "Not in a group: pairing is private. Tell them to text you directly.";
-        const person = this.participants().find((p) => this.label(p.handle) === who);
+        // A direct chat has one person in it, whatever the model called them:
+        // a label that is a little off ("Chang" for "…5178") must not end the search.
+        const everyone = this.participants();
+        const person = everyone.find((p) => this.label(p.handle) === who) ?? (everyone.length === 1 ? everyone[0] : undefined);
         if (!person) return `No participant labelled ${who}`;
         const store = peopleStore(this.env);
         // Their profile and who they have already been offered: two reads that need only the handle.
