@@ -436,6 +436,18 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.startPay(shopKey(cart.shop), r.from, "reaction");
       return;
     }
+    // The shopping list is every cart at once, and a thumbs up on it means the
+    // same thing as on a cart. With one cart unpaid that is the one; with
+    // several, which one is theirs to say.
+    const onList = this.sql<Row>`SELECT 1 FROM tickets WHERE kind = 'list' AND message_id = ${r.messageId}`.length > 0;
+    if (onList) {
+      if (r.reactionType !== "like" && r.reactionType !== "love") return void this.note("info", "reaction.ignored", { reason: "not a pay tapback", type: r.reactionType });
+      const unpaid = this.carts().filter((c) => !c.paidBy);
+      if (!unpaid.length) return void this.note("info", "reaction.ignored", { reason: "every cart is paid", type: r.reactionType });
+      if (unpaid.length > 1) return void (await this.say(`which one? thumbs up the cart you're covering: ${unpaid.map((c) => c.shop).join(", ")}`));
+      await this.startPay(shopKey(unpaid[0].shop), r.from, "reaction");
+      return;
+    }
     if (!this.cardIds().includes(r.messageId) && !this.planPhotoIds().includes(r.messageId)) {
       this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
       return;
@@ -2974,6 +2986,12 @@ this.rememberCardId(id);
   async currentCartMessageId(shop?: string) {
     const cart = this.carts().find((c) => !shop || shopKey(c.shop) === shopKey(shop));
     return cart ? this.cartMessages(shopKey(cart.shop)).at(-1) : undefined;
+  }
+
+  /** Simulator only: the latest shopping list ticket's message id. */
+  async currentListId() {
+    return this.sql<{ message_id: string }>`
+      SELECT message_id FROM tickets WHERE kind = 'list' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
   }
 
   async currentRsvpId() {
