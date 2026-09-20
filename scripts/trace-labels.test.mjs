@@ -25,3 +25,15 @@ test('network success is distinct from task success and failures remain explicit
  assert.match(label('turn.step', { step: 2, calls: [] }).sub, /no tool calls/);
  assert.equal(label('llm.validation_failed', { retry: true }).sub, 'Requesting a corrected response.');
 });
+
+test('background workflow hand-offs are not labelled as completed work', () => {
+  const research = label('trace.end', { operation: 'agent.tool', tool: 'research', status: 'ok' });
+  assert.equal(research.title, 'Research started in background');
+  assert.match(research.sub, /still running/);
+
+  const booking = label('trace.end', { operation: 'agent.tool', tool: 'book_option', status: 'ok' });
+  assert.equal(booking.title, 'Reservation attempt started in background');
+
+  const ordinary = label('trace.end', { operation: 'agent.tool', tool: 'shop_search', status: 'ok' });
+  assert.equal(ordinary.title, 'Search for products · finished');
+});
