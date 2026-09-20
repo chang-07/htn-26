@@ -7,7 +7,11 @@ const Questions = {
   surface: {
     type: "choice",
     instructions: "Choose the only supported surface for this prompt.",
-    options: ["choice_rounds", "tap_dodge", "needs_choice"],
+    criteria: {
+      choice_rounds: "A turn-based game made of written choices.",
+      tap_dodge: "A solo one-thumb game avoiding obstacles.",
+      needs_choice: "The prompt does not clearly fit either supported surface.",
+    },
   },
 };
 
@@ -15,8 +19,9 @@ const ResponseZ = z.object({
   answers: z.object({
     surface: z.object({
       type: z.literal("choice"),
-      answer: z.enum(["choice_rounds", "tap_dodge", "needs_choice"]),
+      choice: z.enum(["choice_rounds", "tap_dodge", "needs_choice"]),
       confidence: z.number().min(0).max(1),
+      probabilities: z.record(z.string(), z.number().min(0).max(1)),
     }),
   }),
   usage: z.object({ input_tokens: z.number(), output_tokens: z.number() }),
@@ -32,7 +37,7 @@ test("askJev sends a typed System One request and returns the parsed result", as
     async (url, init) => {
       request = { url: String(url), init };
       return new Response(JSON.stringify({
-        answers: { surface: { type: "choice", answer: "tap_dodge", confidence: 0.91 } },
+        answers: { surface: { type: "choice", choice: "tap_dodge", confidence: 0.91, probabilities: { choice_rounds: 0.04, tap_dodge: 0.95, needs_choice: 0.01 } } },
         usage: { input_tokens: 12, output_tokens: 3 },
       }));
     },
@@ -47,7 +52,7 @@ test("askJev sends a typed System One request and returns the parsed result", as
     state: { prompt: "Make pigeons dodge office chairs" },
     questions: Questions,
   });
-  assert.equal(result.answers.surface.answer, "tap_dodge");
+  assert.equal(result.answers.surface.choice, "tap_dodge");
 });
 
 test("askJev rejects a missing gateway key before making a request", async () => {

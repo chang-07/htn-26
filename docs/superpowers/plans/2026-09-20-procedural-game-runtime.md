@@ -129,7 +129,7 @@ git commit -m "feat(games): add procedural game definitions"
 **Interfaces:**
 - Produces `classifyGamePrompt(env, prompt, ask?)`, `gateRoute(route)`, and `generateProceduralDefinition(env, prompt, route)`.
 - `Route` is a tagged union: accepted `choice_rounds | tap_dodge`, `needs_choice`, or `copy_risk`.
-- The route accepts only one Jev choice question and one copy-risk Boolean question; confidence is the surface answer's confidence.
+- The route accepts one Jev Choice question and one copy-risk Noul question; confidence is the surface answer's confidence.
 
 - [ ] **Step 1: Write failing routing tests with injected Jev answers**
 
@@ -148,7 +148,7 @@ Run `npm run test:games`; expect failure because `game-routing.ts` does not exis
 
 - [ ] **Step 3: Implement the bounded Jev decision and gate**
 
-Use `askJev` with `surface` choices `choice_rounds`, `tap_dodge`, `needs_choice`; include definitions that distinguish a social/prompt-choice activity from a one-thumb obstacle activity. Ask `copyRisk` as a Boolean. Require confidence `>= 0.75`, and have gate functions return short fixed surface labels for chooser results. Do not ask Jev to generate alternatives.
+Use `askJev` with `surface` choices `choice_rounds`, `tap_dodge`, `needs_choice`; include definitions that distinguish a social/prompt-choice activity from a one-thumb obstacle activity. Ask `copyRisk` as a Noul and treat `noul >= 0.5` as a copy-risk result. Require confidence `>= 0.75`, and have gate functions return short fixed surface labels for chooser results. Do not ask Jev to generate alternatives.
 
 - [ ] **Step 4: Generate and validate the selected surface only**
 

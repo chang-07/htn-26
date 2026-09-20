@@ -55,9 +55,9 @@ prompt
   -> native surface renderer
 ```
 
-Jev receives a single bounded `surface` question with choices
-`choice_rounds`, `tap_dodge`, and `needs_choice`; and a separate Boolean
-copy-risk question. The chosen surface and Boolean must be interpreted by a
+Jev receives a single bounded `surface` Choice question with choices
+`choice_rounds`, `tap_dodge`, and `needs_choice`; and a separate Noul
+copy-risk question. The chosen surface and Noul probability must be interpreted by a
 deterministic gate:
 
 - `copyRisk = true` returns original alternatives and does not generate a
