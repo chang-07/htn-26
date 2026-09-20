@@ -462,7 +462,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/payfinished") {
     // What the pay workflow reports back, without a browser: {"chat":"demo","shop":"…","payer":"+1…","status":"dry_run","total":"USD $12.00"}
-    await agent.payFinished({ shop: shopKey(String(body.shop)), payer: String(body.from ?? body.payer), status: (body.status ?? "dry_run") as PayResult["status"], total: body.total });
+    await agent.payFinished({ shop: shopKey(String(body.shop)), payer: String(body.from ?? body.payer), status: (body.status ?? "dry_run") as PayResult["status"], total: body.total, ...(body.unsure ? { unsure: true } : {}) });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/tool") {

@@ -263,6 +263,15 @@ await check("with PAY_MOCK a dry run ends as a purchase: cart paid, marked as a 
   if (text.includes("pay.mocked")) expect(!!cart?.paidBy && cart.total === "USD $14.50", `mocked but cart is ${JSON.stringify(cart)}`);
   else expect(!cart?.paidBy, "a dry run marked the cart paid with PAY_MOCK off");
 });
+await check("with PAY_MOCK a checkout that could not start is mocked at the cart's total; an unsure one never is", async () => {
+  const c = chat("paymockfail");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/payfinished", { chat: c, shop: "example-store.com", from: "+15550007777", status: "failed", unsure: "1" });
+  expect(!(await dump(c)).state.carts[0].paidBy, "an unsure payment was mocked as paid");
+  await post("/api/dev/payfinished", { chat: c, shop: "example-store.com", from: "+15550007777", status: "failed" });
+  const cart = (await dump(c)).state.carts[0];
+  if ((await logs(c)).includes("pay.mocked")) expect(!!cart.paidBy && cart.total === "$12.00", `mocked but cart is ${JSON.stringify(cart)}`);
+});
 await check("\"i'll pay\" with no cart in the chat is ordinary conversation", async () => {
   const c = chat("paytext");
   await post("/api/dev/message", { chat: c, group: true, from: "+15550007777", text: "i'll pay" });
