@@ -5,9 +5,32 @@ import UIKit
 // driven by the server's redacted view (correct answers never arrive early).
 
 struct GameView_: Codable, Equatable {
-    struct Player: Codable, Equatable { let name: String; let score: Int; let answered: Bool }
+    struct Player: Codable, Equatable {
+        let name: String
+        let score: Int
+        let answered: Bool? = nil
+        let chosen: Bool? = nil
+        var hasAnswered: Bool { answered ?? chosen ?? false }
+    }
     struct Question: Codable, Equatable { let q: String; let options: [String]; let myAnswer: Int? }
     struct Reveal: Codable, Equatable { let q: String; let options: [String]; let correct: Int; let myAnswer: Int?; let gotIt: [String] }
+    struct Choice: Codable, Equatable { let id: String; let text: String }
+    struct ChoiceRound: Codable, Equatable {
+        let prompt: String
+        let choices: [Choice]
+        let myChoice: String?
+        let correctId: String?
+    }
+    struct TapDodge: Codable, Equatable {
+        struct Result: Codable, Equatable { let score: Int; let terminalReason: String }
+        let seed: Int
+        let durationMs: Int
+        let obstacleIntervalMs: Int
+        let obstacleSpeed: Int
+        let gapSize: Int
+        let result: Result?
+    }
+    struct Visual: Codable, Equatable { let mood: String; let accent: String; let icon: String }
     struct BjOutcome: Codable, Equatable { let name: String; let result: String; let delta: Int }
     struct Bj: Codable, Equatable {
         let myHand: [String]
@@ -18,18 +41,26 @@ struct GameView_: Codable, Equatable {
         let dealerTotal: Int?
         let outcomes: [BjOutcome]?
     }
-    let kind: String
-    let bj: Bj?
+    let gameType: String? = nil
+    let surface: String? = nil
+    let kind: String? = nil
+    let bj: Bj? = nil
     let id: String
     let title: String
     let topic: String
     let phase: String
     let round: Int
     let totalRounds: Int
+    let visual: Visual? = nil
     let players: [Player]
-    let question: Question?
-    let reveal: Reveal?
-    let joined: Bool
+    let question: Question? = nil
+    let reveal: Reveal? = nil
+    let choiceRound: ChoiceRound? = nil
+    let tapDodge: TapDodge? = nil
+    let joined: Bool? = nil
+
+    var isProcedural: Bool { gameType == "procedural" }
+    var isJoined: Bool { joined ?? false }
 }
 
 @MainActor
@@ -97,6 +128,15 @@ struct TriviaGameView: View {
     @ObservedObject var store: GameStore
     @ObservedObject var presentation: PresentationInfo
     @State private var name = ""
+    @State private var tapStartedAt: Date?
+    @State private var tapTrace: [Int] = []
+    @State private var tapElapsedMs = 0
+    @State private var tapTimer: Timer?
+    @State private var tapY = 500
+    @State private var tapVelocity = 0
+    @State private var tapScore = 0
+    @State private var tapHandledCount = 0
+    @State private var tapSubmitted = false
 
     var body: some View {
         Group {
@@ -115,7 +155,7 @@ struct TriviaGameView: View {
         .whimPage()
         .animation(.snappy(duration: 0.35), value: store.game)
         .onAppear { store.start() }
-        .onDisappear { store.stop() }
+        .onDisappear { stopTapRun(); store.stop() }
     }
 
     private func chip(_ text: String, tint: Color = .accentColor) -> some View {
@@ -123,6 +163,15 @@ struct TriviaGameView: View {
             .font(.caption.weight(.semibold)).foregroundStyle(tint)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(tint.opacity(0.12), in: Capsule())
+    }
+
+    private func gameTint(_ g: GameView_) -> Color {
+        switch g.visual?.accent {
+        case "coral": return .orange
+        case "violet": return .purple
+        case "mint": return Whim.green
+        default: return .accentColor
+        }
     }
 
     // MARK: inline bubble
@@ -154,18 +203,21 @@ struct TriviaGameView: View {
     private func expanded(_ g: GameView_) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil)
+                WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil, chipTint: g.isProcedural ? gameTint(g) : Whim.green)
                 Text(g.title).font(.system(.title3, design: .rounded).weight(.bold))
                 if g.phase != "lobby" && g.phase != "done" { ProgressDots(total: g.totalRounds, current: g.round) }
 
                 Group {
                     switch g.phase {
-                    case "lobby": lobby(g)
+                    case "lobby": g.isProcedural ? proceduralLobby(g) : lobby(g)
                     case "round":
-                        if g.kind == "blackjack" { bjRound(g) } else { round(g) }
+                        if g.isProcedural { proceduralRound(g) }
+                        else if g.kind == "blackjack" { bjRound(g) } else { round(g) }
                     case "reveal":
-                        if g.kind == "blackjack" { bjReveal(g) } else { reveal(g) }
-                    default: scoreboard(g, final: true)
+                        if g.isProcedural { proceduralReveal(g) }
+                        else if g.kind == "blackjack" { bjReveal(g) } else { reveal(g) }
+                    default:
+                        if g.isProcedural { proceduralDone(g) } else { scoreboard(g, final: true) }
                     }
                 }
                 .id(g.phase + String(g.round))
@@ -188,7 +240,7 @@ struct TriviaGameView: View {
                 Label(p.name, systemImage: "person.fill").font(.subheadline)
             }
         }
-        if !g.joined {
+        if !g.isJoined {
             HStack(spacing: 8) {
                 TextField("Your name", text: $name)
                     .textFieldStyle(.roundedBorder)
@@ -208,7 +260,7 @@ struct TriviaGameView: View {
             Text(q.q).font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             ForEach(Array(q.options.enumerated()), id: \.offset) { i, opt in
                 Button {
-                    guard g.joined, q.myAnswer == nil else { return }
+                    guard g.isJoined, q.myAnswer == nil else { return }
                     store.act("answer", body: ["choice": i])
                 } label: {
                     HStack {
@@ -223,10 +275,10 @@ struct TriviaGameView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(!g.joined || q.myAnswer != nil)
+                .disabled(!g.isJoined || q.myAnswer != nil)
             }
-            let waiting = g.players.filter { !$0.answered }.map(\.name)
-            Text(g.joined
+            let waiting = g.players.filter { !$0.hasAnswered }.map(\.name)
+            Text(g.isJoined
                  ? (q.myAnswer == nil ? "Pick one — first answer counts." : waiting.isEmpty ? "Everyone's in…" : "Waiting on \(waiting.joined(separator: ", "))")
                  : "Join in the lobby to play — watching for now.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -252,6 +304,250 @@ struct TriviaGameView: View {
             Button(g.round >= g.totalRounds ? "Final scores" : "Next question") { store.act("advance", body: [:]) }
                 .buttonStyle(PillButtonStyle())
         }
+    }
+
+    // MARK: generated runtime surfaces
+
+    @ViewBuilder
+    private func proceduralLobby(_ g: GameView_) -> some View {
+        if g.surface == "tap_dodge" {
+            Text("A short, original one-thumb run. Tap to stay in the gap.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            Button("Start the run") { store.act("advance", body: [:]) }
+                .buttonStyle(PillButtonStyle())
+        } else {
+            Text("\(g.totalRounds) quick rounds. Everyone picks on their own phone.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            if !g.players.isEmpty {
+                ForEach(g.players, id: \.name) { p in
+                    Label(p.name, systemImage: "person.fill").font(.subheadline)
+                }
+            }
+            if !g.isJoined {
+                HStack(spacing: 8) {
+                    TextField("Your name", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Join") { store.act("join", body: ["name": name]) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } else {
+                Button("Start the game") { store.act("advance", body: [:]) }
+                    .buttonStyle(PillButtonStyle())
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func proceduralRound(_ g: GameView_) -> some View {
+        if g.surface == "tap_dodge", let config = g.tapDodge {
+            tapDodgeRun(config)
+        } else if let round = g.choiceRound {
+            Text(round.prompt).font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            ForEach(round.choices, id: \.id) { choice in
+                Button {
+                    guard g.isJoined, round.myChoice == nil else { return }
+                    store.act("choose", body: ["choiceId": choice.id])
+                } label: {
+                    HStack {
+                        Text(choice.text).font(.subheadline.weight(.medium)).multilineTextAlignment(.leading)
+                        Spacer()
+                        if round.myChoice == choice.id { Image(systemName: "checkmark.circle.fill").foregroundStyle(gameTint(g)) }
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(round.myChoice == choice.id ? gameTint(g).opacity(0.12) : Color(uiColor: .secondarySystemBackground))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!g.isJoined || round.myChoice != nil)
+            }
+            let waiting = g.players.filter { !$0.hasAnswered }.map(\.name)
+            Text(g.isJoined
+                 ? (round.myChoice == nil ? "Pick one — the round flips when everyone is in." : waiting.isEmpty ? "Scoring…" : "Waiting on \(waiting.joined(separator: ", "))")
+                 : "Join in the lobby to play — watching for now.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func proceduralReveal(_ g: GameView_) -> some View {
+        if let round = g.choiceRound {
+            Text(round.prompt).font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            ForEach(round.choices, id: \.id) { choice in
+                HStack {
+                    Image(systemName: round.correctId == nil ? "person.2.fill" : choice.id == round.correctId ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(round.correctId == nil ? Color.secondary : choice.id == round.correctId ? .green : Color(uiColor: .tertiaryLabel))
+                    Text(choice.text).font(.subheadline.weight(round.correctId != nil && choice.id == round.correctId ? .semibold : .regular))
+                    Spacer()
+                    if round.myChoice == choice.id { Text("You").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                }
+                .padding(.vertical, 4)
+            }
+            scoreboard(g, final: false)
+            Button(g.round >= g.totalRounds ? "Final scores" : "Next round") { store.act("advance", body: [:]) }
+                .buttonStyle(PillButtonStyle())
+        }
+    }
+
+    @ViewBuilder
+    private func tapDodgeRun(_ config: GameView_.TapDodge) -> some View {
+        if let result = config.result {
+            tapResult(result)
+        } else if tapSubmitted {
+            VStack(spacing: 10) {
+                ProgressView()
+                Text("Checking your run…").font(.footnote).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 240)
+        } else if tapStartedAt != nil {
+            let seconds = max(0, Int(ceil(Double(config.durationMs - tapElapsedMs) / 1_000)))
+            VStack(spacing: 12) {
+                HStack {
+                    Label("\(seconds)s", systemImage: "timer").font(.subheadline.weight(.semibold)).monospacedDigit()
+                    Spacer()
+                    Text("\(tapScore)").font(.subheadline.weight(.bold)).monospacedDigit()
+                }
+                tapDodgeScene(config)
+                Button(action: recordTap) {
+                    Label("Tap to fly", systemImage: "hand.tap.fill").font(.title3.weight(.bold)).frame(maxWidth: .infinity).padding(.vertical, 16)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        } else {
+            Text("One thumb. Keep tapping through the gaps.").font(.subheadline).foregroundStyle(.secondary)
+            Button("Begin run") { startTapRun(config) }
+                .buttonStyle(PillButtonStyle())
+        }
+    }
+
+    private func tapDodgeScene(_ config: GameView_.TapDodge) -> some View {
+        GeometryReader { geo in
+            ZStack {
+                LinearGradient(colors: [Whim.greenDeep, Whim.green.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                let count = config.durationMs / config.obstacleIntervalMs + 1
+                ForEach(0..<count, id: \.self) { index in
+                    let spawn = index * config.obstacleIntervalMs
+                    let x = CGFloat(860 - (tapElapsedMs - spawn) * config.obstacleSpeed / 1_000) / 860 * geo.size.width
+                    let center = 180 + Int(randomUnit(seed: config.seed, index: index) * 640)
+                    let top = center - config.gapSize / 2
+                    let bottom = center + config.gapSize / 2
+                    if x > -32 && x < geo.size.width + 32 {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(.white.opacity(0.88))
+                            .frame(width: 28, height: max(0, CGFloat(top) / 1_000 * geo.size.height))
+                            .position(x: x, y: max(0, CGFloat(top) / 2_000 * geo.size.height))
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(.white.opacity(0.88))
+                            .frame(width: 28, height: max(0, geo.size.height - CGFloat(bottom) / 1_000 * geo.size.height))
+                            .position(x: x, y: CGFloat(bottom) / 1_000 * geo.size.height + max(0, geo.size.height - CGFloat(bottom) / 1_000 * geo.size.height) / 2)
+                    }
+                }
+                Image(systemName: "sparkles")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(.yellow)
+                    .position(x: 54, y: min(max(12, CGFloat(tapY) / 1_000 * geo.size.height), geo.size.height - 12))
+            }
+        }
+        .frame(height: 210)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func tapResult(_ result: GameView_.TapDodge.Result) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(result.terminalReason == "time" ? "Run complete" : "Run over", systemImage: result.terminalReason == "time" ? "flag.checkered" : "xmark.octagon.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(result.terminalReason == "time" ? .green : .orange)
+            Text("\(result.score)").font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
+            Text("points").font(.footnote).foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func proceduralDone(_ g: GameView_) -> some View {
+        if g.surface == "tap_dodge", let result = g.tapDodge?.result {
+            tapResult(result)
+        } else {
+            scoreboard(g, final: true)
+        }
+    }
+
+    private func startTapRun(_ config: GameView_.TapDodge) {
+        stopTapRun()
+        let started = Date()
+        tapStartedAt = started
+        tapTrace = []
+        tapElapsedMs = -50
+        tapY = 500
+        tapVelocity = 0
+        tapScore = 0
+        tapHandledCount = 0
+        tapSubmitted = false
+        advanceTapRun(config)
+        tapTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in advanceTapRun(config) }
+    }
+
+    private func recordTap() {
+        guard let started = tapStartedAt, let duration = store.game?.tapDodge?.durationMs else { return }
+        let elapsed = min(duration, max(tapElapsedMs + 50, Int(ceil(Date().timeIntervalSince(started) * 1_000 / 50)) * 50))
+        if tapTrace.last != elapsed { tapTrace.append(elapsed) }
+    }
+
+    private func advanceTapRun(_ config: GameView_.TapDodge) {
+        guard !tapSubmitted else { return }
+        let lastTick = config.durationMs / 50 * 50
+        let elapsed = min(lastTick, tapElapsedMs + 50)
+        tapElapsedMs = elapsed
+        while tapHandledCount < tapTrace.count && tapTrace[tapHandledCount] <= elapsed {
+            tapVelocity = -100
+            tapHandledCount += 1
+        }
+        tapVelocity += 12
+        tapY += tapVelocity
+        if tapY < 0 || tapY > 1_000 {
+            finishTapRun()
+            return
+        }
+        let count = config.durationMs / config.obstacleIntervalMs + 1
+        for index in 0..<count {
+            let cross = index * config.obstacleIntervalMs + 860_000 / config.obstacleSpeed
+            guard elapsed >= cross && elapsed < cross + 50 else { continue }
+            let center = 180 + Int(randomUnit(seed: config.seed, index: index) * 640)
+            let top = center - config.gapSize / 2
+            let bottom = center + config.gapSize / 2
+            if tapY < top || tapY > bottom {
+                finishTapRun()
+                return
+            }
+            tapScore += 100
+        }
+        if elapsed >= lastTick { finishTapRun() }
+    }
+
+    private func finishTapRun() {
+        guard !tapSubmitted else { return }
+        tapSubmitted = true
+        let trace = tapTrace
+        stopTapRun()
+        store.act("tap_replay", body: ["tapMs": trace])
+    }
+
+    private func randomUnit(seed: Int, index: Int) -> Double {
+        var value = UInt32(truncatingIfNeeded: seed) &+ UInt32(truncatingIfNeeded: index + 1) &* 0x6d2b79f5
+        value ^= value >> 16
+        value = value &* 0x85ebca6b
+        value ^= value >> 13
+        return Double(value) / 4_294_967_296
+    }
+
+    private func stopTapRun() {
+        tapTimer?.invalidate()
+        tapTimer = nil
+        tapStartedAt = nil
     }
 
     // MARK: blackjack
@@ -298,7 +594,7 @@ struct TriviaGameView: View {
                     Label("Bust", systemImage: "xmark.octagon.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.red)
                 } else if bj.myDone {
                     Text("Standing on \(bj.myTotal). Waiting on the table…").font(.footnote).foregroundStyle(.secondary)
-                } else if g.joined {
+                } else if g.isJoined {
                     HStack(spacing: 10) {
                         Button("Hit") { store.act("hit", body: [:]) }.buttonStyle(PillButtonStyle())
                         Button("Stand") { store.act("stand", body: [:]) }.buttonStyle(PillButtonStyle(prominent: false))
@@ -306,8 +602,8 @@ struct TriviaGameView: View {
                 } else {
                     Text("Join in the lobby to be dealt in next round.").font(.footnote).foregroundStyle(.secondary)
                 }
-                let waiting = g.players.filter { !$0.answered }.map(\.name)
-                if !waiting.isEmpty && g.joined && bj.myDone {
+                let waiting = g.players.filter { !$0.hasAnswered }.map(\.name)
+                if !waiting.isEmpty && g.isJoined && bj.myDone {
                     Text("Still playing: \(waiting.joined(separator: ", "))").font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -376,6 +672,9 @@ struct GameComposerView: View {
     @State private var working = false
     @State private var posted: String?
     @State private var error: String?
+    @State private var pendingPromptId: String?
+    @State private var surfaceChoices: [String] = []
+    @State private var copyRisk = false
 
     private var voter: String { "ios:" + (UIDevice.current.identifierForVendor?.uuidString ?? "unknown") }
 
@@ -384,11 +683,44 @@ struct GameComposerView: View {
             Label("Make a game", systemImage: "wand.and.stars")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if let posted {
-                Label("\"\(posted)\" — card posted to the chat", systemImage: "checkmark.seal.fill")
-                    .font(.subheadline.weight(.medium)).foregroundStyle(.green)
+                HStack {
+                    Label("\"\(posted)\" — card posted to the chat", systemImage: "checkmark.seal.fill")
+                        .font(.subheadline.weight(.medium)).foregroundStyle(.green)
+                    Spacer()
+                    Button("Another") { self.posted = nil }
+                        .font(.caption.weight(.semibold))
+                }
+            } else if let pendingPromptId {
+                Text(copyRisk ? "That is too close to an existing game. Pick an original format:" : "Pick a format and I’ll make it:")
+                    .font(.footnote).foregroundStyle(.secondary)
+                ForEach(surfaceChoices, id: \.self) { surface in
+                    Button {
+                        Task { await choose(surface, promptId: pendingPromptId) }
+                    } label: {
+                        HStack {
+                            Image(systemName: surface == "tap_dodge" ? "hand.tap.fill" : "checklist")
+                            Text(surface == "tap_dodge" ? "One-thumb dodge" : "Quick-choice group game")
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .disabled(working)
+                }
+                if working { ProgressView().frame(maxWidth: .infinity) }
+                Button("Start over") {
+                    self.pendingPromptId = nil
+                    self.surfaceChoices = []
+                    self.copyRisk = false
+                }
+                .font(.footnote.weight(.semibold))
             } else {
                 HStack(spacing: 8) {
-                    TextField("Trivia about…", text: $prompt)
+                    TextField("A game about…", text: $prompt)
                         .textFieldStyle(.roundedBorder)
                         .disabled(working)
                     Button {
@@ -400,16 +732,27 @@ struct GameComposerView: View {
                     .disabled(working || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 if working {
-                    Text("Cooking your game — about ten seconds…").font(.footnote).foregroundStyle(.secondary)
+                    Text("Choosing a safe format, then building it…").font(.footnote).foregroundStyle(.secondary)
                 }
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(.red)
                 }
             }
+            if let error, pendingPromptId != nil {
+                Text(error).font(.footnote).foregroundStyle(.red)
+            }
         }
     }
 
     private func create() async {
+        await send(["prompt": prompt, "voter": voter])
+    }
+
+    private func choose(_ surface: String, promptId: String) async {
+        await send(["promptId": promptId, "surface": surface, "voter": voter])
+    }
+
+    private func send(_ payload: [String: Any]) async {
         working = true
         defer { working = false }
         error = nil
@@ -417,12 +760,32 @@ struct GameComposerView: View {
         req.httpMethod = "POST"
         req.timeoutInterval = 30
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["prompt": prompt, "voter": voter])
-        struct Made: Codable { let id: String; let title: String }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        struct Made: Codable {
+            let status: String
+            let id: String?
+            let title: String?
+            let promptId: String?
+            let choices: [String]?
+            let alternatives: [String]?
+        }
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            posted = try JSONDecoder().decode(Made.self, from: data).title
+            let made = try JSONDecoder().decode(Made.self, from: data)
+            switch made.status {
+            case "created":
+                posted = made.title ?? "Your game"
+                pendingPromptId = nil
+            case "needs_choice", "copy_risk":
+                guard let promptId = made.promptId, !promptId.isEmpty else { throw URLError(.cannotParseResponse) }
+                pendingPromptId = promptId
+                surfaceChoices = made.choices ?? made.alternatives ?? []
+                copyRisk = made.status == "copy_risk"
+                if surfaceChoices.isEmpty { throw URLError(.cannotParseResponse) }
+            default:
+                throw URLError(.cannotParseResponse)
+            }
         } catch {
             self.error = "Couldn't make that one — try a different topic."
         }

@@ -63,11 +63,11 @@ npm run llm      # terminal 2 — only for the "Claude plan" row below
 Game checks:
 
 ```sh
-npm run test:games    # deterministic Blackjack engine checks; no model or deploy
+npm run test:games    # deterministic runtime and Jev-gate checks; no model or deploy
 npm run eval:games    # live game-generation prompts; run npm run dev first
 ```
 
-`eval:games` scores the selected game type and playable contract rather than
+`eval:games` scores the selected generated surface and playable contract rather than
 the model's exact wording. It creates simulator chats only, so it neither
 deploys nor sends a real message.
 

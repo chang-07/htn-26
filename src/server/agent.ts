@@ -31,13 +31,35 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
-import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
+import { actProceduralGame, isProceduralGame, newProceduralGame, viewProceduralGame, type ProceduralAction, type ProceduralGameState } from "./procedural-game";
+import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameSurface, type PendingRoute } from "./game-routing";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
 import { redirectFor, travelKindOf } from "./research-routing";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
+
+type StoredGame = GameState | ProceduralGameState;
+type LegacyGameAction =
+  | { type: "join"; name: string }
+  | { type: "answer"; choice: number }
+  | { type: "hit" }
+  | { type: "stand" }
+  | { type: "advance" };
+type GameAction = LegacyGameAction | ProceduralAction;
+type CreatedGame = { status: "created"; id: string; title: string; route: AcceptedRoute };
+type PendingGameResponse =
+  | { status: "needs_choice"; promptId: string; choices: GameSurface[]; route: PendingRoute }
+  | { status: "copy_risk"; promptId: string; alternatives: GameSurface[]; route: CopyRiskRoute };
+type GameCreateResponse = CreatedGame | PendingGameResponse;
+
+const PENDING_GAME_TTL_MS = 10 * 60 * 1_000;
+
+function isProceduralAction(action: GameAction): action is ProceduralAction {
+  return action.type === "join" || action.type === "choose" || action.type === "advance" || action.type === "tap_replay";
+}
 
 const SYSTEM = `You are Whim, a planning agent living inside an iMessage group chat. You help the
 group brainstorm a hangout and then actually make it happen: pick a place, agree
@@ -1818,20 +1840,30 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   // ------------------------------------------------------------------ games
 
-  private loadGame(id: string): GameState | null {
+  private loadGame(id: string): StoredGame | null {
     const row = this.sql<{ json: string }>`SELECT json FROM games WHERE id = ${id}`[0];
-    return row ? (JSON.parse(row.json) as GameState) : null;
+    return row ? (JSON.parse(row.json) as StoredGame) : null;
   }
 
-  private saveGame(g: GameState) {
+  private saveGame(g: StoredGame) {
     this.sql`INSERT INTO games (id, json, ts) VALUES (${g.id}, ${JSON.stringify(g)}, ${Date.now()})
              ON CONFLICT(id) DO UPDATE SET json = excluded.json`;
   }
 
-  /** Prompt -> spec -> stored game -> card in the thread. RPC from /api/widget and the make_game tool. */
-  async gameCreate(topic: string, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
-    const spec = await generateGame(this.env, topic.slice(0, 140));
-    return this.createGame(spec, creator, creatorName);
+  /** Prompt -> Jev gate -> surface definition -> card. Never chooses a surface after an abstention. */
+  async gameCreate(prompt: string, creator: string, creatorName?: string): Promise<GameCreateResponse> {
+    const route = await classifyGamePrompt(this.env, prompt);
+    if (route.status !== "accepted") return this.pendingGamePrompt(prompt, route);
+    return this.createProceduralGame(prompt, route, creator, creatorName);
+  }
+
+  /** A human-selected surface resumes an opaque, short-lived prompt. */
+  async gameChooseSurface(promptId: string, surface: GameSurface, creator: string, creatorName?: string): Promise<GameCreateResponse> {
+    if (!GAME_SURFACES.includes(surface)) throw new Error("Unknown game surface");
+    const prompt = this.takePendingGamePrompt(promptId);
+    if (!prompt) return { status: "needs_choice", promptId: "", choices: [...GAME_SURFACES], route: { status: "needs_choice", choices: [...GAME_SURFACES], confidence: 0, decisionVersion: 1 } };
+    const route: AcceptedRoute = { status: "accepted", surface, confidence: 1, decisionVersion: 1 };
+    return this.createProceduralGame(prompt, route, creator, creatorName);
   }
 
   /** Local smoke-test entry point. The caller supplies an already validated spec, so no model is involved. */
@@ -1849,15 +1881,53 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return { id, title: spec.title };
   }
 
+  private async createProceduralGame(prompt: string, route: AcceptedRoute, creator: string, creatorName?: string): Promise<CreatedGame> {
+    const definition = await generateProceduralDefinition(this.env, prompt, route);
+    const id = crypto.randomUUID().slice(0, 12);
+    let game = newProceduralGame(id, definition, creator);
+    if (creatorName && definition.surface === "choice_rounds") game = actProceduralGame(game, creator, { type: "join", name: creatorName });
+    this.saveGame(game);
+    this.note("info", "game.created", { id, title: definition.title, surface: definition.surface, routeConfidence: route.confidence });
+    await timed("agent", "game.card", { id }, () => sendGameCard(this.env, this.name, this.name, id, definition.title, definition.topic), this.note).catch(() => undefined);
+    return { status: "created", id, title: definition.title, route };
+  }
+
+  private pendingGamePrompt(prompt: string, route: PendingRoute | CopyRiskRoute): PendingGameResponse {
+    const promptId = crypto.randomUUID().slice(0, 12);
+    this.setMeta(`pending_game_prompt:${promptId}`, JSON.stringify({ prompt: prompt.trim().slice(0, 500), expiresAt: Date.now() + PENDING_GAME_TTL_MS }));
+    return route.status === "copy_risk"
+      ? { status: "copy_risk", promptId, alternatives: route.alternatives, route }
+      : { status: "needs_choice", promptId, choices: route.choices, route };
+  }
+
+  private takePendingGamePrompt(promptId: string): string | null {
+    const key = `pending_game_prompt:${promptId}`;
+    const raw = this.getMeta(key);
+    this.setMeta(key, "");
+    if (!raw) return null;
+    try {
+      const record = JSON.parse(raw) as { prompt?: unknown; expiresAt?: unknown };
+      return typeof record.prompt === "string" && typeof record.expiresAt === "number" && record.expiresAt > Date.now() ? record.prompt : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** The redacted per-player view; correct answers never leave early. */
   async gameFetch(id: string, voter: string) {
     const g = this.loadGame(id);
-    return g ? gameView(g, voter) : null;
+    return g ? (isProceduralGame(g) ? viewProceduralGame(g, voter) : gameView(g, voter)) : null;
   }
 
-  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "hit" } | { type: "stand" } | { type: "advance" }) {
+  async gameAct(id: string, voter: string, act: GameAction) {
     let g = this.loadGame(id);
     if (!g) return null;
+    if (isProceduralGame(g)) {
+      if (!isProceduralAction(act)) throw new Error("That action is unavailable for this game");
+      const next = actProceduralGame(g, voter, act);
+      this.saveGame(next);
+      return viewProceduralGame(next, voter);
+    }
     if (act.type === "join") g = joinGame(g, voter, act.name);
     if (act.type === "answer") g = gameAnswer(g, voter, act.choice);
     if (act.type === "hit") g = bjHit(g, voter);
@@ -2899,7 +2969,9 @@ this.rememberCardId(id);
         try {
           // "let's play a game" names no topic, and the model may leave it out too.
           const made = await this.gameCreate(topic?.trim() || this.state.title || "general knowledge, a fun mix", "agent");
-          return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
+          if (made.status === "created") return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
+          if (made.status === "copy_risk") return "That is too close to an existing game. Offer an original quick-choice game or an original one-thumb dodge game instead.";
+          return "Ask one short question: should it be a quick-choice group game or an original one-thumb dodge game? Do not say a card was posted.";
         } catch (err) {
           this.note("warn", "game.generate_failed", errorFields(err));
           return "The game generator came up empty. Say so and offer to try a different topic.";

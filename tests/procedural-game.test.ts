@@ -6,6 +6,7 @@ import {
   newProceduralGame,
   replayTapRun,
   simulateDefinition,
+  viewProceduralGame,
 } from "../src/server/procedural-game";
 
 const choiceDefinition = {
@@ -46,7 +47,6 @@ test("a plurality definition reaches done through legal actions", () => {
   game = actProceduralGame(game, "luka", { type: "advance" });
   game = actProceduralGame(game, "luka", { type: "choose", choiceId: "trail" });
   game = actProceduralGame(game, "chang", { type: "choose", choiceId: "trail" });
-  game = actProceduralGame(game, "luka", { type: "advance" });
 
   assert.equal(game.phase, "reveal");
   assert.deepEqual(game.scores, { luka: 100, chang: 100 });
@@ -82,4 +82,23 @@ test("tap replays compute a stable score and reject noncanonical timestamps", ()
   assert.deepEqual(first, second);
   assert.throws(() => replayTapRun(ProceduralDefinitionZ.parse(tapDefinition), [740, 310]), /ascending/);
   assert.throws(() => replayTapRun(ProceduralDefinitionZ.parse(tapDefinition), [16_000]), /within the run/);
+});
+
+test("the native view gets visual tokens and never gets a correct answer before reveal", () => {
+  const definition = ProceduralDefinitionZ.parse({
+    ...choiceDefinition,
+    scoring: "correct",
+    rounds: [{ ...choiceDefinition.rounds[0], correctId: "chips" }],
+  });
+  let game = newProceduralGame("view-1", definition, "luka");
+  game = actProceduralGame(game, "luka", { type: "join", name: "Luka" });
+  game = actProceduralGame(game, "luka", { type: "advance" });
+
+  const round = viewProceduralGame(game, "luka");
+  assert.equal(round.joined, true);
+  assert.equal(round.visual.accent, "violet");
+  assert.equal(round.choiceRound?.correctId, undefined);
+
+  game = actProceduralGame(game, "luka", { type: "choose", choiceId: "chips" });
+  assert.equal(viewProceduralGame(game, "luka").choiceRound?.correctId, "chips");
 });

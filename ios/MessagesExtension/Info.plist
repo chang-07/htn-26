@@ -31,5 +31,7 @@
 		<string>IBMPlexMono-Regular.ttf</string>
 		<string>IBMPlexMono-Medium.ttf</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Whim uses the camera only to turn a hand pinch into a jump in the infinite runner.</string>
 </dict>
 </plist>

@@ -4,7 +4,7 @@ import SwiftUI
 // tapped. Native, useful, and never the website's signup flow.
 
 enum HomeRoute {
-    case plan, cart, playlist
+    case plan, cart, playlist, runner
 }
 
 struct HomeView: View {
@@ -43,6 +43,8 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
+
+                quick("Infinite camera runner", icon: "figure.run") { onRoute(.runner) }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .topLeading)

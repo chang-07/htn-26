@@ -9,8 +9,8 @@ import {
   type ProceduralDefinition,
 } from "./procedural-game";
 
-const surfaces = ["choice_rounds", "tap_dodge"] as const;
-type Surface = (typeof surfaces)[number];
+export const GAME_SURFACES = ["choice_rounds", "tap_dodge"] as const;
+export type GameSurface = (typeof GAME_SURFACES)[number];
 const MIN_CONFIDENCE = 0.75;
 
 const RouteAnswersZ = z.object({
@@ -28,12 +28,12 @@ const RouteAnswersZ = z.object({
   }),
 });
 
-export type AcceptedRoute = { status: "accepted"; surface: Surface; confidence: number; decisionVersion: 1 };
-export type PendingRoute = { status: "needs_choice"; choices: Surface[]; confidence: number; decisionVersion: 1 };
-export type CopyRiskRoute = { status: "copy_risk"; alternatives: Surface[]; confidence: number; decisionVersion: 1 };
+export type AcceptedRoute = { status: "accepted"; surface: GameSurface; confidence: number; decisionVersion: 1 };
+export type PendingRoute = { status: "needs_choice"; choices: GameSurface[]; confidence: number; decisionVersion: 1 };
+export type CopyRiskRoute = { status: "copy_risk"; alternatives: GameSurface[]; confidence: number; decisionVersion: 1 };
 export type GameRoute = AcceptedRoute | PendingRoute | CopyRiskRoute;
 
-export type RouteDecision = { surface: Surface | "needs_choice"; confidence: number; copyRiskProbability: number };
+export type RouteDecision = { surface: GameSurface | "needs_choice"; confidence: number; copyRiskProbability: number };
 type Evaluator = (env: JevEnv, state: unknown, questions: Record<string, unknown>) => Promise<unknown>;
 type DefinitionGenerator = (env: Env, schema: z.ZodType, system: string, user: string) => Promise<unknown>;
 
@@ -57,7 +57,7 @@ const routeQuestions = {
   },
 };
 
-const choices = (): Surface[] => [...surfaces];
+const choices = (): GameSurface[] => [...GAME_SURFACES];
 
 export function gateGameRoute(decision: RouteDecision): GameRoute {
   if (decision.copyRiskProbability >= 0.5) {
@@ -73,7 +73,7 @@ const defaultEvaluator: Evaluator = (env, state, questions) => askJev(env, state
 
 export async function classifyGamePrompt(env: JevEnv, prompt: string, evaluate: Evaluator = defaultEvaluator): Promise<GameRoute> {
   try {
-    const result = RouteAnswersZ.parse(await evaluate(env, { prompt: prompt.trim().slice(0, 500), surfaces }, routeQuestions));
+    const result = RouteAnswersZ.parse(await evaluate(env, { prompt: prompt.trim().slice(0, 500), surfaces: GAME_SURFACES }, routeQuestions));
     return gateGameRoute({
       surface: result.answers.surface.choice,
       confidence: result.answers.surface.confidence,
@@ -97,7 +97,7 @@ export async function generateProceduralDefinition(
   route: AcceptedRoute,
   generate: DefinitionGenerator = defaultDefinitionGenerator,
 ): Promise<ProceduralDefinition> {
-  if (route.status !== "accepted" || !surfaces.includes(route.surface)) throw new Error("Generation requires an accepted route");
+  if (route.status !== "accepted" || !GAME_SURFACES.includes(route.surface)) throw new Error("Generation requires an accepted route");
   const schema = route.surface === "choice_rounds" ? ChoiceRoundsDefinitionZ : TapDodgeDefinitionZ;
   const value = schema.parse(await generate(
     env,

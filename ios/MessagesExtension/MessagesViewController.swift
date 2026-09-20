@@ -115,11 +115,18 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             let known = recallChat()
             let base = known?.base ?? homeURL
             host(AnyView(HomeView(base: base, chat: known?.chat, presentation: presentation, onRoute: { [weak self] route in
-                guard let self, let known = self.recallChat() else { return }
+                guard let self else { return }
                 switch route {
-                case .plan: self.present(url: known.base.appendingPathComponent("w/\(known.chat)"))
-                case .playlist: self.present(url: known.base.appendingPathComponent("music/\(known.chat)"))
+                case .runner:
+                    self.host(AnyView(InfiniteRunnerView(presentation: self.presentation)))
+                case .plan:
+                    guard let known = self.recallChat() else { return }
+                    self.present(url: known.base.appendingPathComponent("w/\(known.chat)"))
+                case .playlist:
+                    guard let known = self.recallChat() else { return }
+                    self.present(url: known.base.appendingPathComponent("music/\(known.chat)"))
                 case .cart:
+                    guard let known = self.recallChat() else { return }
                     var comps = URLComponents(url: known.base.appendingPathComponent("w/\(known.chat)"), resolvingAgainstBaseURL: false)!
                     comps.queryItems = [URLQueryItem(name: "cart", value: "any")]
                     self.present(url: comps.url!)

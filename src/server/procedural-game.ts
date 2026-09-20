@@ -94,7 +94,9 @@ export type ProceduralGameView = {
   phase: ProceduralPhase;
   round: number;
   totalRounds: number;
+  visual: ProceduralDefinition["visual"];
   players: { name: string; score: number; chosen: boolean }[];
+  joined: boolean;
   choiceRound?: { prompt: string; choices: { id: string; text: string }[]; myChoice: string | null; correctId?: string };
   tapDodge?: Omit<TapDodgeDefinition, "version" | "surface" | "title" | "topic" | "visual"> & { result?: TapResult };
 };
@@ -177,7 +179,7 @@ export function actProceduralGame(state: ProceduralGameState, voter: string, act
     if (!round.choices.some((choice) => choice.id === action.choiceId)) throw new Error("Choice is unavailable");
     const next = copy(state);
     next.choices[round.id] = { ...(next.choices[round.id] ?? {}), [voter]: action.choiceId };
-    return next;
+    return Object.keys(next.players).every((player) => next.choices[round.id]?.[player]) ? completeChoiceRound(next) : next;
   }
   if (state.spec.surface !== "tap_dodge" || state.phase !== "round") throw new Error("Tap replay is not active");
   return { ...state, phase: "done", tapResult: replayTapRun(state.spec, action.tapMs) };
@@ -268,7 +270,9 @@ export function viewProceduralGame(state: ProceduralGameState, voter: string): P
     phase: state.phase,
     round: state.round,
     totalRounds: state.spec.surface === "choice_rounds" ? state.spec.rounds.length : 1,
+    visual: state.spec.visual,
     players,
+    joined: !!state.players[voter],
   };
   if (state.spec.surface === "choice_rounds" && state.round > 0) {
     const round = currentRound(state);

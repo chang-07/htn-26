@@ -26,6 +26,7 @@ import { findEvents } from "./sources/events";
 import { flightStatus } from "./sources/flight-status";
 import { orderStatus } from "./sources/order-status";
 import type { FlightStatus } from "./sources/types";
+import { GAME_SURFACES, type GameSurface } from "./game-routing";
 
 import { PlanAgent as PlanAgentBase } from "./agent";
 export type PlanAgent = PlanAgentBase;
@@ -94,13 +95,18 @@ export default Sentry.withSentry(sentryOptions, {
       const chat = decodeURIComponent(chatEnc ?? "");
       if (!chat) return new Response("Not found", { status: 404 });
       const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
-      // Games: create from a prompt, fetch the redacted view, act (join/answer/advance).
+      // Games: prompt creation can produce a game or a safe surface picker; card views are redacted per player.
       if (action === "game") {
         if (!extra && request.method === "POST") {
-          const body = (await request.json().catch(() => ({}))) as { prompt?: string; voter?: string; name?: string };
-          if (!body.prompt || !body.voter) return new Response("prompt and voter are required", { status: 400 });
+          const body = (await request.json().catch(() => ({}))) as { prompt?: string; promptId?: string; surface?: string; voter?: string; name?: string };
+          if (!body.voter) return new Response("voter is required", { status: 400 });
           try {
-            const made = await agent.gameCreate(body.prompt, body.voter, body.name);
+            const made = typeof body.prompt === "string" && body.prompt.trim()
+              ? await agent.gameCreate(body.prompt, body.voter, body.name)
+              : typeof body.promptId === "string" && GAME_SURFACES.includes(body.surface as GameSurface)
+                ? await agent.gameChooseSurface(body.promptId, body.surface as GameSurface, body.voter, body.name)
+                : null;
+            if (!made) return new Response("prompt or promptId and surface are required", { status: 400 });
             return Response.json(made);
           } catch (err) {
             return new Response(err instanceof Error ? err.message : "generation failed", { status: 502 });
@@ -111,18 +117,24 @@ export default Sentry.withSentry(sentryOptions, {
           return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
         }
         if (extra && sub && request.method === "POST") {
-          const body = (await request.json().catch(() => ({}))) as { voter?: string; name?: string; choice?: number };
+          const body = (await request.json().catch(() => ({}))) as { voter?: string; name?: string; choice?: number; choiceId?: string; tapMs?: unknown };
           if (!body.voter) return new Response("voter is required", { status: 400 });
           const act =
             sub === "join" ? { type: "join" as const, name: body.name ?? "" }
             : sub === "answer" ? { type: "answer" as const, choice: Number(body.choice) }
+            : sub === "choose" && typeof body.choiceId === "string" ? { type: "choose" as const, choiceId: body.choiceId }
             : sub === "hit" ? { type: "hit" as const }
             : sub === "stand" ? { type: "stand" as const }
             : sub === "advance" ? { type: "advance" as const }
+            : sub === "tap_replay" && Array.isArray(body.tapMs) && body.tapMs.every(Number.isInteger) ? { type: "tap_replay" as const, tapMs: body.tapMs as number[] }
             : null;
-          if (!act) return new Response("Not found", { status: 404 });
-          const v = await agent.gameAct(extra, body.voter, act);
-          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+          if (!act) return new Response("Invalid game action", { status: 400 });
+          try {
+            const v = await agent.gameAct(extra, body.voter, act);
+            return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+          } catch (err) {
+            return new Response(err instanceof Error ? err.message : "Invalid game action", { status: 400 });
+          }
         }
         return new Response("Not found", { status: 404 });
       }
