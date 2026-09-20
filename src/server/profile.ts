@@ -12,8 +12,8 @@ import { TICKET_CSS, TICKET_FONTS } from "../theme";
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-const FIELDS: { key: keyof Profile & string; label: string; hint: string; long?: boolean }[] = [
-  { key: "name", label: "What you go by", hint: "Maya" },
+const FIELDS: { key: keyof Profile & string; label: string; hint: string; long?: boolean; auto?: string }[] = [
+  { key: "name", label: "What you go by", hint: "Maya", auto: "nickname" },
   { key: "area", label: "Where you're based", hint: "Neighbourhood or city" },
   { key: "diet", label: "Food rules", hint: "Vegetarian, halal, no shellfish, none…" },
   { key: "budget", label: "A normal night out costs", hint: "$20, $50, whatever it takes" },
@@ -26,7 +26,7 @@ function page(body: string, done = false) {
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light"><title>Your profile</title>
-<link rel="stylesheet" href="${TICKET_FONTS}">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="${TICKET_FONTS}">
 <style>html,body{margin:0;background:${done ? "#1f5f4f" : "#efe7d6"};}${TICKET_CSS}</style></head>
 <body><div class="tk-page${done ? " is-done" : ""}"><div class="tk-wrap">${body}</div></div></body></html>`,
     { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
@@ -38,7 +38,7 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
   const found = token ? await people(env).byToken(token) : null;
   if (!found) {
     return page(`<div class="tk-meta">Profile</div><h1 class="tk-title">This link isn't valid</h1>
-      <hr class="tk-perf"><p style="margin:0">Text the planner "profile" and it will send you a fresh one.</p>`);
+      <hr class="tk-perf"><p class="tk-lede" style="margin:0">Text the planner "profile" and it will send you a fresh one.</p>`);
   }
   const { handle, profile } = found;
   const wantsJson = url.searchParams.get("json") === "1";
@@ -95,13 +95,13 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
     return `<label class="tk-field"><span class="tk-meta">${f.label}</span>${
       f.long
         ? `<textarea id="${f.key}" name="${f.key}" placeholder="${esc(f.hint)}">${value}</textarea>`
-        : `<input id="${f.key}" type="text" name="${f.key}" value="${value}" placeholder="${esc(f.hint)}">`
+        : `<input id="${f.key}" type="text" name="${f.key}" value="${value}" placeholder="${esc(f.hint)}" autocomplete="${f.auto ?? "off"}" enterkeyhint="next">`
     }</label>`;
   }).join("");
 
   return page(`<div class="tk-meta">Your profile</div>
     <h1 class="tk-title">So the plans fit you</h1>
-    <p style="margin:14px 0 0">Read before anything is suggested, in every group chat you're in. Fill in what you like and skip the rest.</p>
+    <p class="tk-lede">Read before anything is suggested, in every group chat you're in. Fill in what you like and skip the rest.</p>
     <hr class="tk-perf">
     <form class="tk-form" method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving';">
       ${inputs}
@@ -114,14 +114,14 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
 }
 
 const SHIP_FIELDS = [
-  { key: "name", label: "Full name", hint: "As it should appear on the parcel", auto: "name" },
-  { key: "email", label: "Email", hint: "The store sends the receipt here", auto: "email" },
-  { key: "line1", label: "Address", hint: "Street and number", auto: "address-line1" },
-  { key: "line2", label: "Apartment, unit", hint: "Optional", auto: "address-line2" },
-  { key: "city", label: "City", hint: "", auto: "address-level2" },
-  { key: "region", label: "State or province", hint: "Two letters: ON, CA, NY", auto: "address-level1" },
-  { key: "postal", label: "Postal or ZIP code", hint: "", auto: "postal-code" },
-  { key: "country", label: "Country", hint: "Two letters: CA or US", auto: "country" },
+  { key: "name", label: "Full name", hint: "As it should appear on the parcel", auto: "name", type: "text" },
+  { key: "email", label: "Email", hint: "The store sends the receipt here", auto: "email", type: "email" },
+  { key: "line1", label: "Address", hint: "Street and number", auto: "address-line1", type: "text" },
+  { key: "line2", label: "Apartment, unit", hint: "Optional", auto: "address-line2", type: "text" },
+  { key: "city", label: "City", hint: "", auto: "address-level2", type: "text" },
+  { key: "region", label: "State or province", hint: "Two letters: ON, CA, NY", auto: "address-level1", type: "text", caps: true },
+  { key: "postal", label: "Postal or ZIP code", hint: "", auto: "postal-code", type: "text", caps: true },
+  { key: "country", label: "Country", hint: "Two letters: CA or US", auto: "country", type: "text", caps: true },
 ] as const;
 
 /**
@@ -130,9 +130,20 @@ const SHIP_FIELDS = [
  * and it never reaches the model. Saving it resumes the payment that asked.
  */
 async function handleShipTo(request: Request, url: URL, env: Env, handle: string, profile: Profile): Promise<Response> {
+  const chat = url.searchParams.get("chat");
+  const agent = chat ? await getAgentByName<Env, PlanAgent>(env.PlanAgent, chat) : null;
+  // An event's orders share one address, kept by the chat. It arrives filled in
+  // for this person to check; "?own=1" is them sending this order home instead.
+  const delivery = agent ? await agent.deliveryFor(handle).catch(() => null) : null;
+  const own = url.searchParams.get("own") === "1";
+  const toEvent = !!delivery && !own;
+
+  let filled: Record<string, string | undefined> = toEvent
+    ? { ...delivery.address, name: (profile.shipTo ?? profile.contact)?.name, email: (profile.shipTo ?? profile.contact)?.email }
+    : { ...profile.shipTo };
   const wantsJson = url.searchParams.get("json") === "1";
   if (wantsJson && request.method === "GET") {
-    return Response.json({ shipTo: profile.shipTo ?? null }, { headers: { "cache-control": "no-store" } });
+    return Response.json({ shipTo: toEvent ? filled : (profile.shipTo ?? null) }, { headers: { "cache-control": "no-store" } });
   }
   let problem = "";
   if (request.method === "POST") {
@@ -143,32 +154,52 @@ async function handleShipTo(request: Request, url: URL, env: Env, handle: string
     else if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(shipTo.email)) problem = "That email doesn't look right.";
     else if (!/^[A-Z]{2}$/.test(shipTo.country) || !/^[A-Z]{2,3}$/.test(shipTo.region)) problem = "Use two-letter codes for the country and the state or province.";
     else {
-      await people(env).save(handle, { shipTo });
-      log("info", "people", "ship_to.saved", { who: mask(handle), country: shipTo.country });
-      const chat = url.searchParams.get("chat");
-      if (chat) {
-        const agent = await getAgentByName<Env, PlanAgent>(env.PlanAgent, chat);
-        // Only resumes if that chat really is waiting on this person: the agent checks.
-        await agent.payResume(handle).catch((err) => log("warn", "people", "pay.resume_failed", { error: String(err).slice(0, 200) }));
+      if (toEvent) {
+        // The address is the event's, so it is saved to the chat; only who they are stays with them.
+        const { name, email, ...address } = shipTo;
+        await people(env).save(handle, { contact: { name, email } });
+        await agent!.deliverySaved(handle, address);
+      } else {
+        await people(env).save(handle, { shipTo });
+        if (delivery) await agent!.deliveryDeclined(handle);
       }
+      log("info", "people", "ship_to.saved", { who: mask(handle), country: shipTo.country, event: toEvent });
+      // Only resumes if that chat really is waiting on this person: the agent checks.
+      if (agent) await agent.payResume(handle).catch((err) => log("warn", "people", "pay.resume_failed", { error: String(err).slice(0, 200) }));
       if (wantsJson) return Response.json({ ok: true });
       return page(`<div class="tk-meta">Saved</div><h1 class="tk-title">That's where it ships</h1>
-        <hr class="tk-perf"><p style="margin:0">Back to the chat: the planner carries on from here. Open this link again to change the address, or text "forget me" to delete it.</p>`, true);
+        <hr class="tk-perf"><p style="margin:0">${
+          toEvent
+            ? "Back to the chat: the planner carries on from here. Anyone else who pays for this event gets the same address to check."
+            : 'Back to the chat: the planner carries on from here. Open this link again to change the address, or text "forget me" to delete it.'
+        }</p>`, true);
     }
     if (wantsJson) return Response.json({ ok: false, problem });
-    profile = { ...profile, shipTo };
+    filled = shipTo;
   }
   const inputs = SHIP_FIELDS.map(
-    (f) => `<label class="tk-field"><span class="tk-meta">${f.label}</span><input id="${f.key}" type="text" name="${f.key}" autocomplete="${f.auto}" value="${esc(String(profile.shipTo?.[f.key] ?? ""))}" placeholder="${esc(f.hint)}"></label>`,
+    // The event's address must survive the keyboard's autofill, which would swap in their own.
+    (f) => `<label class="tk-field"><span class="tk-meta">${f.label}</span><input id="${f.key}" type="${f.type}" name="${f.key}" autocomplete="${toEvent && f.key !== "name" && f.key !== "email" ? "off" : f.auto}" enterkeyhint="next"${"caps" in f && f.caps ? ' autocapitalize="characters"' : ""}${f.type === "email" ? ' inputmode="email" autocapitalize="off"' : ""} value="${esc(String(filled[f.key] ?? ""))}" placeholder="${esc(f.hint)}"></label>`,
   ).join("");
+  const at = delivery?.label ? esc(delivery.label) : "the event";
+  const ownUrl = `${url.pathname}?chat=${encodeURIComponent(chat ?? "")}&own=1`;
   return page(`<div class="tk-meta">Delivery</div>
-    <h1 class="tk-title">Where should it ship?</h1>
-    <p style="margin:14px 0 0">Asked once. Used only to fill in a store's checkout when you offer to pay for something.</p>
+    <h1 class="tk-title">${toEvent ? (delivery.confirmed || delivery.address ? `Ship it to ${at}?` : "Where is the event?") : "Where should it ship?"}</h1>
+    <p class="tk-lede">${
+      toEvent
+        ? delivery.confirmed
+          ? "Everything for this event goes to one place. Check it, fix anything that's off, and save."
+          : delivery.address
+            ? "Filled in from what the venue's own page says, so check every line before you save. Tell the venue to expect a parcel."
+            : "Everything for this event goes to one place. Type it once and everyone else who pays gets it filled in."
+        : "Asked once. Used only to fill in a store's checkout when you offer to pay for something."
+    }</p>
     <hr class="tk-perf">
     <form class="tk-form" method="post" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Saving';">
       ${inputs}
       ${problem ? `<p class="tk-error" style="margin:0">${esc(problem)}</p>` : ""}
-      <button class="tk-action" type="submit">Save</button>
+      <button class="tk-action" type="submit">${toEvent ? "Ship here" : "Save"}</button>
+      ${toEvent ? `<p class="tk-small" style="margin:0"><a href="${esc(ownUrl)}">Send this order to my own address instead</a></p>` : ""}
       <p class="tk-small" style="margin:0">No card details here, ever: those stay in your wallet. Only you have this link.</p>
     </form>`);
 }

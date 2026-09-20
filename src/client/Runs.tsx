@@ -1,8 +1,11 @@
+import { mergeRunState, RUN_TIMEOUT_MESSAGE } from "../shared/run-timeout";
+import { runLabel } from "../shared/run-labels";
+import { RunDiagnostics } from "./RunDiagnostics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { RunEventRow, RunSummary } from "../server/runs";
-import { RunGraph } from "./RunGraph";
-import { FONT_LINK, FieldList, MONO, SERVICES, THEME_CSS, UI_FONT, btn, clock, dur, levelColor, servicesForTools } from "./ui";
+import { RunTape, StepDetail, toNodes, type TapeEvent } from "./RunTape";
+import { FONT_LINK, SERVICES, THEME_CSS, clock, dur, levelColor, servicesForTools } from "./ui";
 
 /**
  * Live view of what the agent is doing, across every chat.
@@ -10,26 +13,62 @@ import { FONT_LINK, FieldList, MONO, SERVICES, THEME_CSS, UI_FONT, btn, clock, d
  * Past runs come from /api/runs (D1). Runs happening right now arrive over the
  * RunHub WebSocket and are merged into the same list, so a turn triggered by a
  * text lands here a few hundred ms later and fills in step by step.
+ *
+ * Three columns when there is room — the rail of sessions, the tape of the
+ * selected run, and the stage explaining the selected step — and fewer as the
+ * window narrows: the stage becomes a sheet, then the rail and the tape take
+ * turns. This page gets projected, so night mode is a first-class state.
  */
 
-type TimelineEvent = { seq: number; ts: number; level: string; event: string; fields: Record<string, unknown> };
-
 const TOKEN_KEY = "runs.token";
+const THEME_KEY = "runs.theme";
+
+/** The simulator routes only exist on a dev server; the hint is only useful there. */
+const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 /** /runs/<runId> — so a run found here can be pasted to someone else. */
 const runIdFromPath = () => window.location.pathname.match(/^\/runs\/(.+)$/)?.[1] ?? null;
 
+/** Follows a media query; re-renders when it flips. */
+function useMedia(query: string) {
+  const [match, setMatch] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const on = () => setMatch(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, [query]);
+  return match;
+}
+
 export function Runs() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(runIdFromPath);
-  const [events, setEvents] = useState<Record<string, TimelineEvent[]>>({});
+  const [events, setEvents] = useState<Record<string, TapeEvent[]>>({});
   const [chat, setChat] = useState<string>("");
   const [follow, setFollow] = useState(true);
   const [live, setLive] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const [mode, setMode] = useState<"graph" | "list">("graph");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [raw, setRaw] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    try {
+      const saved = localStorage.getItem(THEME_KEY);
+      if (saved === "light" || saved === "dark") return saved;
+    } catch {
+      /* no storage */
+    }
+    return "light";
+  });
   const [showBackground, setShowBackground] = useState(false);
+  // ?step=<seq> opens that step's panel, so one step of a run can be linked to.
+  const [picked, setPicked] = useState<number | null>(() => {
+    const step = Number(new URLSearchParams(window.location.search).get("step") ?? NaN);
+    return Number.isInteger(step) ? step : null;
+  });
+  // On a phone the rail and the tape take turns; this is which one is up.
+  const [railOpen, setRailOpen] = useState(false);
+  const wide = useMedia("(min-width: 1180px)");
+  const mid = useMedia("(min-width: 760px)");
   // A run linked to directly is often older than the page the list holds. It is
   // kept apart because both the list fetch and the socket's hello replace `runs`
   // wholesale, which would drop it again.
@@ -65,11 +104,24 @@ export function Runs() {
   // the current URL rather than stacking up history entries.
   const select = useCallback((runId: string, push = true) => {
     setSelected(runId);
+    setPicked(null);
+    setRailOpen(false);
     window.history[push ? "pushState" : "replaceState"]({}, "", `/runs/${runId}`);
   }, []);
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
+  // Only a deliberate flip is remembered; until then the page follows the OS.
+  const flipTheme = () =>
+    setTheme((t) => {
+      const next = t === "light" ? "dark" : "light";
+      try {
+        localStorage.setItem(THEME_KEY, next);
+      } catch {
+        /* no storage */
+      }
+      return next;
+    });
 
   useEffect(() => {
     const onPop = () => setSelected(runIdFromPath());
@@ -82,7 +134,7 @@ export function Runs() {
       const i = prev.findIndex((r) => r.runId === run.runId);
       if (i === -1) return [{ ...EMPTY_RUN, ...run } as RunSummary, ...prev];
       const next = [...prev];
-      next[i] = { ...next[i], ...run };
+      next[i] = mergeRunState(next[i], { ...next[i], ...run });
       return next;
     });
   }, []);
@@ -101,7 +153,7 @@ export function Runs() {
       } catch {
         return;
       }
-      if (msg.type === "hello") setRuns(msg.runs as RunSummary[]);
+      if (msg.type === "hello") setRuns((prev) => (msg.runs as RunSummary[]).map((run) => mergeRunState(prev.find((r) => r.runId === run.runId), run)));
       else if (msg.type === "run.open") {
         const run = msg.run as RunSummary;
         upsert(run);
@@ -111,13 +163,18 @@ export function Runs() {
       } else if (msg.type === "events") {
         const incoming = msg.events as RunEventRow[];
         if (!incoming.length) return;
+        // The summary of a run that opened over the socket has no text yet; its first message does.
+        for (const ev of incoming) {
+          const text = ev.event === "message.in" || ev.event === "message.stored" ? ev.fields.text : undefined;
+          if (typeof text === "string") setRuns((prev) => prev.map((r) => (r.runId === ev.runId && !r.said ? { ...r, said: text } : r)));
+        }
         setEvents((prev) => {
           const next = { ...prev };
           for (const ev of incoming) {
             const list = next[ev.runId] ?? [];
             // A reconnect can replay; seq is the run's primary key.
             if (list.some((x) => x.seq === ev.seq)) continue;
-            next[ev.runId] = [...list, ev as TimelineEvent].sort((a, b) => a.seq - b.seq);
+            next[ev.runId] = [...list, ev as TapeEvent].sort((a, b) => a.seq - b.seq);
           }
           return next;
         });
@@ -128,7 +185,8 @@ export function Runs() {
   // Past runs, and a refresh whenever the chat filter changes.
   useEffect(() => {
     const url = `/api/runs?limit=100${chat ? `&chat=${encodeURIComponent(chat)}` : ""}${tokenParam}`;
-    fetch(url)
+    const controller = new AbortController();
+    const refresh = () => fetch(url, { signal: controller.signal })
       .then(async (r) => {
         if (r.status === 401) {
           // A remembered token that no longer works would wedge the page.
@@ -144,24 +202,32 @@ export function Runs() {
       })
       .then((d) => {
         setProblem(null);
-        setRuns(d.runs);
+        setRuns((prev) => d.runs.map((run) => mergeRunState(prev.find((r) => r.runId === run.runId), run)));
       })
       // A blank list with no explanation is indistinguishable from "no runs yet".
-      .catch((e: Error) => setProblem(e.message));
+      .catch((e: Error) => { if (!controller.signal.aborted) setProblem(e.message); });
+    void refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
   }, [chat, tokenParam]);
 
   // A run picked from the list has its events in D1, not in memory.
   useEffect(() => {
-    if (!selected || events[selected]) return;
-    fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ run: RunSummary; events: TimelineEvent[] }>) : null))
+    if (!selected) return;
+    const controller = new AbortController();
+    const refresh = () => fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`, { signal: controller.signal })
+      .then((r) => (r.ok ? (r.json() as Promise<{ run: RunSummary; events: TapeEvent[] }>) : null))
       .then((d) => {
         if (!d) return;
-        setEvents((prev) => ({ ...prev, [selected]: d.events }));
-        setLinked(d.run);
+        setEvents((prev) => ({ ...prev, [selected]: [...new Map([...(prev[selected] ?? []), ...d.events].map((e) => [e.seq, e])).values()].sort((a, b) => a.seq - b.seq) }));
+        setLinked((prev) => mergeRunState(prev?.runId === d.run.runId ? prev : undefined, d.run));
+        upsert(d.run);
       })
       .catch(() => {});
-  }, [selected, events, tokenParam]);
+    void refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [selected, tokenParam, upsert]);
 
   // Landing on bare /runs with an empty pane is a dead end; open the newest.
   useEffect(() => {
@@ -188,118 +254,182 @@ export function Runs() {
       ? sess.runs.some((r) => r.runId === selected || r.ended === null)
       : !collapsed[sess.id];
 
+  const detail = selected
+    ? (runs.find((r) => r.runId === selected) ?? (linked?.runId === selected ? linked : undefined))
+    : undefined;
+
   // Selecting a hidden run — from a link, or from following a live one — has to
   // reveal it rather than leave the rail looking like it does not exist.
   useEffect(() => {
     if (!showBackground && detail && isBackground(detail)) setShowBackground(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the selection changes
   }, [selected]);
-  const detail = selected
-    ? (runs.find((r) => r.runId === selected) ?? (linked?.runId === selected ? linked : undefined))
-    : undefined;
+
+  const nodes = useMemo(() => toNodes(detail ? (events[detail.runId] ?? []) : []), [detail, events]);
+  const pickedNode = picked === null ? null : (nodes.find((n) => n.seq === picked) ?? null);
+  const t0 = nodes[0]?.ts ?? detail?.started ?? 0;
+
+  // A picked step opens in a panel over the middle of the page. Escape closes
+  // it; the arrow keys walk the tape without leaving it.
+  const stepBy = (by: number) => {
+    const i = nodes.findIndex((n) => n.seq === picked);
+    const next = nodes[i + by];
+    return i === -1 || !next ? undefined : () => setPicked(next.seq);
+  };
+  useEffect(() => {
+    if (picked === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPicked(null);
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") stepBy(-1)?.(), e.preventDefault();
+      else if (e.key === "ArrowRight" || e.key === "ArrowDown") stepBy(1)?.(), e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const columns = mid ? (wide ? "300px minmax(0,1fr)" : "280px minmax(0,1fr)") : "minmax(0,1fr)";
+  const showRail = mid || railOpen || !detail;
+  const showTape = mid || !showRail;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(252px, 300px) 1fr", height: "100vh", background: "var(--paper)", color: "var(--ink)", fontFamily: UI_FONT }}>
+    <div className="rv" style={{ display: "grid", gridTemplateColumns: columns, height: "100vh", fontFamily: "var(--sans)" }}>
       <style>{THEME_CSS}</style>
       <link rel="stylesheet" href={FONT_LINK} />
-      <aside style={{ borderRight: `1px solid var(--rule)`, overflowY: "auto" }}>
-        <header style={{ padding: "16px 16px 12px", position: "sticky", top: 0, background: "var(--paper)", borderBottom: `1px solid var(--rule)` }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <h1 style={{ fontSize: 16, margin: 0, flex: 1 }}>Agent runs</h1>
-            {problem ? (
-              <span style={{ fontSize: 12, color: "var(--error)" }}>
-                {problem === "locked" ? "Locked" : `Couldn't load: ${problem}`}
-              </span>
-            ) : null}
-            <span title={live ? "connected" : "disconnected"} style={{ width: 8, height: 8, borderRadius: 8, background: live ? "var(--good)" : "var(--muted)" }} />
-          </div>
-          {problem === "locked" ? (
-            // Asked for once per browser. The key is RUNS_TOKEN; it is kept in this browser only.
-            <form
-              style={{ display: "flex", gap: 6, marginTop: 10 }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                const key = String(new FormData(e.currentTarget).get("key") ?? "").trim();
-                if (!key) return;
-                try {
-                  localStorage.setItem(TOKEN_KEY, key);
-                  window.location.reload();
-                } catch {
-                  // No storage (private window): carry it in the URL for this visit instead.
-                  window.location.search = `?token=${encodeURIComponent(key)}`;
-                }
-              }}
-            >
-              <input name="key" type="password" placeholder="viewer key" autoFocus autoComplete="current-password" style={{ ...selectStyle, flex: 1, minWidth: 0 }} />
-              <button type="submit" style={selectStyle}>Unlock</button>
-            </form>
-          ) : null}
-          <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-            <select value={chat} onChange={(e) => setChat(e.target.value)} style={selectStyle}>
-              <option value="">all chats</option>
-              {chats.map((c) => (
-                <option key={c} value={c}>
-                  {c.slice(0, 12)}
-                </option>
-              ))}
-            </select>
-            <label style={{ ...selectStyle, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-              follow
-            </label>
-            <button
-              onClick={() => setShowBackground((b) => !b)}
-              style={{ ...btn, cursor: "pointer", ...(showBackground ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}) }}
-              title="Work that happened outside a model turn: workflow callbacks, browser steps, form submissions, dev tool calls."
-            >
-              background
-            </button>
-            <button
-              onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-              style={{ ...btn, cursor: "pointer" }}
-            >
-              {theme === "light" ? "dark" : "light"}
-            </button>
-            <button
-              onClick={() => setMode((m) => (m === "graph" ? "list" : "graph"))}
-              style={{ ...selectStyle, cursor: "pointer", fontFamily: MONO, marginLeft: "auto" }}
-              title="The graph shows which services a turn touched; the list is easier to read field by field."
-            >
-              {mode === "graph" ? "graph" : "list"}
-            </button>
-          </div>
-        </header>
-        {sessions.map((sess) => (
-          <div key={sess.id}>
-            <SessionHeader
-              session={sess}
-              open={isOpen(sess)}
-              onToggle={() => setCollapsed((c) => ({ ...c, [sess.id]: isOpen(sess) }))}
-            />
-            {isOpen(sess) &&
-              sess.visible.map((r) => (
-                <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
-              ))}
-          </div>
-        ))}
-        {!shown.length && <p style={{ color: "var(--muted)", padding: 16, fontSize: 13 }}>No runs yet. Text the agent, or POST /api/dev/message.</p>}
-      </aside>
 
-      <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
-        {detail && <Telemetry run={detail} events={events[detail.runId] ?? []} />}
-        <div style={{ flex: 1, minHeight: 0, overflow: mode === "graph" ? "hidden" : "auto", padding: mode === "graph" ? 0 : 24 }}>
-          {!detail ? (
-            <p style={{ color: "var(--muted)", padding: 24 }}>Pick a run.</p>
-          ) : mode === "graph" ? (
-            <RunGraph run={detail} events={events[detail.runId] ?? []} token={token} />
-          ) : (
-            <Timeline run={detail} events={events[detail.runId] ?? []} />
+      {showRail && (
+        <aside style={{ borderRight: mid ? "1px solid var(--hair)" : 0, overflowY: "auto", minHeight: 0 }}>
+          <header style={{ padding: "18px 18px 14px", position: "sticky", top: 0, background: "var(--ground)", zIndex: 2 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+              <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16, letterSpacing: "-0.01em", lineHeight: 1 }}>Whim</a>
+              <span className="rv-meta">Runs</span>
+              <span
+                title={live ? "Connected: new runs appear as they happen" : "Not connected. New runs will not appear until it reconnects."}
+                aria-label={live ? "connected" : "disconnected"}
+                style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: live ? "var(--good)" : "var(--faint)" }}
+              />
+            </div>
+            {problem ? (
+              <p style={{ margin: "10px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--error)" }}>
+                {problem === "locked" ? "Locked. Enter the viewer key." : `Failed to load runs: ${problem}`}
+              </p>
+            ) : null}
+            {problem === "locked" ? (
+              // Asked for once per browser. The key is RUNS_TOKEN; it is kept in this browser only.
+              <form
+                style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "flex-end" }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const key = String(new FormData(e.currentTarget).get("key") ?? "").trim();
+                  if (!key) return;
+                  try {
+                    localStorage.setItem(TOKEN_KEY, key);
+                    window.location.reload();
+                  } catch {
+                    // No storage (private window): carry it in the URL for this visit instead.
+                    window.location.search = `?token=${encodeURIComponent(key)}`;
+                  }
+                }}
+              >
+                <input className="rv-input" name="key" type="password" placeholder="Viewer key" autoFocus autoComplete="current-password" style={{ flex: 1 }} aria-label="Viewer key" />
+                <button className="rv-btn is-go" type="submit">Unlock</button>
+              </form>
+            ) : null}
+            <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+              <span className="rv-select">
+                <select value={chat} onChange={(e) => setChat(e.target.value)} aria-label="Chat">
+                  <option value="">All chats</option>
+                  {chats.map((c) => (
+                    <option key={c} value={c}>
+                      {c.slice(0, 12)}
+                    </option>
+                  ))}
+                </select>
+              </span>
+              <button className={`rv-btn${follow ? " is-on" : ""}`} onClick={() => setFollow((f) => !f)} aria-pressed={follow} title="Open each new run as it starts">
+                Follow
+              </button>
+              <button
+                className={`rv-btn${showBackground ? " is-on" : ""}`}
+                onClick={() => setShowBackground((b) => !b)}
+                aria-pressed={showBackground}
+                title="Work that happened outside a model turn: workflow callbacks, browser steps, form submissions, dev tool calls."
+              >
+                Background
+              </button>
+              <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Print every step's fields on the tape">
+                Raw
+              </button>
+              <button className="rv-btn is-quiet" onClick={flipTheme} title="Toggle theme">
+                {theme === "light" ? "Dark" : "Light"}
+              </button>
+            </div>
+          </header>
+          {sessions.map((sess) => (
+            <div key={sess.id} style={{ borderTop: "1px solid var(--hair)" }}>
+              <SessionHeader
+                session={sess}
+                open={isOpen(sess)}
+                onToggle={() => setCollapsed((c) => ({ ...c, [sess.id]: isOpen(sess) }))}
+              />
+              {isOpen(sess) &&
+                sess.visible.map((r) => (
+                  <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
+                ))}
+            </div>
+          ))}
+          {!shown.length && !problem && (
+            <p style={{ color: "var(--soft)", padding: "16px 18px", fontSize: 13.5, borderTop: "1px solid var(--hair)", margin: 0, maxWidth: "36ch" }}>
+              No runs yet.
+              {isLocal ? <> Or, in a terminal: <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>POST /api/dev/message</code>.</> : null}
+            </p>
           )}
+        </aside>
+      )}
+
+      {showTape && (
+        <section style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, }}>
+          {detail ? (
+            <>
+              <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
+                <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
+                {/* Analytics sit under the tape: the run reads first, the numbers after. */}
+                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} run={detail} />
+              </div>
+            </>
+          ) : (
+            <p style={{ color: "var(--soft)", padding: 24, margin: 0 }}>{runs.length ? "Select a run." : "No runs yet."}</p>
+          )}
+        </section>
+      )}
+
+      {pickedNode && detail && (
+        <div className="rv-scrim" onClick={(e) => e.target === e.currentTarget && setPicked(null)}>
+          <div className="rv-sheet" role="dialog" aria-modal="true" aria-label="Step detail">
+            <StepDetail node={pickedNode} t0={t0} chat={detail.chat} onClose={() => setPicked(null)} onPrev={stepBy(-1)} onNext={stepBy(1)} />
+          </div>
         </div>
-      </section>
+      )}
     </div>
   );
 }
+
+/** The six inks, named once, so a projected page needs no explaining. */
+function Legend() {
+  return (
+    <p style={{ margin: "0 0 12px", display: "flex", flexWrap: "wrap", gap: "4px 14px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)" }}>
+      {(Object.keys(SERVICES) as (keyof typeof SERVICES)[]).map((k) => (
+        <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <i style={{ width: 7, height: 7, borderRadius: "50%", background: `var(${SERVICES[k].v})` }} />
+          {SERVICES[k].label}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+/** The outcome as one word, for beside a title that no longer says it. */
+const OUTCOME_WORD: Record<string, string> = { timed_out: "timed out", replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
 
 type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
 type ShownSession = Session & { visible: RunSummary[] };
@@ -359,140 +489,142 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
   const tokens = session.runs.reduce((n, r) => n + (r.tokens ?? 0), 0);
   const turns = session.runs.filter((r) => !isBackground(r)).length;
   const background = session.runs.length - turns;
+  const facts = [
+    `${turns} turn${turns === 1 ? "" : "s"}`,
+    background ? `${background} background` : null,
+    tokens ? `${tokens.toLocaleString()} tok` : null,
+    bad ? `${bad} failed` : null,
+  ].filter(Boolean);
   return (
-    <button
-      onClick={onToggle}
-      aria-expanded={open}
-      style={{
-        display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
-        background: "var(--card-2)", border: 0, borderBottom: "1px solid var(--rule)",
-        padding: "9px 14px", cursor: "pointer", font: "inherit", position: "sticky", top: 0, zIndex: 1,
-      }}
-    >
-      <span style={{ fontFamily: MONO, fontSize: 9, color: "var(--faint)", width: 9 }}>{open ? "▾" : "▸"}</span>
+    <button className="rv-session" onClick={onToggle} aria-expanded={open}>
+      <span aria-hidden style={{ width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: open ? "6px solid var(--soft)" : 0, borderBottom: open ? 0 : "6px solid var(--soft)", transform: open ? "none" : "rotate(-90deg)", flex: "none" }} />
       <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {session.chat}
+        <span style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <span style={{ fontFamily: "var(--sans)", fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+            <span title={session.chat} style={{ fontFamily: "var(--mono)", fontSize: 12.5, fontWeight: 500 }}>{session.chat.slice(0, 8)}</span>
+          </span>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--faint)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{clock(session.to)}</span>
         </span>
-        <span style={{ display: "block", fontFamily: MONO, fontSize: 9.5, color: "var(--faint)", marginTop: 2 }}>
-          {turns} turn{turns === 1 ? "" : "s"}
-          {background ? ` · ${background} background` : ""}
-          {tokens ? ` · ${tokens.toLocaleString()} tok` : ""}
-          {bad ? ` · ${bad} failed` : ""}
-          {` · ${clock(session.to)}`}
+        <span style={{ display: "flex", gap: 10, marginTop: 3, fontFamily: "var(--mono)", fontSize: 11, color: bad ? "var(--error)" : "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
+          {facts.map((f) => <span key={f as string}>{f}</span>)}
+          {live > 0 && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ink)", marginLeft: "auto" }}>
+              <i className="rv-live" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--ink)" }} />
+              {live > 1 ? `${live} running` : "running"}
+            </span>
+          )}
         </span>
       </span>
-      {live > 0 && (
-        <span style={{ display: "flex", alignItems: "center", gap: 5, fontFamily: MONO, fontSize: 9, color: "var(--accent)" }}>
-          <span className="rg-live" style={{ width: 7, height: 7, borderRadius: 7, background: "var(--accent)" }} />
-          {live > 1 ? `${live} running` : "running"}
-        </span>
-      )}
     </button>
   );
 }
 
+/** What each outcome code means, in a sentence a judge can read from the back of the room. */
+const OUTCOME_TITLE: Record<string, string> = {
+  timed_out: "Timed out",
+  replied: "Replied",
+  silent: "No reply",
+  llm_failed: "Model error",
+  max_steps: "Max steps",
+  background: "Background",
+};
+
 /**
- * Run totals, read before the detail. Wall clock and turn time differ on
- * purpose: research runs in a workflow outside the turn, so a short turn can
+ * The run's head, drawn as the ticket's: meta row, title, and a stub that
+ * counts the one number the room cares about. Wall clock and turn time differ
+ * on purpose: research runs in a workflow outside the turn, so a short turn can
  * sit inside a long run.
  */
-function Telemetry({ run, events }: { run: RunSummary; events: TimelineEvent[] }) {
-  const wall = events.length ? events[events.length - 1].ts - events[0].ts : null;
-  const slowest = [...events]
-    .filter((e) => typeof e.fields.ms === "number")
-    .sort((a, b) => (b.fields.ms as number) - (a.fields.ms as number))[0];
-  const cells: [string, string, string?][] = [
-    ["STATE", run.ended === null ? "live" : (run.outcome ?? "—"),
-      run.ended === null ? "var(--accent)" : run.level === "error" ? "var(--error)" : undefined],
-    ["WALL CLOCK", wall != null ? dur(wall) : "—"],
-    ["IN TURN", run.ms != null ? dur(run.ms) : "—"],
-    ["TOKENS", run.tokens ? run.tokens.toLocaleString() : "—"],
-    ["STEPS", String(events.length || run.events)],
-    ["SLOWEST", slowest ? slowest.event : "—"],
-  ];
+function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number; ms: number | null; event: string; fields: Record<string, unknown> }[]; onBack?: () => void }) {
+  const running = run.ended === null;
+  const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
+  const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
+  const asked = nodes.find((n) => (n.event === "message.in" || n.event === "message.stored") && typeof n.fields.text === "string");
+  const label = runLabel({ ...run, said: (asked?.fields.text as string | undefined)?.trim() || run.said });
+  const title = label.title;
+  const verdict = running ? "Running" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
+  const facts = [
+    wall != null ? `${dur(wall)} wall` : null,
+    run.ms != null ? `${dur(run.ms)} in turn` : null,
+    `${nodes.length || run.events} event${(nodes.length || run.events) === 1 ? "" : "s"}`,
+    slowest ? `slowest ${slowest.fields.operation ?? slowest.event}` : null,
+  ].filter(Boolean) as string[];
   return (
-    <div style={{ display: "flex", borderBottom: "1px solid var(--rule)", background: "var(--card)", overflowX: "auto", flex: "none" }}>
-      {cells.map(([label, value, color]) => (
-        <div key={label} style={{ padding: "11px 18px", borderRight: "1px solid var(--rule)", minWidth: 104, flex: "none" }}>
-          <b style={{ display: "block", fontFamily: MONO, fontSize: 16, fontWeight: 500, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em", color: color ?? "var(--ink)" }}>
-            {value}
-          </b>
-          <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "0.1em", color: "var(--faint)" }}>{label}</span>
+    <header style={{ flex: "none", padding: "18px 18px 0", borderBottom: "1px solid var(--hair)" }}>
+      <div style={{ display: "flex", alignItems: "stretch", gap: 18 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="rv-meta" style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            {onBack && (
+              <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
+            )}
+            {/* A reply is the ordinary case and goes without saying; anything else is worth a label. */}
+            {(running || run.outcome !== "replied") && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
+                <i className={running ? "rv-live" : undefined} style={{ width: 7, height: 7, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
+                {verdict}
+              </span>
+            )}
+            <span title={run.chat} style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{run.chat.slice(0, 8)}</span>
+            <span style={{ fontVariantNumeric: "tabular-nums" }}>{new Date(run.started).toLocaleString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" })}</span>
+          </div>
+          <h1 className="rv-clamp2" title={title} style={{ margin: "10px 0 0", fontFamily: "var(--sans)", fontWeight: 600, fontSize: title.length > 60 ? 17 : 20, lineHeight: 1.25, letterSpacing: "-0.01em", textWrap: "balance", maxWidth: "34ch" }}>
+            {title}
+          </h1>
+          {label.detail && <p style={{ margin: "8px 0", fontSize: 12, color: "var(--soft)", overflowWrap: "anywhere" }}>{label.detail}</p>}
+          <p style={{ margin: "10px 0 8px", display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
+            {facts.map((f) => <span key={f}>{f}</span>)}
+          </p>
+          {run.outcome === "timed_out" && <div role="alert" style={{ color: "var(--error)", margin: "12px 0", fontSize: 13 }}>
+            <strong>Run timed out.</strong> {RUN_TIMEOUT_MESSAGE}
+            {(run.tools.includes("book_option") || nodes.some((n) => n.event.startsWith("pay."))) && " Check the actual booking or payment status before retrying."}
+            {nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId != null && <p style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+              Sentry event: {String(nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId)}
+            </p>}
+          </div>}
+          <Legend />
         </div>
-      ))}
-    </div>
+        <div className="rv-stub" style={{ marginBottom: 14 }}>
+          <b>{run.tokens ? run.tokens.toLocaleString() : "—"}</b>
+          <span className="rv-meta">tokens</span>
+        </div>
+      </div>
+    </header>
   );
 }
 
 function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean; onClick: () => void }) {
+  const label = runLabel(run);
   const running = run.ended === null;
+  const quiet = run.outcome === "silent" || run.outcome === "background";
+  const facts = [
+    running ? "running" : run.outcome && run.outcome !== "replied" ? (OUTCOME_WORD[run.outcome] ?? run.outcome) : null,
+    run.ms !== null ? dur(run.ms) : null,
+    run.tokens ? `${run.tokens.toLocaleString()} tok` : null,
+  ].filter(Boolean) as string[];
   return (
-    <button
-      onClick={onClick}
-      style={{
-        display: "block", width: "100%", textAlign: "left", background: selected ? "var(--card)" : "transparent",
-        border: "none", borderBottom: `1px solid var(--rule)`, borderLeft: `2px solid ${selected ? "var(--accent)" : "transparent"}`,
-        color: "var(--ink)", padding: "10px 16px", cursor: "pointer", font: "inherit",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-        <span
-          className={running ? "rg-live" : undefined}
-          style={{ width: 6, height: 6, borderRadius: 6, background: running ? "var(--accent)" : levelColor(run.level), flexShrink: 0 }}
+    <button className={`rv-run${selected ? " is-selected" : ""}`} onClick={onClick} aria-current={selected ? "true" : undefined}>
+      <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+        <i
+          className={running ? "rv-live" : undefined}
+          style={{ width: 6, height: 6, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level), flexShrink: 0 }}
         />
-        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {running ? <em style={{ color: "var(--accent)" }}>running…</em> : (run.outcome ?? "—")}
+        <span className="rv-clamp2" title={label.title} style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500, color: quiet && !selected ? "var(--soft)" : undefined }}>
+          {label.title}
         </span>
-        <span style={{ color: "var(--muted)", fontSize: 11 }}>{clock(run.started)}</span>
-      </div>
-      <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
-        {servicesForTools(run.tools).map((s) => (
-          <span key={s} title={SERVICES[s].label} style={{ width: 16, height: 4, borderRadius: 2, background: `var(${SERVICES[s].v})` }} />
-        ))}
-      </div>
-      <div style={{ color: "var(--faint)", fontSize: 10, marginTop: 6, display: "flex", gap: 9, fontFamily: MONO, whiteSpace: "nowrap", overflow: "hidden" }}>
-        <span>{run.chat.slice(0, 10)}</span>
-        {run.ms !== null && <span>{dur(run.ms)}</span>}
-        {!!run.tokens && <span>{run.tokens.toLocaleString()} tok</span>}
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{run.events} steps</span>
-      </div>
+        <span style={{ color: "var(--faint)", fontFamily: "var(--mono)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{clock(run.started)}</span>
+      </span>
+      {label.detail && <span className="rv-clamp2" title={label.detail} style={{ margin: "5px 0 0 14px", fontSize: 11, color: "var(--soft)", textAlign: "left", overflowWrap: "anywhere" }}>{label.detail}</span>}
+      <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
+        <span style={{ display: "flex", gap: 3 }}>
+          {servicesForTools(run.tools).map((s) => (
+            <i key={s} title={SERVICES[s].label} style={{ width: 6, height: 6, borderRadius: "50%", background: `var(${SERVICES[s].v})` }} />
+          ))}
+        </span>
+        {facts.map((f) => <span key={f}>{f}</span>)}
+      </span>
     </button>
   );
 }
-
-function Timeline({ run, events }: { run: RunSummary; events: TimelineEvent[] }) {
-  const t0 = events[0]?.ts ?? run.started;
-  return (
-    <>
-      <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>
-        {run.trigger ?? "run"} · <span style={{ color: run.level === "error" ? "var(--error)" : "var(--muted)" }}>{run.ended === null ? "running" : (run.outcome ?? "—")}</span>
-      </h2>
-      <p style={{ color: "var(--muted)", fontSize: 12, margin: "0 0 20px" }}>
-        {run.chat} · {new Date(run.started).toLocaleString()}
-        {run.ms !== null && ` · ${dur(run.ms)}`}
-        {!!run.tokens && ` · ${run.tokens} tokens`}
-        {run.steps !== null && ` · ${run.steps} steps`}
-      </p>
-      {events.map((e) => (
-        <div key={e.seq} style={{ display: "grid", gridTemplateColumns: "56px 8px 1fr", gap: 10, padding: "6px 0", borderTop: `1px solid var(--rule)` }}>
-          <span style={{ color: "var(--muted)", fontSize: 11, fontVariantNumeric: "tabular-nums", paddingTop: 2 }}>+{e.ts - t0}ms</span>
-          <span style={{ width: 6, height: 6, borderRadius: 6, background: levelColor(e.level), marginTop: 7 }} />
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{e.event}</div>
-            {!!Object.keys(e.fields).length && <FieldList fields={e.fields} />}
-          </div>
-        </div>
-      ))}
-      {!events.length && <p style={{ color: "var(--muted)", fontSize: 13 }}>No events recorded for this run.</p>}
-    </>
-  );
-}
-
-const selectStyle: React.CSSProperties = {
-  background: "var(--card)", color: "var(--ink)", border: `1px solid var(--rule)`,
-  borderRadius: 6, padding: "4px 8px", fontSize: 12,
-};
 
 const EMPTY_RUN: RunSummary = {
   runId: "", chat: "", trigger: null, started: Date.now(), ended: null,

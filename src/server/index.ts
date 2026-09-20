@@ -1,3 +1,4 @@
+import { Sentry, sentryOptions } from "./sentry";
 import { UCP_CAPABILITIES, UCP_VERSION } from "./tools/shopify";
 import { getAgentByName, routeAgentRequest } from "agents";
 import type {
@@ -10,25 +11,55 @@ import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
 import { parseLinks, readInstagram, readLinks } from "./social";
-import { renderAvatar, cartTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { planEmoji } from "../dressing";
 import { errorFields, log, short } from "./log";
-import { getRun, listChats, listRuns, requireRunsAuth } from "./runs";
+import { getRun, listChats, listRuns, refreshRunTimeouts, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
+import type { PayResult } from "./booking";
+import { invoiceFor } from "../invoice";
+import { searchFlights } from "./sources/flights";
+import { searchStays } from "./sources/stays";
+import { findEvents } from "./sources/events";
+import { flightStatus } from "./sources/flight-status";
+import { orderStatus } from "./sources/order-status";
+import type { FlightStatus } from "./sources/types";
 
-export { PlanAgent } from "./agent";
-export { BookingWorkflow } from "./booking";
-export { ResearchWorkflow } from "./research";
-export { RunHub } from "./runs";
-export { People } from "./people";
+import { PlanAgent as PlanAgentBase } from "./agent";
+export type PlanAgent = PlanAgentBase;
+export const PlanAgent: typeof PlanAgentBase = Sentry.instrumentAgentWithSentry(sentryOptions, PlanAgentBase);
+import { BookingWorkflow as BookingWorkflowBase } from "./booking";
+export type BookingWorkflow = BookingWorkflowBase;
+export const BookingWorkflow: typeof BookingWorkflowBase = Sentry.instrumentWorkflowWithSentry(sentryOptions, BookingWorkflowBase);
+import { ResearchWorkflow as ResearchWorkflowBase } from "./research";
+export type ResearchWorkflow = ResearchWorkflowBase;
+export const ResearchWorkflow: typeof ResearchWorkflowBase = Sentry.instrumentWorkflowWithSentry(sentryOptions, ResearchWorkflowBase);
+import { RunHub as RunHubBase } from "./runs";
+export type RunHub = RunHubBase;
+export const RunHub: typeof RunHubBase = Sentry.instrumentAgentWithSentry(sentryOptions, RunHubBase);
+import { People as PeopleBase } from "./people";
+export type People = PeopleBase;
+export const People: typeof PeopleBase = Sentry.instrumentDurableObjectWithSentry(sentryOptions, PeopleBase);
 import { handleProfile } from "./profile";
 import { handleDemo } from "./demos";
 
-export default {
+export default Sentry.withSentry(sentryOptions, {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/webhooks/linq" && request.method === "POST") {
       return handleLinqWebhook(request, env);
+    }
+
+    if (url.pathname.startsWith("/api/plan-media/")) {
+      const match = url.pathname.match(/^\/api\/plan-media\/([^/]+)\/([a-f0-9]{64})$/);
+      if (!match || !["GET", "HEAD"].includes(request.method)) return new Response("Not found", { status: 404 });
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, decodeURIComponent(match[1]));
+      const file = await agent.getPlanMedia(match[2]);
+      if (!file) return new Response("Not found", { status: 404 });
+      return new Response(request.method === "HEAD" ? null : Uint8Array.from(atob(file.data), c => c.charCodeAt(0)), {
+        headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" },
+      });
     }
 
     // Simulator: drive an agent without Linq. Never reachable once deployed.
@@ -38,6 +69,16 @@ export default {
 
     // Run history. Unlike /api/dev/*, this is reachable from the deployed
     // Worker: the runs worth looking at are the ones driven by real texts.
+    // Reset one chat for the next demo, from a laptop, without a text in the
+    // thread: POST /api/runs/reset/<chat id>?token=…  Same lock as run history.
+    if (url.pathname.startsWith("/api/runs/reset/") && request.method === "POST") {
+      const denied = requireRunsAuth(request, url, env);
+      if (denied) return denied;
+      const chat = decodeURIComponent(url.pathname.slice("/api/runs/reset/".length));
+      if (!chat) return new Response("Not found", { status: 404 });
+      await (await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat)).resetChat();
+      return Response.json({ ok: true, chat });
+    }
     if (url.pathname === "/api/runs" || url.pathname.startsWith("/api/runs/")) {
       return requireRunsAuth(request, url, env) ?? handleRuns(request, url, env);
     }
@@ -83,7 +124,7 @@ export default {
         return new Response("Not found", { status: 404 });
       }
       if (!action && request.method === "GET") {
-        return Response.json(await agent.widgetState(), { headers: { "cache-control": "no-store" } });
+        return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
       }
       // A stored ticket's JSON, for the native ticket card. Tickets are
       // immutable once posted, so they cache hard.
@@ -101,7 +142,7 @@ export default {
         } catch (err) {
           return new Response(err instanceof Error ? err.message : "vote failed", { status: 400 });
         }
-        return Response.json(await agent.widgetState(), { headers: { "cache-control": "no-store" } });
+        return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
       }
       return new Response("Not found", { status: 404 });
     }
@@ -163,7 +204,7 @@ export default {
       })) ?? new Response("Not found", { status: 404 })
     );
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env>);
 
 /**
  * Verify, hand the event to the chat's agent, return 200. The agent defers the
@@ -225,6 +266,16 @@ async function handleLinqWebhook(request: Request, env: Env): Promise<Response> 
         });
         break;
       }
+
+      case "location.sharing.started": {
+        // No coordinates arrive here — only that sharing began. The agent reads
+        // the city itself, and only if it was the one that asked.
+        const loc = (event as { data: { chat_id: string | null; shared_by: string } }).data;
+        if (!loc.chat_id) break; // shared from Find My rather than the conversation: not readable
+        const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, loc.chat_id);
+        await agent.locationShared(loc.shared_by);
+        break;
+      }
     }
   } catch (err) {
     // A handler bug must not put Linq into a retry loop.
@@ -238,10 +289,20 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
- *                          + "group": true, and "mention": true or "replyTo": "last", to test the wake gate
- *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}
- *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
+ *                          + "group": true, and "mention": true or "replyTo": "last" | "photo", to test the wake gate
+ *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", "list", or "cart"+"shop"
+ *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
+ *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice|itinerary&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
+ *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
+ *   POST /api/dev/payfinished {"chat":"demo","shop":"…","from":"+1…","status":"dry_run","total":"USD $12.00"}   the pay workflow's report, without a browser
+ *   POST /api/dev/booked   {"chat":"demo","optionId"?:"…","confirmation"?:"…"}   land a confirmed booking without a browser
+ *   GET  /api/dev/source?kind=flights|stays|events|flight|order&…   run one browse.sh recipe, no model
+ *   POST /api/dev/watch     {"chat":"demo"}                          run the flight/order watch check now
+ *   POST /api/dev/seedorder {"chat":"demo","shop":"…","url":"…"}     an order item to watch, without buying
+ *   POST /api/dev/shipped   {"chat":"demo","itemId":"…","carrier":"…","tracking":"…","trackingUrl":"…","eta":"…"}   the store shipped
+ *   POST /api/dev/flight    {"chat":"demo","itemId":"…","status":{…}}   FlightAware now says this
+ *   POST /api/dev/seedflight {"chat":"demo","itemId":"…","ident":"AC123"}   watch an item as a flight without reading FlightAware
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
@@ -298,6 +359,11 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   if (url.pathname === "/api/dev/card") {
     const plan = samplePlan(url);
     const done = plan.status === "booked" || url.searchParams.get("state") === "done";
+    // kind=icon is the group icon, not a ticket: ?emoji=🎳&venue=… to try one.
+    if (url.searchParams.get("kind") === "icon") {
+      const img = await renderPlanIcon(planEmoji({ emoji: url.searchParams.get("emoji") ?? "🍜" }), url.searchParams.get("venue") ?? "Kinton Ramen");
+      return new Response(await img.arrayBuffer(), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+    }
     const people = ["Maya", "Jordan", "Sam"];
     const tickets: Record<string, Ticket> = {
       plan: planTicket(plan),
@@ -325,17 +391,43 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
         { emoji: "🍜", text: "Will travel for ramen" },
         { emoji: "🎞", text: "Shoot film cameras" },
       ]),
+      // state=open: the last store still unpaid · done: everything bought, Maya owed by the rest
+      invoice: invoiceTicket(
+        invoiceFor(
+          plan.carts!.map((c, i) => ({ ...c, paidBy: i === 0 ? "Maya" : i === 1 ? "Sam" : done ? "Jordan" : undefined })),
+          [{ id: "e1", who: "Maya", amount: "$86.40", what: "dinner" }],
+          [...people, "Alex"],
+        ),
+      ),
+      // state=open: a flight to book and an order on its way · done: everything landed
+      itinerary: itineraryTicket(
+        [
+          { id: "i1", kind: "flight", title: "Flair YYZ→YVR Oct 10", status: done ? "done" : "confirmed", note: "F8 227", lastUpdate: done ? "landed 4:01 PM" : undefined },
+          { id: "i2", kind: "stay", title: "JW Marriott Parq", status: done ? "confirmed" : "handoff", price: "$277/night" },
+          { id: "i3", kind: "event", title: "Raptors vs Spurs Dec 17", status: "confirmed" },
+          { id: "i4", kind: "order", title: "partycity.com", status: done ? "done" : "watching", lastUpdate: done ? "delivered" : "shipped, arriving Tue" },
+        ],
+        "Vancouver weekend",
+      ),
     };
-    const img = await renderTicket(tickets[url.searchParams.get("kind") ?? "plan"] ?? tickets.plan);
+    const kind = url.searchParams.get("kind") ?? "plan";
+    if (!(kind in tickets)) return new Response(`kind must be one of ${Object.keys(tickets).join(", ")}`, { status: 404 });
+    const img = await renderTicket(tickets[kind]);
     return new Response(await img.arrayBuffer(), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }
   const body = request.method === "POST" ? ((await request.json()) as Record<string, string>) : {};
   const chat = body.chat ?? url.searchParams.get("chat") ?? "demo";
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
 
+  if (url.pathname === "/api/dev/location") {
+    // Stands in for the person accepting the share prompt on their phone:
+    //   {"chat":"demo","from":"+15550001111","locality":"Toronto","region":"ON, Canada"}
+    const took = await agent.devShareLocation(body.from, body.locality ?? "Toronto", body.region);
+    return Response.json({ took });
+  }
   if (url.pathname === "/api/dev/message") {
     // Defaults to a direct chat (always answered). Pass "group": true to test the
-    // wake gate, with "mention": true or "replyTo": "last" | "<message id>".
+    // wake gate, with "mention": true or "replyTo": "last" | "photo" | "<message id>".
     const opts = body as unknown as { group?: boolean; mention?: boolean; replyTo?: string };
     await agent.ingestMessage({
       linqId: crypto.randomUUID(),
@@ -343,7 +435,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
       text: body.text,
       isGroup: opts.group === true,
       mentionsMe: opts.mention === true,
-      replyToId: opts.replyTo === "last" ? await agent.lastOwnMessageId() : opts.replyTo,
+      replyToId: opts.replyTo === "last" ? await agent.lastOwnMessageId() : opts.replyTo === "photo" ? await agent.currentPlanPhotoId() : opts.replyTo,
     });
     return Response.json({ ok: true });
   }
@@ -351,12 +443,28 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     // Reacts to whatever the plan card's id currently is, real or dry.
     // {"on":"rsvp"} reacts to the open Who's in ticket instead.
     // {"on":"cart","shop":"…"} reacts to a cart instead: a thumbs up there means "I'll pay".
-    const messageId = (body.on === "rsvp" ? await agent.currentRsvpId() : body.on === "cart" ? await agent.currentCartMessageId(body.shop) : await agent.currentCardId()) ?? "dry-plan";
-    await agent.ingestReaction({ messageId, from: body.from, reactionType: body.reaction });
+    // {"on":"photo"} reacts to the ballot's ticket photo rather than the card under it.
+    const targets: Record<string, () => Promise<string | undefined>> = {
+      card: () => agent.currentCardId(),
+      photo: () => agent.currentPlanPhotoId(),
+      rsvp: () => agent.currentRsvpId(),
+      list: () => agent.currentListId(),
+      cart: () => agent.currentCartMessageId(body.shop),
+    };
+    const on = String(body.on ?? "card");
+    const messageId = await (targets[on] ?? targets.card)();
+    // The card has a dry stand-in; a photo that was never posted is a test bug, not a vote to ignore.
+    if (!messageId && on === "photo") return Response.json({ error: "no ballot photo posted yet" }, { status: 404 });
+    await agent.ingestReaction({ messageId: messageId ?? "dry-plan", from: body.from, reactionType: body.reaction });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/seedcart") {
     await agent.devSeedCart(String(body.shop), String(body.total ?? "$10.00"));
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/payfinished") {
+    // What the pay workflow reports back, without a browser: {"chat":"demo","shop":"…","payer":"+1…","status":"dry_run","total":"USD $12.00"}
+    await agent.payFinished({ shop: shopKey(String(body.shop)), payer: String(body.from ?? body.payer), status: (body.status ?? "dry_run") as PayResult["status"], total: body.total, ...(body.unsure ? { unsure: true } : {}) });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/seedgame") {
@@ -369,9 +477,48 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     const { tool, args } = body as unknown as { tool: string; args?: unknown };
     return Response.json({ result: await agent.devRunTool(tool, args) });
   }
+  if (url.pathname === "/api/dev/booked") {
+    // Land a confirmed booking without a browser: {"chat":"demo","optionId"?:…,"confirmation"?:…}
+    return Response.json(await agent.devBooked(body.optionId || undefined, body.confirmation || undefined));
+  }
+  if (url.pathname === "/api/dev/watch") {
+    // Run the watch check now: {"chat":"demo"}
+    await agent.checkWatches();
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/seedorder") {
+    // An order item to watch without buying anything: {"chat":"demo","shop":"partycity.com","url":"https://…/orders/abc"}
+    return Response.json(await agent.devSeedOrder(String(body.shop), String(body.url)));
+  }
+  if (url.pathname === "/api/dev/shipped") {
+    // The store shipped: {"chat":"demo","itemId":"i1a2b","carrier":"Canada Post","tracking":"7023…","trackingUrl":"https://…","eta":"Tuesday","delivered":false}
+    const b = body as unknown as { itemId: string; carrier?: string; tracking?: string; trackingUrl?: string; eta?: string; delivered?: boolean };
+    return Response.json(await agent.devShipped(b.itemId, { fulfilled: true, delivered: b.delivered === true, carrier: b.carrier, tracking: b.tracking, trackingUrl: b.trackingUrl, eta: b.eta }));
+  }
+  if (url.pathname === "/api/dev/flight") {
+    // FlightAware now says: {"chat":"demo","itemId":"i1a2b","status":{…a FlightStatus…}}
+    const b = body as unknown as { itemId: string; status: FlightStatus };
+    return Response.json(await agent.devFlightSnapshot(b.itemId, b.status));
+  }
+  if (url.pathname === "/api/dev/seedflight") {
+    // Watch an itinerary item as a flight without reading FlightAware: {"chat":"demo","itemId":"…","ident":"AC123"}
+    return Response.json(await agent.devSeedFlight(String(body.itemId), String(body.ident)));
+  }
+  if (url.pathname === "/api/dev/source") {
+    // One source, no model: ?kind=flights&from=YYZ&to=YVR&depart=2026-10-10 | kind=stays&where=Vancouver&checkin=…&checkout=… | kind=events&city=Toronto&query=Raptors | kind=flight&ident=AC123 | kind=order&url=…
+    const q = Object.fromEntries(url.searchParams) as Record<string, string>;
+    const rows =
+      q.kind === "flights" ? await searchFlights(env, { from: q.from, to: q.to, depart: q.depart, return: q.return || undefined, adults: q.adults ? Number(q.adults) : undefined })
+      : q.kind === "stays" ? await searchStays(env, { where: q.where, checkin: q.checkin, checkout: q.checkout, adults: q.adults ? Number(q.adults) : undefined })
+      : q.kind === "events" ? await findEvents(env, { city: q.city, query: q.query || undefined, country: q.country || undefined })
+      : q.kind === "flight" ? await flightStatus(env, q.ident)
+      : q.kind === "order" ? await orderStatus(env, q.url)
+      : { error: "kind must be flights, stays, events, flight or order" };
+    return Response.json(rows ?? null);
+  }
   if (url.pathname === "/api/dev/fire") {
     // Run a scheduled callback now instead of waiting for its timer.
-    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn() };
+    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn(), checkWatches: () => agent.checkWatches() };
     const run = callbacks[body.callback as keyof typeof callbacks];
     if (!run) return Response.json({ error: `callback must be one of ${Object.keys(callbacks).join(", ")}` }, { status: 400 });
     await run();
@@ -461,7 +608,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
           dryRun: true,
           maxSteps: Number(url.searchParams.get("steps") ?? 14),
         },
-        (n, line) => log("info", "pilot", "step", { n, line }),
+        (n, line) => void log("info", "pilot", "step", { n, line }),
       );
       return Response.json({ provider: session.provider, sessionId: session.sessionId, liveUrl: session.liveUrl, ...result });
     } finally {
@@ -512,6 +659,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
  * routeAgentRequest serves at /agents/run-hub/global.
  */
 async function handleRuns(request: Request, url: URL, env: Env): Promise<Response> {
+  await refreshRunTimeouts(env);
   const rest = url.pathname.slice("/api/runs".length).replace(/^\//, "");
   const q = url.searchParams;
 
@@ -543,11 +691,33 @@ async function handleRuns(request: Request, url: URL, env: Env): Promise<Respons
 
 /** Card PNGs are rendered once per plan version and then served from R2. */
 async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const name = decodeURIComponent(url.pathname.slice("/card/".length));
+  const path = url.pathname.slice("/card/".length);
+  // /card/<chat>/icon.png is the group icon once the plan is booked.
+  const icon = path.endsWith("/icon.png");
+  const name = decodeURIComponent(icon ? path.slice(0, -"/icon.png".length) : path);
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
-  // Through the RPC method: the stub does not proxy the `state` property, and
-  // an undefined plan here broke every card image in production.
-  const plan = await agent.widgetState();
+
+  // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
+  const bucket = (env as { CARDS?: R2Bucket }).CARDS;
+
+  const ticketId = url.searchParams.get("t");
+  if (ticketId) {
+    // A stored ticket never changes, so its id is the whole cache key — and
+    // the plan state is not needed to draw it, so it is not fetched.
+    const key = `${name}/t-${ticketId}.png`;
+    const hit = await bucket?.get(key);
+    if (hit) return new Response(hit.body, { headers: pngHeaders });
+    const ticket = await agent.getTicket(ticketId);
+    if (!ticket) return new Response("Not found", { status: 404 });
+    const image = await (await renderTicket(ticket)).arrayBuffer();
+    if (bucket) ctx.waitUntil(bucket.put(key, image));
+    return new Response(image, { headers: pngHeaders });
+  }
+
+  // A method, not the `state` property: the Sentry wrapper around the agent
+  // class passes method calls through but answers undefined for a remote
+  // property read, which took every card image down with a 500.
+  const plan = (await agent.publicState()) as PlanState;
 
   // Game and playlist preview images, so those cards are never blank.
   const kindParam = url.searchParams.get("kind");
@@ -576,18 +746,12 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }
 
-  // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
-  const bucket = (env as { CARDS?: R2Bucket }).CARDS;
-
-  const ticketId = url.searchParams.get("t");
-  if (ticketId) {
-    // A stored ticket never changes, so its id is the whole cache key.
-    const key = `${name}/t-${ticketId}.png`;
+  if (icon) {
+    const key = `${name}/icon-${plan.version}.png`;
     const hit = await bucket?.get(key);
     if (hit) return new Response(hit.body, { headers: pngHeaders });
-    const ticket = await agent.getTicket(ticketId);
-    if (!ticket) return new Response("Not found", { status: 404 });
-    const image = await (await renderTicket(ticket)).arrayBuffer();
+    const venue = plan.options.find((o) => o.id === plan.chosenOptionId)?.title ?? plan.title;
+    const image = await (await renderPlanIcon(planEmoji(plan), venue)).arrayBuffer();
     if (bucket) ctx.waitUntil(bucket.put(key, image));
     return new Response(image, { headers: pngHeaders });
   }

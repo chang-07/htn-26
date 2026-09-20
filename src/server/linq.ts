@@ -1,9 +1,10 @@
+import { tracedFetch } from "./telemetry";
 import LinqAPIV3 from "@linqapp/sdk";
-import { SLOT_EMOJI, cartsOf, shopKey, type PlanState } from "../types";
+import { cartsOf, shopKey, type PlanState } from "../types";
 import { errorFields, log, short } from "./log";
 
 export function linqClient(env: Env) {
-  return new LinqAPIV3({ apiKey: env.LINQ_API_KEY });
+  return new LinqAPIV3({ fetch: tracedFetch, apiKey: env.LINQ_API_KEY });
 }
 
 export function cardImageUrl(env: Env, agentName: string, version: number) {
@@ -19,6 +20,11 @@ export function cartImageUrl(env: Env, agentName: string, version: number, shop:
 
 export function widgetUrl(env: Env, agentName: string) {
   return `${env.PUBLIC_BASE_URL}/w/${encodeURIComponent(agentName)}`;
+}
+
+/** The square stamp that becomes the group icon once the plan is booked. Linq fetches and re-hosts it. */
+export function planIconUrl(env: Env, agentName: string, version: number) {
+  return `${env.PUBLIC_BASE_URL}/card/${encodeURIComponent(agentName)}/icon.png?v=${version}`;
 }
 
 export function musicUrl(env: Env, agentName: string) {
@@ -109,10 +115,6 @@ export function cartCardPart(env: Env, agentName: string, plan: PlanState, shop?
         : cartImageUrl(env, agentName, plan.version, cart.shop),
     },
   };
-}
-
-export function tapbackLegend(plan: PlanState) {
-  return plan.options.map((o, i) => `${SLOT_EMOJI[i]} ${o.title}`).join("\n");
 }
 
 /**
@@ -206,6 +208,28 @@ export const stopTyping = (env: Env, chatId: string) => quietly(env, chatId, "ty
  */
 export const shareContactCard = (env: Env, chatId: string) =>
   quietly(env, chatId, "contact_card", (l) => l.chats.shareContactCard(chatId));
+
+// ------------------------------------------------------------------ dressing
+// The chat itself, once the plan is booked: a name, an icon, a background.
+// Same footing as presence — Linq answers before the phones have changed, and
+// a name or an icon is a group-chat thing — so each is its own quiet call
+// and none can fail the booking that earned it.
+
+/** iOS's animated background; `{ type: "color", variant: "custom", shades: ["#1f5f4f", "#efe7d6"] }` is the ticket's own colours. */
+const BOOKED_BACKGROUND = { type: "dynamic", style: "aurora" } as const;
+
+export type Dressing = { name: string; iconUrl: string };
+
+/** Applies all three and reports each outcome ("ok", "dry", or the error) for the caller's log. */
+export async function dressChat(env: Env, chatId: string, d: Dressing): Promise<{ name: string; icon: string; background: string }> {
+  // Name and icon are separate updates: an icon Linq cannot fetch must not cost the name.
+  const [name, icon, background] = await Promise.all([
+    quietly(env, chatId, "chat_name", (l) => l.chats.update(chatId, { display_name: d.name })),
+    quietly(env, chatId, "chat_icon", (l) => l.chats.update(chatId, { group_chat_icon: d.iconUrl })),
+    quietly(env, chatId, "chat_background", (l) => l.chats.background.set(chatId, BOOKED_BACKGROUND)),
+  ]);
+  return { name, icon, background };
+}
 
 export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
 
@@ -392,6 +416,111 @@ export async function updateMusicCard(env: Env, messageId: string, agentName: st
 // a single-use virtual card for that purchase alone. Nothing here ever sees a
 // card number. These three calls are only the SETUP half: no money moves.
 
+// ------------------------------------------------------------------ location
+// Asking where someone is instead of making them type it. The agent takes the
+// city once and ends the share: it never polls a position, and coordinates
+// never leave this file — only the locality and the handle it belongs to.
+
+/**
+ * - "sent": the person gets an iMessage prompt and has to accept it.
+ * - "already_sharing": nothing to ask; read it.
+ * - "not_one_to_one": Apple only allows the request in a 1:1 iMessage chat.
+ * - "unavailable": the account lacks the feature, or Linq refused for another reason.
+ */
+export type LocationAsk = "sent" | "already_sharing" | "not_one_to_one" | "unavailable";
+
+export async function requestLocation(env: Env, chatId: string): Promise<LocationAsk> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.location_request", { chat: short(chatId) });
+    return "sent";
+  }
+  try {
+    await linqClient(env).chats.location.request(chatId);
+    return "sent";
+  } catch (err) {
+    const text = String(err);
+    // 409 covers three different refusals; the codes tell them apart.
+    if (/2016|2017|GroupChatNotSupported|ChatServiceNotSupported/.test(text)) return "not_one_to_one";
+    if (/\b409\b/.test(text)) return "already_sharing";
+    log("warn", "linq", "location_request.failed", { chat: short(chatId), error: text.slice(0, 200) });
+    return "unavailable";
+  }
+}
+
+/** City-level only, by design: see the note above. */
+export type SharedPlace = { handle: string; locality?: string; region?: string; updatedAt?: string };
+
+type Located = SharedPlace & { lon: number; lat: number };
+
+/** The one place coordinates exist. Nothing below hands them on. */
+async function located(env: Env, chatId: string): Promise<Located[]> {
+  if (isDry(env, chatId)) return [];
+  try {
+    const res = await linqClient(env).chats.location.retrieve(chatId);
+    return res.data.features.map((f) => ({
+      handle: f.properties.handle,
+      locality: f.properties.locality,
+      region: regionFrom(f.properties.address, f.properties.locality),
+      updatedAt: f.properties.updated_at,
+      lon: f.geometry.coordinates[0],
+      lat: f.geometry.coordinates[1],
+    }));
+  } catch (err) {
+    log("warn", "linq", "location_read.failed", { chat: short(chatId), error: String(err).slice(0, 200) });
+    return [];
+  }
+}
+
+const strip = ({ handle, locality, region, updatedAt }: Located): SharedPlace => ({ handle, locality, region, updatedAt });
+
+export async function readLocation(env: Env, chatId: string): Promise<SharedPlace[]> {
+  return (await located(env, chatId)).map(strip);
+}
+
+export type PlacesRead = { people: SharedPlace[]; pairs: { a: string; b: string; km: number }[] };
+
+/**
+ * Everyone sharing in this chat — reading works in groups, only *asking* is
+ * 1:1 — with the distance between each pair. The distance is worked out here so
+ * the coordinates never leave this file: callers get a city per person and a
+ * rounded number per pair, which is all "how far apart are we" needs.
+ */
+export async function readPlaces(env: Env, chatId: string): Promise<PlacesRead> {
+  const all = await located(env, chatId);
+  const pairs: PlacesRead["pairs"] = [];
+  for (let i = 0; i < all.length; i++)
+    for (let j = i + 1; j < all.length; j++) pairs.push({ a: all[i].handle, b: all[j].handle, km: kmBetween(all[i], all[j]) });
+  return { people: all.map(strip), pairs };
+}
+
+/** Great-circle distance, rounded to 100 m: precise enough to plan with, too coarse to locate anyone. */
+export function kmBetween(a: { lon: number; lat: number }, b: { lon: number; lat: number }): number {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const h =
+    Math.sin(rad(b.lat - a.lat) / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
+  return Math.round(2 * 6371 * Math.asin(Math.sqrt(h)) * 10) / 10;
+}
+
+/**
+ * "12 King St W, Toronto, ON M5H 1A1, Canada" -> "ON, Canada". The street is
+ * dropped on purpose; the region is kept because "Waterloo" alone is ambiguous
+ * to a search engine and "Waterloo, ON, Canada" is not.
+ */
+function regionFrom(address?: string, locality?: string): string | undefined {
+  if (!address || !locality) return undefined;
+  const after = address.split(locality)[1];
+  if (!after) return undefined;
+  const parts = after
+    .split(",")
+    .map((part) => part.replace(/\b[A-Z]\d[A-Z] ?\d[A-Z]\d\b|\b\d{5}(-\d{4})?\b/g, "").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(", ") : undefined;
+}
+
+/** Ends the share, so the position can never be read again. Best effort. */
+export const stopLocation = (env: Env, chatId: string, handle: string) =>
+  quietly(env, chatId, "location_stop", (l) => l.chats.location.stop(chatId, { handle }));
+
 export type PaymentConnection = { status: "not_connected" | "pending" | "connected" | "revoked"; connectId?: string; simulated?: boolean };
 
 export async function paymentConnection(env: Env, chatId: string, handle: string): Promise<PaymentConnection> {
@@ -517,7 +646,7 @@ export async function attachLink(env: Env, chatId: string, handle: string): Prom
   if (isDry(env, chatId)) return undefined;
   const linq = linqClient(env);
   const p = await linq.payments.create(
-    { handle, amount_cents: 100, currency: "usd", description: "Card setup (not a purchase)", merchant: { name: "Plan setup", url: env.PUBLIC_BASE_URL } },
+    { handle, amount_cents: 100, currency: "usd", description: "Card setup (not a purchase)", merchant: { name: "Whim setup", url: env.PUBLIC_BASE_URL } },
     { idempotencyKey: `setup-${crypto.randomUUID()}` },
   );
   if (p.status === "awaiting_user_action" && p.attach_url) return p.attach_url;

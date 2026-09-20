@@ -1,8 +1,10 @@
-# Plan — an iMessage group-chat planning agent
+# Whim — an iMessage group-chat planning agent
 
 An agent that lives in an iMessage group chat. It brainstorms a hangout with the
 group, posts a card to vote on, books the winner, and builds Shopify carts for
 anything the group needs. It runs entirely on Cloudflare Workers.
+
+Browserbase site skills are managed by a selective planning subagent; named-place and weather tools support outdoor plans. See [routing, supported skills, and setup](docs/browserbase-planning.md).
 
 ## Architecture
 
@@ -18,6 +20,7 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
    ├─ public state ──WebSocket──► vote page (useAgent)   src/client/
    ├─ schedule(): batches bursts of texts into one turn; nudges non-voters
    ├─ LLM tool loop (OpenAI, or a free dev provider)     src/server/llm.ts
+   │     │  lookups asked for in one step run together   src/server/tool-concurrency.ts
    │     ├─ propose_plan · get_votes
    │     ├─ research ──► ResearchWorkflow (durable, minutes-long)
    │     │                 └─ Browserbase: search, read pages   src/server/browser.ts
@@ -37,15 +40,27 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
 | Vectorize + Workers AI | Interest embeddings and nearest-neighbour matchmaking |
 | R2 | Rendered card images |
 
-## Run it locally — no Linq number, no OpenAI spend
+## Running it
+
+### First time
 
 ```sh
 npm install
-npm run dev
+cp .dev.vars.example .dev.vars   # then fill in a model — see below
+npm run runs:migrate             # local database behind the run viewer
 ```
 
-With no `LINQ_API_KEY` set, the Linq transport is **dry**: sends are logged, not
-delivered. Drive the agent with the localhost-only simulator:
+### Every time
+
+Two terminals. The second is only needed if you are using your Claude plan as
+the model.
+
+```sh
+npm run dev      # terminal 1 — the Worker and the pages, on http://localhost:5173
+npm run llm      # terminal 2 — only for the "Claude plan" row below
+```
+
+Game checks:
 
 ```sh
 npm run test:games    # deterministic Blackjack engine checks; no model or deploy
@@ -56,18 +71,61 @@ npm run eval:games    # live game-generation prompts; run npm run dev first
 the model's exact wording. It creates simulator chats only, so it neither
 deploys nor sends a real message.
 
+### Where the model comes from
+
+`LLM_PROFILE` is `dev` in `wrangler.jsonc`, so local runs use whatever
+`DEV_LLM_*` points at. Pick one and put it in `.dev.vars`:
+
+| You want | Set | Costs |
+|---|---|---|
+| Your Claude plan | `DEV_LLM_BASE_URL=http://127.0.0.1:11435/v1`, `DEV_LLM_MODEL=haiku`, and run `npm run llm` | nothing (uses your subscription) |
+| Ollama | `DEV_LLM_BASE_URL=http://localhost:11434/v1`, `DEV_LLM_MODEL=<model>` | nothing |
+| Workers AI | `DEV_LLM_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1` plus a token | pennies |
+| OpenAI — what deploys use | leave `DEV_LLM_*` blank, set `OPENAI_API_KEY` | credits |
+
+> **Leaving `DEV_LLM_*` blank does not mean "no model".** It falls back to
+> OpenAI and spends credits. `llm.ts` logs `llm profile.fallback` when this
+> happens — worth grepping for if a local test costs money unexpectedly.
+
+### Drive it without a phone
+
+With no `LINQ_API_KEY` set the Linq transport is **dry**: sends are logged, not
+delivered. These routes are localhost-only and 404 on the deployed Worker.
+
 ```sh
+# send a message to the agent, as if someone texted it
 curl -X POST localhost:5173/api/dev/message -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","text":"dinner friday? ramen downtown"}'
+
+# tapback on the plan card ("on":"photo" for the ticket photo above it — both count)
 curl -X POST localhost:5173/api/dev/react -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","reaction":"like"}'
+
+# run any agent tool directly — no model call, no tokens
 curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
   -d '{"chat":"demo","tool":"propose_plan","args":{"title":"Friday dinner","options":[{"title":"A"},{"title":"B"}]}}'
-                                                  # run any agent tool directly: no LLM, no tokens
+
+curl 'localhost:5173/api/dev/source?kind=flights&from=YYZ&to=YVR&depart=2026-10-10'   # one browse.sh recipe, no model
+
+# start a research run without going through the model
+curl -X POST localhost:5173/api/dev/research -H 'content-type: application/json' \
+  -d '{"chat":"demo","brief":"late night ramen","near":"Toronto","depth":"quick"}'
+
 curl 'localhost:5173/api/dev/dump?chat=demo'      # state, transcript, votes
-open  'http://localhost:5173/w/demo'              # live vote page
-open  'http://localhost:5173/card/demo'           # the card image
+curl 'localhost:5173/api/dev/logs?chat=demo'      # that chat's event history, as text
 ```
+
+### Where to look
+
+| Open | What it is |
+|---|---|
+| `localhost:5173/runs` | **the run viewer** — every turn as a graph of cards. Start here when something looks wrong |
+| `localhost:5173/w/demo` | the vote page for chat `demo`, live over WebSocket |
+| `localhost:5173/card/demo` | the plan card as a PNG, exactly as the chat sees it |
+| `localhost:5173/live/demo` | the browser, live, while a booking or research run is going |
+
+The run viewer needs no token on localhost. On the deployed Worker it does —
+see `RUNS_TOKEN` in the secrets table.
 
 ### Real iMessage from your laptop
 
@@ -109,22 +167,100 @@ a sleeping message is `message.stored`; a waking one is `message.in` with a
 `wake` reason. Test the gate in the simulator with `"group": true` plus
 `"mention": true` or `"replyTo": "last"` on `/api/dev/message`.
 
+### Location — cities and distances, never coordinates
+
+In a one-to-one chat where the agent doesn't know where someone is, it offers a
+choice: type it, or share location. Only after they say yes does it call
+`request_location`, which makes their phone show Apple's share prompt.
+
+When they accept, the agent reads the share **once**, keeps `locality` plus the
+region ("Toronto, ON, Canada") as their area, and immediately ends the share
+from its side so it has no way to look again. Coordinates and street addresses
+are never stored or logged — `readLocation` in `linq.ts` drops them before
+anything else sees them.
+
+- **A share they start themselves is read too, and left running.** Sharing from
+  the conversation is consent to be read — but the share is theirs, so the agent
+  keeps the city and does not end it. (The first version ignored these, which
+  left someone who had said "here's my location" with an agent acting as if
+  they hadn't.) Only a share the agent *asked for* is ended after one read.
+- **"How far apart are we" works in a group.** Reading works anywhere; only
+  *asking* is one-to-one. `read_locations` gives the model a city per person and
+  a rounded distance per pair. The distance is computed inside `linq.ts`, so
+  coordinates never reach the model, the log or storage — `location.read` in
+  run history carries counts only.
+- **1:1 iMessage only** — an Apple limit. The tool refuses in a group before
+  anything is sent.
+- **Two ways it hears back.** The `location.sharing.started` webhook is the fast
+  path; a timer at 25s, 90s and 4min covers subscriptions made before that
+  event was added. Bring an old subscription up to date, keeping its secret:
+  `node scripts/linq-webhook.mjs events`
+- **Needs the feature on the Linq account.** Without it Linq answers `403`,
+  code `2011`, and the agent just asks them to type instead.
+- **If a share stays empty:** it was probably started from the standalone Find My
+  app, which binds it to their Apple ID email rather than the number. They need
+  to re-share from inside the Messages conversation.
+
+Try it without a phone:
+
+```sh
+curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
+  -d '{"chat":"demo","tool":"request_location","args":{}}'
+curl -X POST localhost:5173/api/dev/location -H 'content-type: application/json' \
+  -d '{"chat":"demo","from":"+15550001111","locality":"Toronto","region":"ON, Canada"}'
+```
+
 ### Presence — read receipts, typing, a name and a face
 
-When a message wakes the agent it marks the chat read and raises the typing
-bubble at once (`presence` in the logs), seconds before the model answers. The
-bubble is refreshed through long turns and dropped if the turn ends in silence.
-A successful booking lands with confetti.
+When a message wakes the agent it marks the chat read, raises the typing bubble
+and (the first time) offers its contact card, all at once (`presence` in the
+logs), seconds before the model answers. The bubble is refreshed alongside each
+model call through a long turn, never ahead of it, and dropped if the turn ends
+in silence. A successful booking lands with confetti.
 
 The name and photo are a Linq contact card, set once per number:
 
 ```sh
-node scripts/linq-contact-card.mjs set "Plan"   # photo: <PUBLIC_BASE_URL>/card/avatar.png
+node scripts/linq-contact-card.mjs set "Whim"   # photo: <PUBLIC_BASE_URL>/card/avatar.png
 node scripts/linq-contact-card.mjs show
 ```
 
 The agent then offers the card to each chat the first time it is woken there.
 All of this is best-effort and iMessage-only; failures are logged, never thrown.
+
+### The chat becomes the plan
+
+The moment a booking is confirmed, the group chat itself changes: it is renamed
+after the outing, its icon becomes the plan's stamp, and its background changes
+— so the thread list reads `🍜 Friday dinner · Kinton Ramen` instead of three
+numbers, and opening it feels like the plan is already underway.
+
+```
+booked ─▶ chats.update  { display_name: "🍜 Friday dinner · Kinton Ramen" }
+       ─▶ chats.update  { group_chat_icon: <base>/card/<chat>/icon.png }   the emoji over the venue, in the ticket's green
+       ─▶ chats.background.set { type: "dynamic", style: "aurora" }
+```
+
+The emoji is the model's: `propose_plan` takes an optional `emoji` with the
+ballot (🍜 ramen, 🎳 bowling); anything that is not one falls back to 📍. The
+name is `src/dressing.ts` (pure, `npm test`), the icon is `renderPlanIcon` in
+`card.ts`, and the three calls are `dressChat` in `linq.ts`. Everything is
+code, never the model, and the same footing as presence: each call is
+best-effort, a direct chat is left alone (a name and an icon are group things),
+and Linq applies the change asynchronously — the phones catch up a moment after
+the confetti. The outcome of each call is one `chat.dressed` log line.
+
+```sh
+open 'http://localhost:5173/api/dev/card?kind=icon&emoji=🎳&venue=The%20Ballroom'   # the icon, from sample data
+curl -X POST localhost:5173/api/dev/booked -H 'content-type: application/json' \
+  -d '{"chat":"demo"}'      # land a confirmed booking without a browser: ticket, confetti, and the chat's new name
+```
+
+`/api/dev/booked` is also the safety net for a live demo run from the laptop
+(tunnel up, real chat id): if the venue's site is slow, the booked outcome can
+be landed by hand and everything downstream — the ticket, the renamed chat,
+the invoice — still happens for real. Like every `/api/dev/*` route it answers
+only on localhost, so it is not there on the deployed Worker.
 
 ### Pairing — "find me someone to climb with"
 
@@ -190,9 +326,12 @@ transport, even with a live `LINQ_API_KEY`, so testing never texts anyone.
 
 ### Run viewer — what the agent did, turn by turn
 
-`/runs` is a live view of every run across every chat: the run list on the left,
-a timeline of the selected run on the right. It fills in step by step while a
-turn is happening, so a text sent to the number shows up a moment later.
+`/runs` is a live view of every run across every chat: sessions and their runs
+in a rail on the left, the selected run as a tape in the middle — one row per
+step, with whatever the step produced printed under it — and a plain-English
+explanation of the selected step on the right. It fills in step by step while a
+turn is happening, so a text sent to the number shows up a moment later. It has
+a night mode for projecting, and it is the same ticket design as the cards.
 
 ```sh
 open http://localhost:5173/runs        # deployed: https://<worker>/runs
@@ -247,11 +386,11 @@ D1 is the durable, cross-chat copy that survives eviction.
 ### Research — real options from the live web
 
 The `research` tool starts `ResearchWorkflow` (`src/server/research.ts`), which
-browses through Browserbase and reports back to the chat's agent when done:
+uses Browserbase Search and Fetch and reports back to the chat's agent when done:
 
 ```
 plan ─▶ search ─▶ select ─▶ read + extract ─▶ synthesize ─▶ agent.researchFinished()
-LLM     browser    LLM       browser + LLM     LLM           model gets a turn, posts the card
+LLM     Search     Jev       Fetch + LLM       LLM           model gets a turn, posts the card
 ```
 
 The model decides what to look for and what the pages mean; fixed code does the
@@ -259,6 +398,57 @@ navigation, so a run is bounded. `DEPTH` in `research.ts` is the whole budget:
 `quick` is 2 searches and 3 pages, `deep` is 4 and 8. Addresses, prices and
 links in the report are copied from per-page extractions, never from the
 ranking step's retelling.
+
+Nothing in a run waits that need not: choosing a site specialist and planning
+the queries are two model calls made together, the searches go out together,
+and every selected page is fetched and extracted in one wave (four at a time
+when a browser session is open, since tabs time each other out; the whole
+budget at once through the Fetch API, which has no tabs).
+
+With `AI_GATEWAY_API_KEY` set, research uses Jev scoring through Vercel AI Gateway; without it, the LLM
+picks which results to read and extracted options go unscored (`research.jev_fallback` in the run log). Jev scores each search
+result's metadata for relevance to the brief, and returns confidence in that
+judgment separately. Defaults are relevance >= 2 on a 0–3 rubric and confidence
+>= 0.5; tune `RESEARCH_MIN_RELEVANCE` and `RESEARCH_MIN_CONFIDENCE` against real
+results. These are initial thresholds, not calibrated guarantees. `JEV_MODEL`
+may be omitted or set to `typesafe-ai/jev`; other models are rejected. Requests use Vercel's TypeSafe-compatible endpoint
+`https://ai-gateway.vercel.sh/typesafe/v1/systemone`; a direct TypeSafe key is no
+longer used. Scores are recorded in `research.selected` with provider
+`jev-vercel-gateway`.
+
+Create a key in the Vercel AI Gateway dashboard and set `AI_GATEWAY_API_KEY` in
+`.env` or `.dev.vars` for local development; for the deployed Cloudflare Worker,
+run `npx wrangler secret put AI_GATEWAY_API_KEY` and deploy the updated code.
+Vercel's [model catalog](https://vercel.com/ai-gateway/models) lists Jev as free
+as of September 19, 2026, although its individual model page still lists a
+per-token price. Check the Gateway dashboard for current pricing and limits.
+This changes only Jev scoring; other research services retain their own billing.
+
+Only passing results reach Fetch, sorted by relevance, with at most two URLs
+per hostname and the existing page budget. If every result is rejected, the run
+reports that explicitly instead of fetching poor matches. Provider errors and
+malformed scores also cannot silently bypass the Jev gate. Search metadata does
+not establish current availability, price, or factual accuracy; extraction still
+uses the fetched page as evidence.
+
+Source URLs are normalized and deduplicated before scoring. Jev evaluates up to
+16 results per request with at most two requests in flight, using bounded metadata
+rather than full pages. Every extracted option—including Browserbase skill listings,
+menus, trails and events—is scored again against the actual planning constraints in
+one shared stage before synthesis. Candidate scores are recorded in
+`research.candidates_scored`; only passing candidates reach the response model.
+Identical candidate evidence is evaluated once per call while retaining its source
+attribution. New runs always receive fresh judgments.
+
+Without an AI Gateway key, research stops before searching or opening a browser;
+there is no general-LLM or unscored fallback. Provider errors, omitted judgments and
+all-rejected batches also stop the run rather than weakening the gate. Without a
+Browserbase key, search and page reading use the existing browser path, with the
+same Jev gates. The Search/Fetch API path creates no watchable browser
+session; booking continues to use browser sessions.
+
+Run the isolated, mocked provider/selection checks with
+`node --experimental-strip-types --test scripts/research-sources.test.mjs`.
 
 Run the pipeline without waiting for the model to choose it:
 
@@ -270,8 +460,9 @@ curl 'localhost:5173/api/dev/dump?chat=demo'     # .research is the full report
 curl 'localhost:5173/api/dev/browse?q=ramen+waterloo'   # just the browser: one search, or ?url= for one page
 ```
 
-`research.finished` logs a Browserbase replay link per session — open it first
-when a run comes back thin. On the local dev model a quick run takes 2-4
+On the browser fallback path, `research.finished` logs a replay link per
+Browserbase session. Search/Fetch runs expose stage and score logs instead.
+On the original local dev model a quick run took 2-4
 minutes, nearly all of it LLM time on page extraction; it is much faster on the
 demo profile. Without `BROWSERBASE_API_KEY`, `src/server/browser.ts` falls back
 to Cloudflare Browser Rendering, which search engines tend to block.
@@ -382,6 +573,50 @@ order placed from a datacenter browser. Shopify's own checkout API is no use
 here: `create_checkout` is listed by stores but answers "Tool not found" for
 this agent, and its card field wants a pre-tokenized credential.
 
+### The invoice — who paid what, who owes whom
+
+Once things get bought, the question is "so what do I owe?". The invoice
+answers it, and it is **derived, never kept**: worked out fresh, every time,
+from the carts (with the real post-tax total once one is paid), who paid each,
+and the headcount — so it cannot drift from them. Pay a cart, resize one, or
+change who is going, and the invoice is already different. The one thing that
+is stored is money that never went through a cart, logged from the chat.
+
+```
+carts + paidBy ─┐
+expenses        ├─▶ src/invoice.ts ─▶ per-person paid / share / net, and the fewest
+who's going ────┘   (pure, shared)      transfers that square everyone up
+```
+
+It shows in three places, from the same function:
+
+| Where | When |
+|---|---|
+| **Invoice ticket** in the chat (cream while a store is still unpaid, green once everything is bought) | on its own the moment the last cart is paid, and on `show_invoice` when someone asks |
+| **Live section on `/w/<chat>`** — balances, "to settle up", anything paid outside the carts | always current over the vote page's WebSocket |
+| **`Invoice:` line in the model's context** | every turn, so "what do I owe?" is read off, never worked out by the model |
+
+Money outside a cart — the bill, a deposit, the cab — is `add_expense`, called
+only when a person in the chat says so with an amount. Paying someone back is
+the same tool with `for` naming that one person: "Jordan paid Maya back $32"
+is Jordan paying $32 for Maya alone, which is exactly what settles the debt.
+`drop_expense` takes a wrong one out. Everything is in integer cents; odd cents
+go one each to the first people in the split, so the nets always sum to zero.
+Stores in different currencies cannot be added, so then there is no invoice —
+the same rule the shopping list uses.
+
+```sh
+npm test                                            # the math, on its own (node --test, no server)
+open 'http://localhost:5173/api/dev/card?kind=invoice&state=open'   # the ticket, from sample data
+curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
+  -d '{"chat":"demo","tool":"add_expense","args":{"who":"Maya","amount":"$86.40","what":"dinner"}}'
+curl 'localhost:5173/api/dev/dump?chat=demo'        # .invoice is the whole thing, .state.expenses the log
+```
+
+Not tracked: whether the transfers actually happened. The agent's job ends at
+"here is who owes whom"; if that needs a green tick per person one day, it is
+one more `for`-one-person expense, not a new ledger.
+
 ### Booking and availability — the browser pilot
 
 `src/server/pilot.ts` drives a venue's own booking page: it lists what a person
@@ -413,6 +648,54 @@ curl -G localhost:5173/api/dev/pilot --data-urlencode mode=availability \
   --data-urlencode 'url=https://…' --data-urlencode 'task=Find times for 4 on Saturday evening'
 # mode=book fills the form; mode=inspect&find=<word> shows what the pilot sees and the raw markup
 ```
+
+### Trips — flights, stays, events, and what happens after
+
+The same chat plans a weekend away. Three tools read real options over
+Browserbase Fetch (residential proxies, no browser) using recipes from the
+[browse.sh](https://browse.sh) skill catalog, and return them in the same turn,
+shaped as ballot options:
+
+| Tool | Source | What comes back |
+|---|---|---|
+| `search_flights` | Google Flights (`/travel/flights?q=…`, server-rendered) | airline, times, stops, duration, price, a link with a Book button |
+| `search_stays` | Google Hotels (`/travel/search`, the page's data blob) | hotel, nightly price, rating, reviews, a link to its rates |
+| `find_events` | Ticketmaster's internal artist-events API, or Luma's city feed | title, date, venue, on-sale window, sold-out flags, a link |
+
+The group votes with tapbacks as always. Once a vote settles the model calls
+`add_to_itinerary`: the winner becomes a stop on the **itinerary** (a list on
+the plan), the itinerary ticket is posted, the chat gets the link to finish the
+booking themselves, and the ballot clears for the next segment. The agent never
+books or pays for flights, rooms or tickets: those links open the site's own
+checkout. `confirm_item` marks a stop booked when a person says so, and logs
+what they paid so the invoice splits it. A venue booked by the pilot and an
+order paid through a cart appear on the same itinerary.
+
+**Watching.** `watch_flight AC123` reads FlightAware now and every 15 minutes
+from 36 hours before departure until it lands, posting only changes: a delay of
+15 minutes or more (and each further 15), a gate or terminal change, departed,
+landed, cancelled. A paid order is watched through the store's order status
+page until it is delivered: "shipped" with the carrier and tracking link, then
+"delivered". Each is said once, as a text line.
+
+```sh
+curl 'localhost:5173/api/dev/source?kind=flights&from=YYZ&to=YVR&depart=2026-10-10'   # one recipe, no model
+curl 'localhost:5173/api/dev/source?kind=events&city=Toronto&query=Toronto%20Raptors'
+curl 'localhost:5173/api/dev/source?kind=flight&ident=AC123'
+curl -X POST localhost:5173/api/dev/watch -H 'content-type: application/json' -d '{"chat":"demo"}'   # check now
+curl -X POST localhost:5173/api/dev/shipped -H 'content-type: application/json' \
+  -d '{"chat":"demo","itemId":"i1a2b","carrier":"Canada Post","tracking":"7023…","trackingUrl":"https://…","eta":"Tuesday"}'   # demo a delivery
+curl -X POST localhost:5173/api/dev/seedflight -H 'content-type: application/json' \
+  -d '{"chat":"demo","itemId":"i1a2b","ident":"AC123"}'   # watch an item as a flight without reading FlightAware
+open 'http://localhost:5173/api/dev/card?kind=itinerary&state=open'
+```
+
+Only recipes that work from this account are wired: Browserbase's "verified"
+stealth mode is Enterprise-only and proxied browser sessions are not on the free
+plan, which rules out Kayak, Skyscanner, Booking.com, Airbnb, Expedia, OpenTable
+and every parcel carrier's own page. The parsers are pinned by fixtures in
+`scripts/fixtures/sources/`; when Google changes its markup, `source.empty` in
+the run viewer names the page that came back.
 
 ### LLM usage sources
 
@@ -458,36 +741,77 @@ Alternatives for `dev`: a local Ollama (`http://localhost:11434/v1`, free, slow,
 and small models leak reasoning and skip tools) or Workers AI's
 OpenAI-compatible endpoint — see `.dev.vars.example`.
 
-## Deploy
+## Setting up the dependencies
 
-Live at **https://htn-planner.schangchang-li.workers.dev**. A redeploy takes
-about ten seconds:
+### 1. The toolchain
 
-```sh
-npm run deploy      # builds, then deploys with LLM_PROFILE=demo (OpenAI)
-```
-
-`wrangler.jsonc` keeps `LLM_PROFILE` at `dev` so local work never spends OpenAI
-credits; the deploy script overrides it for production only.
-
-R2 (card image caching) is optional and currently off — see the note in
-`wrangler.jsonc`.
-
-### Which agent is live: deployed or your laptop
-
-Linq delivers to every active subscription, and two live agents means two
-replies to every text. Keep exactly one active:
+**Node 20 or newer** (developed on 26) and **npm**. The lockfile is
+`package-lock.json`, so installing with pnpm or yarn produces a different tree —
+don't. `wrangler` comes from the dev dependencies, so there is nothing to
+install globally; every command below uses `npx wrangler` or an npm script.
 
 ```sh
-node scripts/linq-webhook.mjs list
-node scripts/linq-webhook.mjs use workers.dev          # the deployed Worker answers
-node scripts/linq-webhook.mjs use trycloudflare        # your laptop answers (tunnel must be up)
-node scripts/linq-webhook.mjs create <tunnel-url> --env   # after a tunnel restart: new URL, new secret
-node scripts/linq-webhook.mjs prune                    # delete dead, inactive subscriptions
+node --version    # v20+
+npm install
 ```
 
-Production logs: `npx wrangler tail`. The simulator routes (`/api/dev/*`) are
-localhost-only and return 404 on the deployed Worker.
+### 2. The accounts
+
+Work down the table. Only the first row is required to get *something* running
+locally; the rest turn features on.
+
+| Service | What you need | Goes in | Without it |
+|---|---|---|---|
+| **Cloudflare** | `npx wrangler login`, then a D1 database and a Vectorize index (see *Cloudflare setup from scratch*) | `wrangler.jsonc` | nothing deploys; local dev still works |
+| **A model** | one of the four rows in *Where the model comes from* | `.dev.vars` | the agent cannot think — every turn fails |
+| **Linq** | account key, and a number to send from | `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET` | sends are logged, not delivered. Fine for local work |
+| **Browserbase** | API key from the dashboard | `BROWSERBASE_API_KEY` | falls back to Cloudflare Browser Rendering, whose datacenter IPs review sites block |
+| **OpenAI** | API key | `OPENAI_API_KEY` | needed for deploys, which run `LLM_PROFILE=demo` |
+| **Instagram** | a throwaway account for the bot, logged in once (below) | `BROWSERBASE_CONTEXT_ID` | reading someone's linked Instagram hits a login wall |
+| **Shopify** | nothing | — | — (stores are called over UCP, which is public) |
+
+Local secrets live in `.dev.vars` (copy `.dev.vars.example`). Production secrets
+are separate and go in one at a time with `npx wrangler secret put NAME`.
+
+### 3. One-time setup scripts
+
+None of these are needed to run the agent locally; each turns on one thing.
+
+```sh
+node scripts/ig-login.mjs                    # log the bot's Instagram in, by hand,
+                                             # in a remote browser. Prints BROWSERBASE_CONTEXT_ID.
+                                             # The password never touches this repo.
+node scripts/linq-contact-card.mjs set "Whim"   # the name and photo people see for the number
+node scripts/linq-webhook.mjs create <url> --env   # point Linq at your tunnel (see above)
+```
+
+### 4. Check it works
+
+```sh
+npm run smoke        # deterministic checks against the local dev server, no model calls
+npm run typecheck
+```
+
+Run `npm run smoke` after every pull and before every deploy — several people
+edit this repo at once and it covers the things that have already broken.
+
+### What each package is for
+
+| package | why |
+| --- | --- |
+| `agents` | the Durable Object framework behind `PlanAgent` and `RunHub` — state, WebSockets, scheduling |
+| `@linqapp/sdk` | iMessage: sending, cards, tapbacks, webhook verification |
+| `openai` | the model client. Points at OpenAI or any OpenAI-compatible endpoint via the `dev` profile |
+| `@cloudflare/puppeteer` | drives the browser for research and booking, over CDP |
+| `workers-og` | renders the plan and cart cards to PNG inside the Worker |
+| `zod` | validates tool arguments coming back from the model |
+| `react` / `react-dom` | the vote page and the `/runs` viewer |
+
+**Dev dependencies:** `vite` + `@cloudflare/vite-plugin` (one dev server for both
+the Worker and the React app), `@vitejs/plugin-react`, `typescript`, `wrangler`.
+
+**Cloudflare services used:** Durable Objects with SQLite, Workflows, D1,
+Vectorize, Browser Rendering, Workers AI (embeddings), and R2 (optional, off).
 
 ## Cloudflare setup from scratch
 
@@ -574,33 +898,36 @@ Only one subscription may be active at a time — see *Which agent is live* belo
 | `not available on your plan` | the account is on the free tier; Browser Rendering, Workflows and Vectorize need Workers Paid |
 | `Invalid cache control` from Shopify | `PUBLIC_BASE_URL` is unset or wrong, so the agent profile is unreachable |
 
-## What this depends on
+## Deploy
 
-**Toolchain.** Node 20 or newer (developed on 26) and npm — the lockfile is
-`package-lock.json`, so don't install with pnpm or yarn. `npx wrangler` comes
-from the dev dependency; no global install needed.
+Live at **https://whim.schangchang-li.workers.dev**. A redeploy takes
+about ten seconds:
 
-**Runtime dependencies**
+```sh
+npm run deploy      # builds, then deploys with LLM_PROFILE=demo (OpenAI)
+```
 
-| package | why |
-| --- | --- |
-| `agents` | the Durable Object framework behind `PlanAgent` and `RunHub` — state, WebSockets, scheduling |
-| `@linqapp/sdk` | iMessage: sending, cards, tapbacks, webhook verification |
-| `openai` | the model client. Points at OpenAI or any OpenAI-compatible endpoint via the `dev` profile |
-| `@cloudflare/puppeteer` | drives the browser for research and booking, over CDP |
-| `workers-og` | renders the plan and cart cards to PNG inside the Worker |
-| `zod` | validates tool arguments coming back from the model |
-| `react` / `react-dom` | the vote page and the `/runs` viewer |
+`wrangler.jsonc` keeps `LLM_PROFILE` at `dev` so local work never spends OpenAI
+credits; the deploy script overrides it for production only.
 
-**Dev dependencies:** `vite` + `@cloudflare/vite-plugin` (one dev server for the
-Worker and the React app), `@vitejs/plugin-react`, `typescript`, `wrangler`.
+R2 (card image caching) is optional and currently off — see the note in
+`wrangler.jsonc`.
 
-**Cloudflare services:** Durable Objects with SQLite, Workflows, D1, Vectorize,
-Browser Rendering, Workers AI (embeddings), and R2 (optional, off).
+### Which agent is live: deployed or your laptop
 
-**Outside accounts:** Linq (the iMessage number), OpenAI (production model),
-Browserbase (optional but strongly recommended browser sessions). Shopify needs
-no key — stores are called over UCP, which is public.
+Linq delivers to every active subscription, and two live agents means two
+replies to every text. Keep exactly one active:
+
+```sh
+node scripts/linq-webhook.mjs list
+node scripts/linq-webhook.mjs use workers.dev          # the deployed Worker answers
+node scripts/linq-webhook.mjs use trycloudflare        # your laptop answers (tunnel must be up)
+node scripts/linq-webhook.mjs create <tunnel-url> --env   # after a tunnel restart: new URL, new secret
+node scripts/linq-webhook.mjs prune                    # delete dead, inactive subscriptions
+```
+
+Production logs: `npx wrangler tail`. The simulator routes (`/api/dev/*`) are
+localhost-only and return 404 on the deployed Worker.
 
 ## Things that will bite you
 
@@ -647,3 +974,72 @@ no key — stores are called over UCP, which is public.
   must text the number first (inbound-first).
 - `vite.config.ts` needs the `agents()` plugin, or `@callable()` is a syntax
   error at Worker startup.
+
+## Agent observability
+
+The existing `/runs` viewer now includes **Performance & diagnostics** for each
+run: per-model-call p50/p95, input/output/cached/reasoning token counts, errors,
+JSON retries, unfinished spans, and cumulative latency by operation. Clicking a
+slow operation or error opens its event details, including trace/span IDs and
+Sentry event IDs when exported. Percentiles are for the selected run, not global
+service SLAs. Overlapping and nested durations are not additive wall time.
+Optimization observations identify slow operations, validation retries, low cache
+reuse and repeated work; they are investigation suggestions, not automatic
+changes to models, prompts or side-effect ordering. Old runs retain their events
+but do not acquire retroactive span metrics.
+
+Tracing covers Worker requests and Durable Object/Agent execution in Sentry,
+plus locally recorded agent turns, model calls, SDK transport attempts, tools,
+research and booking workflow attempts, Browserbase Search/Fetch, Jev, browser
+observation and browser actions. Actual Workflow step callbacks are traced so
+cached replay results are not reported as fresh work. Workflow telemetry reports
+back into the same chat's run viewer. SDK transport HTTP status and retryability
+are recorded, with non-success responses marked as failed spans without altering
+the SDK's retry behavior.
+
+Model decisions are recorded as tool selections, short action summaries,
+validation outcomes and execution guards. Raw private reasoning is neither
+captured nor rendered, including legacy `thinking` fields. `reasoningTokens` is a
+usage counter, not reasoning text. Existing `LOG_BODIES` still controls message
+text in the local run history. External Sentry payloads contain operational
+metadata only: no prompts, completions, tool arguments, HTTP bodies, request
+headers, contact details or payment data. Error messages stay in the protected
+run dashboard; Sentry receives exception types, stack frames and correlation IDs.
+
+To enable external export, create a Sentry Cloudflare/JavaScript project, set
+`SENTRY_DSN` in `.env`/`.dev.vars`, and configure `SENTRY_ENVIRONMENT`, optionally
+`SENTRY_RELEASE` and `SENTRY_TRACES_SAMPLE_RATE` (default `0.2`). For production,
+set the DSN with `npx wrangler secret put SENTRY_DSN`, set environment to
+`production`, then deploy. The existing dashboard works without a DSN. Trace
+sampling applies to Sentry exports, not local dashboard events. The SDK captures
+handled operation errors and uncaught request/DO/workflow errors and exports
+structured logs. No source-map upload or Sentry account setup is performed by
+this repository; configure release source maps separately if needed.
+
+Verify with `npm run typecheck`, `npm test`, and `npm run build`. For a UI smoke
+check without calling any real model, booking, payment or messaging service:
+
+```sh
+npm run runs:migrate
+node scripts/observability-smoke.mjs
+# Open http://localhost:5173/runs/observability-local-smoke
+```
+
+The fixture is explicitly labelled `LOCAL SYNTHETIC CHECK` and only writes the
+local D1 database. It exercises a successful model span, a failed provider span,
+token counters, retry diagnostics, and dashboard navigation.
+
+### Stuck-run watchdog
+
+Run history has a generous **30-minute absolute deadline** for runs with no recorded
+completion. RunHub checks every minute using a durable schedule, and checks again
+when the viewer loads history. This also repairs stranded runs from before a restart
+or deployment. The deadline closes the run as `timed_out`, stores an error event,
+and reports a `RunTimeoutError` to Sentry with the run ID. Sentry's event ID is stored
+with the error when available; no message text is included in the exception.
+
+The viewer shows **Timed out**, a visible error message and the Sentry event ID,
+instead of an endless working indicator. It refreshes history every 15 seconds to
+recover missed WebSocket updates. Late completion and stale snapshots cannot erase
+a timeout. The timeout reports missing completion; it cannot cancel or undo an
+external booking/payment already submitted, so check its status before retrying.

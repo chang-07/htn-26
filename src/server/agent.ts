@@ -1,25 +1,43 @@
+import { collectPlanMedia, generateCover, mediaKey, mediaCompanies, type MediaFile } from "./plan-media";
+import { findLocations, getWeather } from "./weather";
+import { telemetryScope, traceOperation, traceFields, safeFields } from "./telemetry";
 import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
-import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
+import { EMPTY_PLAN, ITEM_EMOJI, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type ItineraryItem, type PlanOption, type PlanState } from "../types";
 import { llmFor, modelExtras } from "./llm";
 import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { cartTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
-import { type PaymentConnection, attachLink, connectPayments, markRead, paymentConnection, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendMusicCard, sendPhoto, sendTicketCard, sendPhotos, sizedImage, updateMusicCard, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { SourceError } from "./sources/fetch";
+import { flightOption, searchFlights } from "./sources/flights";
+import { searchStays, stayOption } from "./sources/stays";
+import { cityTz, eventOption, findEvents } from "./sources/events";
+import { describeFlight, flightStatus } from "./sources/flight-status";
+import { orderStatus } from "./sources/order-status";
+import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "./sources/watch";
+import type { FlightStatus, OrderStatus } from "./sources/types";
+import { tripKind } from "./sources/kind";
+import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
+import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
+import { groupName } from "../dressing";
+import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
+import type { ShipTo } from "./checkout";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
-import { findMatches, upsertProfile } from "./tools/match";
+import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
+import { startConcurrent } from "./tool-concurrency";
+import { redirectFor, travelKindOf } from "./research-routing";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
-const SYSTEM = `You are a planning agent living inside an iMessage group chat. You help the
+const SYSTEM = `You are Whim, a planning agent living inside an iMessage group chat. You help the
 group brainstorm a hangout and then actually make it happen: pick a place, agree
 on a time, book it, and order anything they need.
 
@@ -39,33 +57,63 @@ on a time, book it, and order anything they need.
 - In a one-to-one chat there is nobody to out-vote: recommend one option, and
   ask directly whether to book it. Post a ballot only if they want to compare.
 - Do not announce what you are about to do. Do it, then report the result.
+- When a request needs several lookups that do not depend on each other
+  (flights and a hotel, two stores, a place and its weather), make all of
+  those calls in the same reply. They run at the same time, so the group
+  waits once instead of once per call.
 - "In the area" and "nearby" mean the group's own area, shown below. When
   someone states where they are, call remember_area; pass that area as the
   research "near" unless they name somewhere else for this outing.
+- In a one-to-one chat where the area is unknown, offer a choice: they can type
+  where they are, or share their location and you will take just the city.
+  Call request_location only after they say yes to sharing. Never in a group.
+- When someone says they shared their location, or asks anything that depends on
+  where people are (how far apart, what is between us), call read_locations —
+  it works in groups. Never say a location is set, saved or known unless a tool
+  result in this turn said so.
+- For outdoor or weather-sensitive plans, resolve the stated destination with find_locations, then get_weather for the actual local date. Ask if the place/date is ambiguous. If beyond the forecast window, suggest rechecking closer to the day. Do not fetch weather for every indoor plan.
+- Research delegates site-specific work to a Browserbase specialist only when useful. Use the relevant details, source links and checkedAt in research findings to answer the actual question. Preserve fees, currency, dates and caveats; old findings are not fresh availability. Do not mention skill IDs or claim discovery results are confirmed bookings.
 - Never invent a venue, address or price. Every option you propose must come
   from the Research findings below or a shop_search result in this conversation.
 - A vote needs at least two real options. If research found only one good
   place, do not pad the list: tell the group about that one and ask whether to
   go with it or look further.
-- To find real places, call research. It takes a few minutes and its findings
-  appear under "Research" below when done: tell the group you're on it, then
-  stop. Never start a second run while one is in progress, and never invent
-  places, prices or links — propose only what research found.
+- To find real places (restaurants, bars, activities, venues), call research.
+  It takes a few minutes and its findings appear under "Research" below when
+  done: tell the group you're on it, then stop. Never start a second run while
+  one is in progress, and never invent places, prices or links — propose only
+  what research found. Flights, places to stay and ticketed events are never
+  research: search_flights, search_stays and find_events answer in this turn.
+- For a trip or a night out, work in segments and open one ballot at a time:
+  flights first, then where to stay, then what to do. search_flights,
+  search_stays and find_events return real options in this turn with their
+  prices: put 2-4 on propose_plan and quote the prices exactly. Their links
+  open the site's own checkout, so you never book those yourself: once a vote
+  settles, call add_to_itinerary, which posts the link, then move to the next
+  segment. Flights, stays and events need nobody's name or email and never go
+  through book_option: the moment the vote settles, call add_to_itinerary and
+  hand the group the link. When someone says they booked it, call confirm_item
+  (with what they paid and who paid, so the split is right); when they give a
+  flight number, call watch_flight. Never say a flight, room or ticket is
+  booked until a person says so. The Itinerary below is the trip so far.
+  When the group says "go ahead" or "book it" about a flight, stay or event,
+  that means add_to_itinerary.
 - When someone comes back to a plan after a while, call propose_plan again
   with the options that still apply: that puts the card back in front of them
   instead of pointing at one far up the thread.
 - Brainstorm in plain text. Once there are 2-4 concrete options, call
   propose_plan; it posts the card and opens voting. Call it again to redraw the
   same card when options change rather than describing changes in text.
-- People vote by reacting to the card with a tapback; the card shows the live
-  tally. Never ask anyone to reply with a number, and do not comment on
+- People vote by tapping an option on the plan card (a tapback on the card
+  counts too); the card shows the live tally. Never ask anyone to reply with a number, and do not comment on
   individual votes.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
-- book_option drives a real browser through the venue's booking page. Call it
-  at most once per plan. It needs the full name and email the reservation goes
-  under: if nobody has given them, ask who is booking and for their email, and
-  never make either up.
+- book_option drives a real browser through a restaurant or venue's booking
+  page — never a flight, a hotel room or a ticket, which go to
+  add_to_itinerary. Call it at most once per plan. It needs the full name and
+  email the reservation goes under: if nobody has given them, ask who is
+  booking and for their email, and never make either up.
 - Payment setup is not yours to run. If someone wants you to be able to pay for
   things, tell them to text you "set up payments" in a direct chat; "remove my
   payments" undoes it. Never ask for or accept card details in the chat. You
@@ -83,6 +131,19 @@ on a time, book it, and order anything they need.
   store at a time, and never put one store's variantId in another store's cart.
   The "Shopping list" below is every cart so far. Once the shopping is settled,
   or when someone asks what it all comes to, call show_shopping_list once.
+- The Invoice below is who paid what and who owes whom, worked out from the
+  carts and every logged expense, split across everyone going. When someone
+  says they paid for something outside a cart (the bill, a deposit, the cab),
+  call add_expense with the amount they gave; when someone paid another person
+  back, add_expense with "for" naming that one person. Asked what they owe or
+  how to split it, answer from the Invoice in one line or call show_invoice to
+  post it. It posts itself once every cart is paid, so do not post it after
+  every change, and never do the arithmetic yourself.
+- Orders ship to whoever pays for them unless the group wants one place for
+  the whole event ("send it all to the party", "ship everything to Sam's"):
+  then call set_delivery with to=event. Use to=venue only when someone
+  explicitly asks for it to go to the venue itself. Never ask for, repeat or
+  guess a street address in the chat: it is typed on a private form.
 - Size quantities to the headcount below, not to the number of people talking:
   if 6 are in, order for 6. If nobody has been asked yet and the amount depends
   on it, ask who is in (ask_rsvp) before building a cart. When the headcount
@@ -90,9 +151,15 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
-- When someone asks for a game ("make a trivia game about X"), call make_game
-  with their topic. The game card posts itself; people join and play on the
-  card. Never list the questions in text.
+  Pick the store by what it sells, not the first on the list. When a store has
+  nothing that fits, search one or two others that could before saying so.
+  A list of different things (sunscreen and swim shorts) usually means a
+  different store for each: search each where it is sold, one cart per store.
+- When someone asks for a game ("let's play a game", "make a trivia game about
+  X"), call make_game straight away. With no topic named, do not ask for one:
+  pick it yourself from what this chat is about (the plan, the city, what
+  people here are into). The game card posts itself; people join and play on
+  the card. Never list the questions in text.
 - When someone names a song for the group playlist, call add_song once per
   song, exactly as they said it. The playlist card in the thread updates
   itself; never list the tracks in text. show_playlist reposts the card when
@@ -126,13 +193,10 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
 - If, despite being woken, there is truly nothing for you to do, reply with
   exactly NOOP and nothing else.`;
 
+/** Today as YYYY-MM-DD in Toronto, the demo's zone; date-only comparisons use it. */
+const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
+
 const MAX_STEPS = 8;
-/**
- * Tools that only fetch over the network and do not care what ran before them
- * in the same step. Anything that speaks, posts a card or edits the plan stays
- * out: those are read in order by the group and guarded in order by the turn.
- */
-const CONCURRENT_TOOLS = new Set<string>(["shop_search", "find_matches"]);
 /** The bubble lasts ~85s per call; Linq says to refresh every 60. */
 const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
@@ -157,16 +221,29 @@ const RESEARCH_WATCHDOG_SECONDS = 60;
 
 type Row = Record<string, string | number | boolean | null>;
 
+/** What an invoice ticket showed: the same entries, amounts and payers mean the same ticket. */
+const invoiceKey = (inv: Extract<Invoice, { ok: true }>) => JSON.stringify(inv.entries.map((e) => [e.id, e.amount, e.who]));
+
 /**
  * One instance per iMessage group chat, named by the Linq chat id. Public plan
  * state lives in `this.state` and is pushed to every open vote page over
  * WebSocket; anything private (transcript, handles, who voted for what) lives
  * in this object's own SQLite database and never leaves the server.
  */
+/**
+ * The SDK works out which binding an agent lives under from its class name, and
+ * index.ts exports this class wrapped by Sentry, whose name is not "PlanAgent".
+ * Left to guess, every workflow launch fails ("Could not detect Agent binding
+ * name") — research, availability, booking and paying all at once. So say it.
+ */
+const WORKFLOW_OPTS = { agentBinding: "PlanAgent" } as const;
+
 export class PlanAgent extends Agent<Env, PlanState> {
   initialState: PlanState = EMPTY_PLAN;
 
   /** Set when something worth celebrating just happened; consumed by the next text sent. */
+  private mediaInFlight = new Set<string>();
+  private coverInFlight = new Map<string, Promise<MediaFile>>();
   private celebrateNextSend = false;
   private turnRunning = false;
   private turnRequested = false;
@@ -180,10 +257,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
    */
   private runs?: RunRecorder;
   private recorder() {
-    return (this.runs ??= new RunRecorder(this.env, this.name, (promise) => this.ctx.waitUntil(promise)));
+    return (this.runs ??= new RunRecorder(this.env, this.name, (promise) => this.ctx.waitUntil(promise), {
+      load: () => this.getMeta("runs_last"),
+      save: (json) => this.setMeta("runs_last", json),
+    }));
   }
 
   async onStart() {
+    this.sql`CREATE TABLE IF NOT EXISTS plan_media (id TEXT PRIMARY KEY, data TEXT NOT NULL, type TEXT NOT NULL)`;
     this.sql`CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       linq_id TEXT UNIQUE,
@@ -214,10 +295,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS watches (item_id TEXT PRIMARY KEY, snapshot TEXT, failures INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, checked INTEGER)`;
+    this.queuePlanMedia();
   }
 
   /**
-   * Message bodies and model reasoning for the run viewer, when LOG_BODIES is
+   * Message bodies for the run viewer, when LOG_BODIES is
    * on. Run history is served over HTTP, so switching this on means it holds
    * what real people wrote in their group chat, not just how long it was.
    * Handles stay masked either way.
@@ -234,7 +317,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * via GET /api/dev/logs?chat=<id>, and feeds the run viewer at /runs.
    */
   private note = (level: Level, event: string, fields: Fields = {}) => {
-    log(level, "agent", event, { chat: short(this.name), ...fields });
+    const { telemetryExported, ...values } = fields;
+    fields = safeFields({ ...traceFields(), ...values });
+    fields = log(level, "agent", event, { chat: short(this.name), ...fields }, false, telemetryExported !== true);
     this.recorder().record(level, event, fields);
     this.sql`INSERT INTO events (ts, level, event, fields) VALUES (${Date.now()}, ${level}, ${event}, ${JSON.stringify(fields)})`;
     this.sql`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ${EVENT_HISTORY}`;
@@ -268,9 +353,18 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // Every message is remembered, but only one addressed to the agent wakes the
     // model. Group chatter costs no tokens and draws no interjections; when the
     // agent is finally called on, the whole conversation is already in its memory.
+    // A demo is run more than once. Handled in code so it costs nothing, cannot
+    // be talked out of, and wipes the message that asked for it too.
+    if (/^\s*(@\S+\s+)?\/reset\s*$/i.test(msg.text)) {
+      await this.resetChat();
+      await this.say("reset. fresh start, and i still know who you are");
+      return;
+    }
     if (await this.handlePayText(msg)) return;
 
     const wake = this.wakeReason(msg);
+    // Someone asking again is what re-arms research after a failure.
+    if (wake) this.setMeta("research_failed", "0");
     this.note("info", wake ? "message.in" : "message.stored", {
       from: mask(msg.from),
       chars: msg.text.length,
@@ -308,6 +402,43 @@ export class PlanAgent extends Agent<Env, PlanState> {
     await this.schedule(2, "runTurn");
   }
 
+  /**
+   * Back to a chat that has never planned anything, for running a demo again.
+   *
+   * Goes: the transcript, the plan, votes, carts, the itinerary, expenses,
+   * RSVPs, the playlist, games, research, tickets, watches and every timer.
+   * Stays: who is in the chat and their names, where the group is based, and
+   * that they have been onboarded. What people told the agent about themselves
+   * (profile, address, payments) lives with the person, not the chat, and is
+   * untouched. Run history stays too: a reset is itself worth seeing there.
+   * The thread on people's phones is theirs; nothing can unsend it.
+   */
+  async resetChat() {
+    for (const s of await this.listSchedules().catch(() => [])) await this.cancelSchedule(s.id).catch(() => false);
+    // Best effort: an abandoned store cart expires on its own.
+    for (const c of this.carts()) {
+      const cartId = this.getMeta(`cart_id:${shopKey(c.shop)}`);
+      if (cartId) await cancelCart(this.env, shopKey(c.shop), cartId).catch(() => false);
+    }
+
+    this.sql`DELETE FROM messages`;
+    this.sql`DELETE FROM votes`;
+    this.sql`DELETE FROM research`;
+    this.sql`DELETE FROM product_names`;
+    this.sql`DELETE FROM tickets`;
+    this.sql`DELETE FROM rsvps`;
+    this.sql`DELETE FROM games`;
+    this.sql`DELETE FROM watches`;
+    this.sql`DELETE FROM plan_media`;
+    const KEEP = ["is_group", "area", "onboarded", "profile_link_sent", "profile_card_sent", "profile_card_hold", "profile_ack_at", "contact_card_shared", "location_seen", "runs_last"];
+    for (const { key } of this.sql<{ key: string }>`SELECT key FROM meta`) {
+      if (!KEEP.includes(key)) this.sql`DELETE FROM meta WHERE key = ${key}`;
+    }
+    // The version keeps climbing so an open vote page or card redraws as empty.
+    this.setState({ ...EMPTY_PLAN, version: this.state.version + 1 });
+    this.note("info", "chat.reset", { kept: this.participants().length });
+  }
+
   /** Why this message should wake the model, or null to stay asleep. */
   private wakeReason(msg: { isGroup?: boolean; mentionsMe?: boolean; replyToId?: string }): string | null {
     if (this.getMeta("is_group") !== "1") return "direct chat";
@@ -324,7 +455,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** True for anything the agent posted: texts, and every id a card has had. */
   private isOwnMessage(id: string) {
-    if (this.cardIds().includes(id)) return true;
+    if (this.cardIds().includes(id) || this.planPhotoIds().includes(id)) return true;
     // Each store's pay card has its own id, kept under that store's key.
     if (this.carts().some((c) => id === this.getMeta(`cart_message_id:${shopKey(c.shop)}`))) return true;
     return this.sql<Row>`SELECT 1 FROM messages WHERE linq_id = ${id} AND direction = 'out'`.length > 0;
@@ -349,7 +480,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.startPay(shopKey(cart.shop), r.from, "reaction");
       return;
     }
-    if (!this.cardIds().includes(r.messageId)) {
+    // The shopping list is every cart at once, and a thumbs up on it means the
+    // same thing as on a cart. With one cart unpaid that is the one; with
+    // several, which one is theirs to say.
+    const onList = this.sql<Row>`SELECT 1 FROM tickets WHERE kind = 'list' AND message_id = ${r.messageId}`.length > 0;
+    if (onList) {
+      if (r.reactionType !== "like" && r.reactionType !== "love") return void this.note("info", "reaction.ignored", { reason: "not a pay tapback", type: r.reactionType });
+      const unpaid = this.carts().filter((c) => !c.paidBy);
+      if (!unpaid.length) return void this.note("info", "reaction.ignored", { reason: "every cart is paid", type: r.reactionType });
+      if (unpaid.length > 1) return void (await this.say(`which one? thumbs up the cart you're covering: ${unpaid.map((c) => c.shop).join(", ")}`));
+      await this.startPay(shopKey(unpaid[0].shop), r.from, "reaction");
+      return;
+    }
+    if (!this.cardIds().includes(r.messageId) && !this.planPhotoIds().includes(r.messageId)) {
       this.note("info", "reaction.ignored", { reason: "not on the plan card", type: r.reactionType });
       return;
     }
@@ -417,6 +560,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const votes = this.sql<{ voter: string; option_id: string }>`SELECT voter, option_id FROM votes`;
     const people = this.participants();
     const voted = new Set(votes.map((v) => v.voter));
+    // A tap on the card carries no phone number, so it cannot be matched to a
+    // name. Each one still is somebody's vote: it stands for one of the people
+    // not otherwise accounted for, or "everyone has voted" never comes true
+    // for a group that votes on the card.
+    const unvoted = people.filter((p) => !voted.has(p.handle));
+    const taps = votes.filter((v) => v.voter.startsWith("web:")).length;
 
     this.setState({
       ...next,
@@ -425,10 +574,64 @@ export class PlanAgent extends Agent<Env, PlanState> {
       ),
       awaiting:
         next.status === "voting"
-          ? people.filter((p) => !voted.has(p.handle)).map((p) => this.label(p.handle, people))
+          ? unvoted.slice(0, Math.max(0, unvoted.length - taps)).map((p) => this.label(p.handle, people))
           : [],
+      going: this.splitNames(),
       version: this.state.version + 1,
     });
+    this.queuePlanMedia();
+  }
+
+  private queuePlanMedia() {
+    if (!this.state.title.trim()) return;
+    const key = mediaKey(this.state);
+    if (this.getMeta("media_requested") === key) return;
+    this.setMeta("media_requested", key);
+    this.ctx.waitUntil(this.schedule(1, "enrichPlanMedia").catch(() => {
+      this.setMeta("media_requested", "");
+    }));
+  }
+
+  /** Generate an event cover once; fetch company logos independently. */
+  async enrichPlanMedia() {
+    const snapshot = this.state;
+    const key = mediaKey(snapshot);
+    if (!snapshot.title.trim() || this.getMeta("media_completed") === key) return;
+    if (this.mediaInFlight.has(key)) return;
+    this.mediaInFlight.add(key);
+    try {
+      const cached = JSON.parse(this.getMeta("generated_cover") || "null") as { title: string; cover: NonNullable<PlanState["media"]>["cover"] } | null;
+      const input = cached?.title === snapshot.title && cached.cover?.generated
+        ? { ...snapshot, media: { title: snapshot.title, logos: snapshot.media?.logos ?? {}, cover: cached.cover } }
+        : snapshot;
+      const media = await collectPlanMedia(input, () => {
+        let pending = this.coverInFlight.get(snapshot.title);
+        if (!pending) {
+          pending = generateCover(snapshot.title, this.env);
+          this.coverInFlight.set(snapshot.title, pending);
+        }
+        return pending;
+      }, async (file: MediaFile) => {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(file.data));
+        const id = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, "0")).join("");
+        this.sql`INSERT OR IGNORE INTO plan_media (id, data, type) VALUES (${id}, ${file.data}, ${file.type})`;
+        return `/api/plan-media/${encodeURIComponent(this.name)}/${id}`;
+      });
+      if (media.cover?.generated) this.setMeta("generated_cover", JSON.stringify({ title: snapshot.title, cover: media.cover }));
+      // A slow generation must never replace media belonging to a newer event.
+      if (mediaKey(this.state) !== key) return;
+      this.publish({ media });
+      const incomplete = !media.cover || mediaCompanies(snapshot).some(domain => !media.logos[domain]);
+      if (incomplete && this.getMeta("media_retried") !== key) {
+        this.setMeta("media_retried", key);
+        await this.schedule(60, "enrichPlanMedia");
+      } else this.setMeta("media_completed", key);
+    } finally { this.mediaInFlight.delete(key); this.coverInFlight.delete(snapshot.title); }
+  }
+
+  async getPlanMedia(id: string): Promise<MediaFile | null> {
+    if (!/^[a-f0-9]{64}$/.test(id)) return null;
+    return this.sql<MediaFile>`SELECT data, type FROM plan_media WHERE id = ${id}`[0] ?? null;
   }
 
   /** All message ids the plan card has had, newest last. */
@@ -440,6 +643,17 @@ export class PlanAgent extends Agent<Env, PlanState> {
   private rememberCardId(id: string) {
     this.setMeta("card_message_id", id);
     this.setMeta("card_message_ids", JSON.stringify([...this.cardIds().filter((x) => x !== id), id].slice(-30)));
+  }
+
+  /**
+   * Message ids of the open ballot's ticket photos, newest last. The ballot is
+   * two messages, the photo and the card under it, and a phone reacts to or
+   * replies to the photo far more often than to the card: both belong to it.
+   * The list starts over with each ballot, so a tapback on the previous
+   * ballot's photo, still visible up the thread, never lands in this one.
+   */
+  private planPhotoIds(): string[] {
+    return JSON.parse(this.getMeta("plan_photo_ids") ?? "[]");
   }
 
   /** Keeps the playlist card's track count current: first change posts it, later ones redraw it. */
@@ -509,11 +723,17 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * booking lands — not on every propose_plan, which models call freely.
    */
   private async planTicketIfNew() {
+    // An open ballot is the plan card alone: it is the poll, tapped to vote. A
+    // static "react to vote" ticket beside it was a second, worse ballot.
+    if (this.state.status === "voting") return void this.setMeta("plan_photo_ids", "[]");
     const key = this.state.status === "booked" ? `booked:${this.state.chosenOptionId}` : this.state.options.map((o) => o.title).join("|");
     // The same ballot is not posted twice in a row — but a ballot posted a while
     // ago is far up the thread by now, and re-proposing it means "show me again".
     const fresh = Date.now() - Number(this.getMeta("plan_ticket_at") ?? 0) < CARD_STALE_MS;
     if (this.getMeta("plan_ticket_key") === key && fresh) return;
+    // A different ballot, or the confirmation once booked, starts the photo
+    // list over: only this ballot's photos take votes.
+    if (this.getMeta("plan_ticket_key") !== key) this.setMeta("plan_photo_ids", "[]");
     this.setMeta("plan_ticket_key", key);
     this.setMeta("plan_ticket_at", String(Date.now()));
     await this.postTicket("plan", planTicket(this.state));
@@ -527,7 +747,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const person = this.participants()[0];
     if (!person) return false;
     const token = await peopleStore(this.env).tokenFor(person.handle);
-    await this.say(`${intro}${this.env.PUBLIC_BASE_URL}/p/${token}`);
+    const url = `${this.env.PUBLIC_BASE_URL}/p/${token}`;
+    // The same tappable card onboarding offers, so asking for the profile later
+    // gets the card again rather than a bare address. The plain link is what is
+    // left if the card cannot be sent.
+    const id = await timed(
+      "agent",
+      "profile_card.out",
+      { asked: true },
+      () => sendLinkCard(this.env, this.name, { title: "Your profile", subtitle: "Change anything, anytime.", button: "Open", url }),
+      this.note,
+    ).catch(() => undefined);
+    if (id) this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${"[profile card]"}, ${Date.now()})`;
+    else await this.say(`${intro}${url}`);
     this.setMeta("profile_link_sent", "1");
     return true;
   }
@@ -645,23 +877,41 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.note("info", "pay.asked", { shop, who: mask(payer), source });
 
     // The wallet: Linq is the authority, the profile flag only a cache of it.
+    // Both are needed before anything is decided, so they are read together.
     const store = peopleStore(this.env);
-    const profile = (await store.getMany([payer]))[payer];
-    const wallet: PaymentConnection = await paymentConnection(this.env, this.name, payer).catch(() => ({ status: "not_connected" }));
+    const [profiles, wallet] = await Promise.all([
+      store.getMany([payer]),
+      paymentConnection(this.env, this.name, payer).catch((): PaymentConnection => ({ status: "not_connected" })),
+    ]);
+    const profile = profiles[payer];
     if (wallet.status !== "connected" && !(wallet.simulated && profile?.payments === "connected")) {
       this.note("info", "pay.needs_wallet", { who: mask(payer) });
       await this.say(`${who}, you haven't set up payments yet. text me "set up payments" in a direct message (takes a minute), then thumbs up the cart again`);
       return;
     }
-    if (!profile?.shipTo) {
+    // Where it ships. An event address belongs to the chat and is never used
+    // unseen: each payer opens the form with it filled in and saves it once.
+    // Without one, it is the payer's own address, asked for the first time only.
+    const delivery = this.delivery();
+    const choice = this.getMeta(`ship_choice:${payer}`);
+    const toEvent = delivery && choice !== "own";
+    const contact = profile?.shipTo ?? profile?.contact;
+    const shipTo: ShipTo | undefined = !toEvent
+      ? profile?.shipTo
+      : delivery.confirmed && choice === `event:${delivery.stamp}` && contact && isComplete(delivery.address)
+        ? { name: contact.name, email: contact.email, ...delivery.address }
+        : undefined;
+    if (!shipTo) {
       // Asked for on their own private page, and the payment picks itself back up when it is saved.
       this.setMeta(`pay_waiting:${payer}`, shop);
       const token = await store.tokenFor(payer);
-      this.note("info", "pay.needs_address", { who: mask(payer) });
+      this.note("info", "pay.needs_address", { who: mask(payer), event: !!toEvent });
       await sendLinkCard(this.env, this.name, {
-        title: "Where should it ship?",
-        subtitle: `${who}: one time only. I'll pay for ${cart.shop} as soon as it's saved.`,
-        button: "Add address",
+        title: toEvent ? (delivery.confirmed || delivery.source === "venue" ? "Ship it to the event?" : "Where is the event?") : "Where should it ship?",
+        subtitle: toEvent
+          ? `${who}: check the address and save. I'll pay for ${cart.shop} as soon as you do.`
+          : `${who}: one time only. I'll pay for ${cart.shop} as soon as it's saved.`,
+        button: toEvent && (delivery.confirmed || delivery.source === "venue") ? "Check address" : "Add address",
         url: `${this.env.PUBLIC_BASE_URL}/p/${token}/ship?chat=${encodeURIComponent(this.name)}`,
       }).catch((err: unknown) => this.note("warn", "pay.address_card_failed", errorFields(err)));
       return;
@@ -674,11 +924,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
       shop,
       checkoutUrl: cart.checkoutUrl,
       payer,
-      shipTo: profile.shipTo,
+      shipTo,
       capCents: Number(this.env.PAY_CAP_CENTS) || 6000,
       key: crypto.randomUUID(),
     };
-    const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+    const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
     this.note("info", "pay.started", { workflowId: short(workflowId), shop, who: mask(payer), live: this.env.PAYMENTS_LIVE === "true" });
     await this.say(`on it, ${who}. checking out at ${cart.shop}`);
   }
@@ -689,6 +939,52 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (!shop) return;
     this.setMeta(`pay_waiting:${payer}`, "");
     await this.startPay(shop, payer, "resume");
+  }
+
+  // ------------------------------------------------------------------ delivery
+  // One address for the whole event, held here rather than on a person. Like a
+  // person's own address it lives outside public state and is never shown to
+  // the model, which learns only that one is set.
+
+  private delivery(): Delivery | undefined {
+    const raw = this.getMeta("delivery");
+    return raw ? (JSON.parse(raw) as Delivery) : undefined;
+  }
+
+  /** A new stamp, so everyone who said "ship here" to the old address sees the form again. */
+  private setDelivery(next: Omit<Delivery, "stamp"> | undefined) {
+    this.setMeta("delivery", next ? JSON.stringify({ ...next, stamp: crypto.randomUUID().slice(0, 8) }) : "");
+  }
+
+  private deliveryContext(): string {
+    const d = this.delivery();
+    if (!d) return "each order ships to whoever pays for it.";
+    const where = d.source === "venue" ? `the venue (${d.label})` : "the event";
+    return `everything ships to ${where}; ${d.confirmed ? "the address is on file" : "the first person to pay confirms the address on a form"}. You never see it.`;
+  }
+
+  /** The address page asks what to prefill. Only someone in this chat is told. */
+  async deliveryFor(handle: string): Promise<Pick<Delivery, "source" | "label" | "address" | "confirmed"> | null> {
+    const d = this.delivery();
+    if (!d || !this.participants().some((p) => p.handle === handle)) return null;
+    return { source: d.source, label: d.label, address: d.address, confirmed: d.confirmed };
+  }
+
+  /** The address page, on save: this person checked the event address, perhaps correcting it. */
+  async deliverySaved(handle: string, address: Address) {
+    const d = this.delivery();
+    if (!d || !this.participants().some((p) => p.handle === handle)) return;
+    const same = d.confirmed && JSON.stringify(d.address) === JSON.stringify(address);
+    if (!same) this.setDelivery({ ...d, address, confirmed: true });
+    this.setMeta(`ship_choice:${handle}`, `event:${this.delivery()!.stamp}`);
+    this.note("info", "delivery.saved", { who: mask(handle), source: d.source, changed: !same });
+  }
+
+  /** The address page, on save: this person is sending their order home instead. */
+  async deliveryDeclined(handle: string) {
+    if (!this.delivery()) return;
+    this.setMeta(`ship_choice:${handle}`, "own");
+    this.note("info", "delivery.declined", { who: mask(handle) });
   }
 
   /** Called over RPC by the pay workflow. */
@@ -710,14 +1006,34 @@ export class PlanAgent extends Agent<Env, PlanState> {
   async payFinished(result: PayResult) {
     this.setMeta(`pay_running:${result.shop}`, "");
     const who = this.label(result.payer);
-    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId });
+    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId, ...(result.cause ? { cause: result.cause } : {}) });
     const carts = this.carts();
     const cart = carts.find((c) => shopKey(c.shop) === result.shop);
+
+    // A demo with payments off still has to end somewhere. With PAY_MOCK the
+    // dry run — a real checkout, really priced, nothing charged — is played out
+    // as a purchase: the cart goes paid, the receipt and the split follow. It is
+    // marked as a mock in the run log, and PAYMENTS_LIVE always wins over it.
+    // A checkout that could not even run (no browser, a store page that broke)
+    // is mocked too, at the cart's own total: the demo must not hang on a
+    // provider. Never when Pay may have been pressed.
+    const mockable = result.status === "dry_run" || (result.status === "failed" && !result.unsure);
+    if (mockable && cart && this.env.PAY_MOCK === "true" && this.env.PAYMENTS_LIVE !== "true") {
+      this.note("warn", "pay.mocked", { shop: result.shop, total: result.total ?? cart.total, who: mask(result.payer), instead_of: result.status });
+      result = { ...result, status: "paid", total: result.total ?? cart.total, confirmation: `DEMO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`, detail: "demo mode: nothing was charged" };
+    }
 
     if (result.status === "paid" && cart) {
       const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
       this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
+      if (result.orderUrl) {
+        const item = await this.addItineraryItem({ kind: "order", title: result.shop, status: "watching", paidBy: who, url: result.orderUrl, watch: { order: { url: result.orderUrl, shop: result.shop } } });
+        this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+        await this.scheduleWatches();
+      }
       await this.postTicket("cart", cartTicket(paid, this.headcount()));
+      // The store's receipt first, then — if that was the last one — the split.
+      await this.invoiceIfSettled();
       await this.say(`paid. ${who} covered ${result.shop}: ${result.total ?? cart.total} with shipping and tax${result.confirmation ? `, order ${result.confirmation}` : ""}. ${result.detail ?? "the receipt goes to their email"}`, { screenEffect: "confetti" });
       return;
     }
@@ -1042,13 +1358,264 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.publish({ carts, cart: undefined });
   }
 
+  private itinerary(): ItineraryItem[] {
+    return this.state.itinerary ?? [];
+  }
+
+  private saveItinerary(items: ItineraryItem[]) {
+    this.publish({ itinerary: items });
+  }
+
+  private async addItineraryItem(item: Omit<ItineraryItem, "id">): Promise<ItineraryItem> {
+    const taken = new Set(this.itinerary().map((i) => i.id));
+    let id = "";
+    do id = `i${crypto.randomUUID().slice(0, 4)}`;
+    while (taken.has(id));
+    const added: ItineraryItem = { id, ...item };
+    this.saveItinerary([...this.itinerary(), added]);
+    this.note("info", "itinerary.added", { id, kind: item.kind, status: item.status, title: item.title.slice(0, 60) });
+    return added;
+  }
+
+  private async postItinerary() {
+    const items = this.itinerary();
+    if (!items.length) return;
+    await this.postTicket("itinerary", itineraryTicket(items, this.state.title));
+  }
+
+  /** One line per stop for the model. */
+  private itineraryContext(): string {
+    const items = this.itinerary();
+    if (!items.length) return "nothing settled yet";
+    return items.map((i) => `${i.id} ${ITEM_EMOJI[i.kind]} ${i.title} — ${i.status}${i.note ? ` (${i.note})` : ""}${i.price ? `, ${i.price}` : ""}${i.lastUpdate ? `; ${i.lastUpdate}` : ""}`).join(" | ");
+  }
+
+  /**
+   * A source failed: log the cause, tell the model something it can say. The
+   * cause travels with it, so a key or plan problem (a 402 on the proxy, say)
+   * is never softened into "nothing matched": on a real phone, "did not answer"
+   * became "the search came up empty again", which sent the person off to
+   * change dates that were never the problem.
+   */
+  private sourceFailure(err: unknown, what: string): string {
+    this.note("warn", "source.failed", { what, ...errorFields(err) });
+    if (err instanceof SourceError && err.code === "no_browserbase") return `${what} needs BROWSERBASE_API_KEY, which is not set here. Say you can't look that up right now.`;
+    const cause = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
+    return `${what} could not be reached (${cause}). This is a system problem on this side, not a lack of results: say in one line that the lookup isn't working right now, do NOT say nothing matched or ask them to change dates or airports, and do not call it again this turn.`;
+  }
+
+  private static WATCH_SECONDS = 15 * 60;
+
+  /** One timer at a time: a watch added while one is pending does not add a second. */
+  private async scheduleWatches() {
+    if (!this.activeWatches().length) return;
+    if (this.getMeta("watch_timer") === "1") return;
+    // Set the flag only once schedule() has actually resolved: if it throws,
+    // the flag must not be left set with no timer behind it.
+    await this.schedule(PlanAgent.WATCH_SECONDS, "checkWatches");
+    this.setMeta("watch_timer", "1");
+  }
+
+  private activeWatches(): { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] {
+    const now = Date.now();
+    const out: { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] = [];
+    for (const item of this.itinerary()) {
+      if (!item.watch || item.status === "done") continue;
+      const row = this.sql<{ snapshot: string | null; failures: number; started: number }>`SELECT snapshot, failures, started FROM watches WHERE item_id = ${item.id}`[0];
+      if (!row) continue;
+      let snap: FlightStatus | OrderStatus | undefined;
+      if (row.snapshot) {
+        try {
+          snap = JSON.parse(row.snapshot) as FlightStatus | OrderStatus;
+        } catch (err) {
+          this.note("warn", "watch.snapshot_bad", { id: item.id, ...errorFields(err) });
+        }
+      }
+      const active = "flight" in item.watch ? flightWatchActive(snap as FlightStatus | undefined, now) : orderWatchActive(row.started, snap as OrderStatus | undefined, now);
+      if (active) out.push({ item, row });
+    }
+    return out;
+  }
+
+  /**
+   * Scheduled: read every active watch, post only what changed, reschedule
+   * while anything is still worth watching. Three failures in a row on one
+   * item say so once and back off to hourly for it.
+   */
+  async checkWatches() {
+    this.setMeta("watch_timer", "");
+    try {
+      const watches = this.activeWatches();
+      this.note("info", "watch.check", { active: watches.length });
+      // Two phases: every status is read at once (each is a slow proxied
+      // fetch of a different site), then what changed is posted in itinerary
+      // order, so the chat reads the same as it did when this was one loop.
+      const due = watches.filter(({ item, row }) => {
+        if (row.failures >= 3 && row.failures % 4 !== 3) {
+          this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
+          return false; // hourly, in 15-minute ticks
+        }
+        return true;
+      });
+      const read = await Promise.allSettled(
+        due.map(async ({ item }) => {
+          const watch = item.watch!; // activeWatches only returns items with one
+          if ("flight" in watch) {
+            const next = await flightStatus(this.env, watch.flight.ident);
+            if (!next) throw new Error("no status");
+            return next;
+          }
+          return orderStatus(this.env, watch.order.url);
+        }),
+      );
+      for (const [i, { item, row }] of due.entries()) {
+        const watch = item.watch!;
+        const got = read[i];
+        try {
+          if (got.status === "rejected") throw got.reason;
+          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+          if ("flight" in watch) await this.applyWatch(item, got.value, diffFlight(prev, got.value as FlightStatus), prev);
+          else await this.applyWatch(item, got.value, diffOrder(prev, got.value as OrderStatus, watch.order.shop), prev);
+        } catch (err) {
+          const failures = row.failures + 1;
+          this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+          this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
+          if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+        }
+      }
+    } finally {
+      await this.scheduleWatches();
+    }
+  }
+
+  /**
+   * Post the lines, then persist the snapshot and settle the item once it is
+   * over: an unsent line survives to the next tick. For a flight, the
+   * persisted delay holds at the last-announced value (`baselineFor`) so a
+   * creeping delay is not lost between the 15-minute steps that get posted.
+   */
+  private async applyWatch(item: ItineraryItem, next: FlightStatus | OrderStatus, lines: string[], prev?: FlightStatus | OrderStatus) {
+    for (const line of lines) {
+      await this.say(line);
+      this.note("info", "watch.posted", { id: item.id, line: line.slice(0, 80) });
+    }
+    const snapshot = item.watch && "flight" in item.watch ? baselineFor(prev as FlightStatus | undefined, next as FlightStatus, lines) : next;
+    this.sql`UPDATE watches SET snapshot = ${JSON.stringify(snapshot)}, failures = 0, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+    const over = "delivered" in next ? next.delivered : next.status === "landed" || next.status === "cancelled";
+    if (lines.length || over) {
+      const last = lines.at(-1);
+      this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, ...(over ? { status: "done" as const } : {}), ...(last ? { lastUpdate: last.replace(/^\S+ (is |now )?/, "").replace(/\.\s*https?:\/\/\S+$/, "") } : {}) } : i)));
+    }
+    if (over) await this.postItinerary();
+  }
+
+  /** Simulator: the store shipped (or delivered) this order. */
+  async devShipped(itemId: string, snap: OrderStatus) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item || !item.watch || !("order" in item.watch)) return { error: `no order item ${itemId}` };
+    const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
+    const prev = row?.snapshot ? (JSON.parse(row.snapshot) as OrderStatus) : undefined;
+    await this.applyWatch(item, snap, diffOrder(prev, snap, item.watch.order.shop), prev);
+    return { ok: true };
+  }
+
+  /** Simulator: FlightAware now says this about the flight. */
+  async devFlightSnapshot(itemId: string, snap: FlightStatus) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item || !item.watch || !("flight" in item.watch)) return { error: `no flight item ${itemId}` };
+    const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
+    const prev = row?.snapshot ? (JSON.parse(row.snapshot) as FlightStatus) : undefined;
+    await this.applyWatch(item, snap, diffFlight(prev, snap), prev);
+    return { ok: true };
+  }
+
+  /** Simulator: an order item to watch, without a real purchase. */
+  async devSeedOrder(shop: string, url: string) {
+    const item = await this.addItineraryItem({ kind: "order", title: shop, status: "watching", watch: { order: { url, shop } } });
+    this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+    return { id: item.id };
+  }
+
+  /** Simulator: watch this item as a flight without reading FlightAware. */
+  async devSeedFlight(itemId: string, ident: string) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item) return { error: `no item ${itemId}` };
+    this.saveItinerary(this.itinerary().map((i) => (i.id === itemId ? { ...i, status: "watching" as const, note: ident.toUpperCase(), watch: { flight: { ident } } } : i)));
+    this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${itemId}, NULL, 0, ${Date.now()}, NULL)`;
+    return { ok: true };
+  }
+
   /**
    * Who a cost is split across: the people who said they are in, once anyone
    * has; until then everyone in the chat.
    */
   private headcount(): number {
-    const going = this.rsvps().going.length;
-    return going || this.participants().length;
+    return this.splitNames().length;
+  }
+
+  /** The same people, by display name, in the order they joined. */
+  private splitNames(): string[] {
+    const people = this.participants();
+    const going = this.rsvps().going;
+    return going.length ? going : people.map((p) => this.label(p.handle, people));
+  }
+
+  /**
+   * A person as the model names them, resolved to the name the invoice uses.
+   * The model may say "…0001" for someone the chat knows as Maya, or the name
+   * outright; either way one person gets one line, not two.
+   */
+  private nameOf(who: string): string {
+    const people = this.participants();
+    const person = people.find((p) => this.label(p.handle, people) === who || `…${p.handle.slice(-4)}` === who);
+    return person ? this.label(person.handle, people) : who;
+  }
+
+  // ------------------------------------------------------------------ invoice
+  // Who paid what and who owes whom. Nothing is stored for it beyond the
+  // expenses people log in the chat: the rest is read off the carts and the
+  // headcount every time, so it can never disagree with them (src/invoice.ts).
+
+  private expenses(): Expense[] {
+    return this.state.expenses ?? [];
+  }
+
+  private invoice(): Invoice {
+    return invoiceFor(this.carts(), this.expenses(), this.splitNames());
+  }
+
+  /** The whole picture for the model, so "what do I owe?" is read, not worked out. */
+  private invoiceContext(): string {
+    const inv = this.invoice();
+    if (!inv.ok) return inv.reason === "mixed" ? "the carts are in different currencies, so it cannot be added up; quote the amounts as they are" : "nothing yet: no carts and no expenses";
+    const money = (c: number) => fmtMoney(inv.symbol, c);
+    const balance = (l: (typeof inv.lines)[number]) =>
+      `${l.name}${l.paid ? ` paid ${money(l.paid)},` : ""} ${l.net > 0 ? `gets ${money(l.net)}` : l.net < 0 ? `owes ${money(-l.net)}` : "even"}`;
+    const entries = inv.entries
+      .map((e) => `[${e.kind === "cart" ? "cart" : e.id}] ${e.what} ${money(e.amount)} ${e.who ? `paid by ${e.who}` : "UNPAID"}${e.among.length && e.among.length !== inv.people.length ? ` for ${e.among.join(", ")}` : ""}`)
+      .join("; ");
+    return `${money(inv.total)} total across ${inv.people.length} (${inv.people.join(", ")}), ${money(inv.paid)} paid${inv.unpaid.length ? `, ${inv.unpaid.length} cart${inv.unpaid.length === 1 ? "" : "s"} still unpaid` : ""}. Balances: ${inv.lines.map(balance).join("; ")}.${
+      inv.transfers.length ? ` Settle up: ${inv.transfers.map((t) => `${t.from} → ${t.to} ${money(t.amount)}`).join("; ")}.` : ""
+    } Entries: ${entries}.`;
+  }
+
+  /**
+   * The invoice goes out on its own the moment the last cart is paid: that is
+   * when "so what do I owe?" gets asked. Once per state of the books, and never
+   * for one person alone, who has nobody to split with.
+   */
+  private async invoiceIfSettled() {
+    const inv = this.invoice();
+    if (!inv.ok || !inv.settled || !this.carts().length) return;
+    if (inv.lines.filter((l) => l.paid || l.share).length < 2) return;
+    if (this.getMeta("invoice_key") === invoiceKey(inv)) return;
+    await this.postInvoice(inv);
+  }
+
+  /** Posts the ticket and remembers what it showed, so the books are not posted twice unchanged. */
+  private async postInvoice(inv: Extract<Invoice, { ok: true }>) {
+    this.setMeta("invoice_key", invoiceKey(inv));
+    await this.postTicket("invoice", invoiceTicket(inv));
   }
 
   /** One line for tool results: what the whole list looks like now. */
@@ -1099,6 +1666,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO rsvps (handle, answer) VALUES (${handle}, ${answer})
              ON CONFLICT(handle) DO UPDATE SET answer = excluded.answer`;
     this.note("info", "rsvp", { from: mask(handle), answer, source });
+    // Who is going is who the invoice splits across, and the page shows it live.
+    this.publish({});
     // Photos cannot redraw, so nothing is posted per answer — only the close.
     if (this.rsvps().waiting.length === 0) await this.lockHeadcount();
   }
@@ -1112,10 +1681,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** Read receipt, typing bubble and — once per chat — the name and photo. */
   private async acknowledge() {
     // Each is "ok", "dry" or the error, so the run viewer shows what Linq said.
-    const read = await markRead(this.env, this.name);
-    const typing = await this.typing();
+    // Three independent calls, made together: the bubble should not wait for
+    // the receipt, and neither should wait for the card.
     const firstTime = this.getMeta("contact_card_shared") !== "1";
-    const contactCard = firstTime ? await shareContactCard(this.env, this.name) : "already shared";
+    const [read, typing, contactCard] = await Promise.all([
+      markRead(this.env, this.name),
+      this.typing(),
+      firstTime ? shareContactCard(this.env, this.name) : "already shared",
+    ]);
     // A failure (no card set up yet) is tried again at the next wake.
     if (contactCard === "ok" || contactCard === "dry") this.setMeta("contact_card_shared", "1");
     const failed = [read, typing, contactCard].some((r) => !["ok", "dry", "fresh", "already shared"].includes(r));
@@ -1205,7 +1778,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     try {
       do {
         this.turnRequested = false;
-        await this.think();
+        await telemetryScope(this.note, () => traceOperation("agent.turn", "agent", {}, () => this.think()));
       } while (this.turnRequested);
     } catch (err) {
       // Scheduler callbacks have no caller to report to; without this a crash
@@ -1213,13 +1786,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
       this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
-      // After the first reply, not before: the text introduces, the card offers the shortcut.
-      await this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err)));
-      // A turn that ended in silence must not leave the bubble hanging.
-      if (this.typingAt) {
-        this.typingAt = 0;
-        await stopTyping(this.env, this.name);
-      }
+      // Two unrelated tidy-ups, done together. After the first reply, not
+      // before: the text introduces, the card offers the shortcut. And a turn
+      // that ended in silence must not leave the bubble hanging.
+      const bubbleUp = this.typingAt !== 0;
+      this.typingAt = 0;
+      await Promise.all([
+        this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err))),
+        bubbleUp ? stopTyping(this.env, this.name) : undefined,
+      ]);
     }
   }
 
@@ -1242,9 +1817,28 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const direct = this.getMeta("is_group") === "0";
     const about = await this.aboutPeople(people, direct);
 
-    // Carts get their own "Shopping list" line below, whatever the plan's status.
-    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined });
+    // Carts get their own "Shopping list" line below, and the itinerary its own
+    // "Itinerary" line, whatever the plan's status.
+    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined, itinerary: undefined });
     const research = this.researchContext();
+
+    // The generic votes-in nudge just names the winner and asks whether to book
+    // it — right for a restaurant or venue, which does need book_option. A
+    // flight, stay or event never does: when the vote settled on exactly one
+    // winner and its link says which kind it is, tell the model to call
+    // add_to_itinerary directly so it cannot go fish for a name and email.
+    let votesInText =
+      "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else.";
+    if (votesIn) {
+      const tally = this.state.options.map((o) => ({ option: o, count: this.state.counts[o.id] ?? 0 }));
+      const top = Math.max(0, ...tally.map((t) => t.count));
+      const winners = tally.filter((t) => t.count === top);
+      const winner = winners.length === 1 ? winners[0].option : undefined;
+      const kind = winner ? tripKind(winner.bookingUrl) : undefined;
+      if (winner && kind) {
+        votesInText = `You were woken because everyone has now voted, not because of a new message. The winner is "${winner.title}" (optionId ${winner.id}), a ${kind} from the trip sources. Call add_to_itinerary with that optionId and kind "${kind}" now — no name, email or booking step is needed, and never call book_option for it — then say one line and stop.`;
+      }
+    }
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: SYSTEM },
@@ -1255,14 +1849,17 @@ About the people: ${about.text}
 Where the group is based: ${this.getMeta("area") || "UNKNOWN — nobody has said. Before any research, ask where they are; never assume a city, and do not reuse a location from an earlier search unless the group itself stated it."}
 Current plan: ${plan}
 Shopping list: ${this.shoppingListContext()}
+Delivery: ${this.deliveryContext()}
 Headcount: ${this.headcountContext()}
+Invoice: ${this.invoiceContext()}
+Itinerary: ${this.itineraryContext()}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
   availabilityIn
     ? `You were woken because the availability check just finished; each ballot option's real open times are in its availability field in the plan above, read from the venue's own booking page. Tell the group in one or two lines which options have which times, plainly, including any that have nothing open or could not be checked. Say nothing else.${this.getMeta("side_availability") ? ` Venues not on the ballot: ${this.getMeta("side_availability")}.` : ""}`
     : votesIn
-    ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
+    ? votesInText
     : this.getMeta("is_group") === "0"
       ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}${this.pendingIntroContext()}`
       : ""
@@ -1288,9 +1885,11 @@ ${transcript}`,
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
-      if (!spoke) await this.typing();
+      // Refreshed alongside the model call, never ahead of it: the bubble is
+      // best effort (startTyping never throws) and the model is the long pole.
+      if (!spoke) void this.typing().catch(() => {});
       try {
-        res = await client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never);
+        res = await traceOperation("agent.model", "gen_ai.chat", { model, profile, step: step + 1, promptChars: JSON.stringify(messages).length }, () => client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never));
       } catch (err) {
         end("error", "llm_failed", { step, ...errorFields(err) });
         return;
@@ -1300,15 +1899,17 @@ ${transcript}`,
       messages.push(reply);
 
       const calls = (reply.tool_calls ?? []).filter((c) => c.type === "function");
-      // What the model decided on this round trip. Its prose is reasoning, not
-      // anything the group sees — text reaches the chat only through
-      // send_message — so it is the closest thing to a record of its thinking.
       this.note("info", "turn.step", {
         step: step + 1,
         calls: calls.map((c) => c.function.name),
-        ...(reply.content?.trim() && reply.content.trim() !== "NOOP"
-          ? this.body(reply.content.trim(), "thinking")
-          : {}),
+        decision: calls.length ? `Selected ${calls.map((c) => c.function.name).join(", ")}` : "Returned no tool calls",
+        responseChars: reply.content?.length ?? 0,
+        tokens: res.usage?.total_tokens ?? 0,
+        inputTokens: res.usage?.prompt_tokens ?? 0,
+        outputTokens: res.usage?.completion_tokens ?? 0,
+        cachedTokens: res.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        reasoningTokens: res.usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+        finishReason: res.choices[0].finish_reason,
       });
       if (calls.length === 0) {
         // Text reaches the chat only through send_message, never from raw
@@ -1337,23 +1938,15 @@ ${transcript}`,
           "agent",
           "tool",
           // Arguments are useful for every tool except the one carrying message text.
-          { tool: call.function.name, args: call.function.name === "send_message" ? "(text)" : call.function.arguments.slice(0, 300) },
+          { tool: call.function.name, step: step + 1, callId: call.id, argsChars: call.function.arguments.length },
           () => this.runTool(call.function.name, call.function.arguments),
           this.note,
         );
-      // Lookups the model asked for together are fetched together: two stores
-      // searched in one step should cost one wait, not two. Everything else
-      // keeps its turn in the loop below, where order is the point.
-      const early = new Map<string, Promise<string>>();
-      if (calls.filter((c) => CONCURRENT_TOOLS.has(c.function.name)).length > 1) {
-        for (const call of calls) {
-          if (!CONCURRENT_TOOLS.has(call.function.name)) continue;
-          const started = run(call);
-          // The loop can end the turn before reaching this call; awaited or not, it must not go unhandled.
-          started.catch(() => {});
-          early.set(call.id, started);
-        }
-      }
+      // Lookups the model asked for together are fetched together: flights and
+      // a hotel, or two stores, searched in one step cost one wait, not two.
+      // Everything else keeps its turn in the loop below, where order is the
+      // point. Which tools qualify, and why, is in tool-concurrency.ts.
+      const early = startConcurrent(calls, run);
 
       for (const call of calls) {
         let output: string;
@@ -1393,7 +1986,9 @@ ${transcript}`,
             // A question hands the conversation to the humans. There is nothing
             // left to do until they answer, so don't ask the model again — that
             // is exactly where it started rephrasing itself.
-            if (/\?\s*$/.test(parseToolArgs("send_message", call.function.arguments).text)) askedQuestion = true;
+            // A question anywhere in the text, not just at the end: "what dates? i'll
+            // need that first." still waits on an answer. A "?" inside a link is not one.
+            if (/\?(\s|$)/.test(parseToolArgs("send_message", call.function.arguments).text.replace(/https?:\/\/\S+/g, ""))) askedQuestion = true;
           }
         } catch (err) {
           // Already logged by timed(). Bad arguments are the model's to fix; an
@@ -1422,6 +2017,8 @@ ${transcript}`,
     if (!(name in toolSchemas)) return `Unknown tool: ${name}`;
 
     switch (name as ToolName) {
+      case "find_locations": return JSON.stringify(await findLocations(parseToolArgs("find_locations", rawArgs)));
+      case "get_weather": return JSON.stringify(await getWeather(parseToolArgs("get_weather", rawArgs)));
       case "send_message": {
         const { text } = parseToolArgs("send_message", rawArgs);
         const celebrate = this.celebrateNextSend;
@@ -1434,6 +2031,51 @@ ${transcript}`,
         const { area } = parseToolArgs("remember_area", rawArgs);
         this.setMeta("area", area.slice(0, 120));
         return "remembered";
+      }
+
+      case "request_location": {
+        // Apple only allows the request in a 1:1 iMessage chat, and asking in
+        // front of a group is not a thing to do to someone anyway.
+        if (this.getMeta("is_group") !== "0") return "Not possible in a group chat. Ask where they are instead.";
+        const asked = await requestLocation(this.env, this.name);
+        this.note("info", "location.requested", { result: asked });
+        if (asked === "already_sharing") {
+          this.setMeta("location_asked_at", String(Date.now()));
+          const took = await this.takeLocation();
+          return took ? `Their area is now ${took}, and they have been told. Say nothing more about it.` : "They are sharing, but no position has arrived yet. Say you will pick it up when it lands, then stop.";
+        }
+        if (asked !== "sent") return "Location sharing is not available here. Ask them to type where they are instead.";
+        this.setMeta("location_asked_at", String(Date.now()));
+        // The webhook is the fast path; these cover a subscription without it.
+        for (const seconds of [25, 90, 240]) await this.schedule(seconds, "checkLocation");
+        return "Request sent: their phone is showing the prompt. Say so in one short line, then stop — when they accept, the city is saved and confirmed to them on its own.";
+      }
+
+      case "read_locations": {
+        const { people: shared, pairs } = await readPlaces(this.env, this.name);
+        // Counts only: which cities and how far apart is theirs to hear, not the log's to keep.
+        this.note("info", "location.read", { sharing: shared.length, pairs: pairs.length });
+        if (!shared.length) {
+          return "Nobody in this chat is sharing their location with you, so you know nothing about where they are. To share: open this conversation's details in Messages and tap Share My Location. Do not claim to have anyone's location.";
+        }
+        const everyone = this.participants();
+        const who = (handle: string) => this.label(handle, everyone);
+        const ago = (iso?: string) => {
+          if (!iso) return "";
+          const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+          return mins < 2 ? " (just now)" : mins < 90 ? ` (${mins} min ago)` : ` (${Math.round(mins / 60)} h ago — may be stale)`;
+        };
+        for (const pl of shared) {
+          if (pl.locality) await peopleStore(this.env).save(pl.handle, { area: [pl.locality, pl.region].filter(Boolean).join(", ").slice(0, 120) });
+        }
+        // Everyone in one place is the chat's area too, so research has somewhere to look.
+        const cities = [...new Set(shared.map((pl) => pl.locality).filter(Boolean))];
+        if (cities.length === 1 && !this.getMeta("area")) this.setMeta("area", [cities[0], shared[0].region].filter(Boolean).join(", ").slice(0, 120));
+        return [
+          ...shared.map((pl) => `${who(pl.handle)}: ${pl.locality ?? "somewhere Apple gave no city for"}${ago(pl.updatedAt)}`),
+          ...pairs.map((pr) => `${who(pr.a)} and ${who(pr.b)} are ${pr.km < 1 ? "under 1 km" : `about ${pr.km} km`} apart`),
+          "Cities and distances only — you do not have addresses or coordinates, so do not guess at them.",
+        ].join("\n");
       }
 
       case "remember_name": {
@@ -1493,7 +2135,7 @@ ${transcript}`,
         if (this.getMeta("is_group") !== "0") {
           return "Not in a group: the link is private. Tell them to text you directly and say 'profile'.";
         }
-        return (await this.sendProfileLink()) ? "Link sent as its own message. Do not paste it again." : "Nobody to send it to yet.";
+        return (await this.sendProfileLink()) ? "Profile card sent as its own message. Do not paste a link or describe it again." : "Nobody to send it to yet.";
       }
 
       case "forget_person": {
@@ -1518,6 +2160,19 @@ ${transcript}`,
 
       case "research": {
         const args = parseToolArgs("research", rawArgs);
+        // A run that fails at once wakes the model, which would start another,
+        // fail again, and text the chat each time round. One failure, one text.
+        if (this.getMeta("research_failed") === "1") {
+          this.note("warn", "research.retry_blocked", {});
+          return "Research just failed and nobody has asked for anything since. Do not retry. Tell them once, in one line, that the search didn't work and ask what to change.";
+        }
+        // A hotel or flight brief would run for minutes and end in "nothing
+        // found"; the tools that actually answer it are a call away.
+        const travel = travelKindOf(args.brief);
+        if (travel) {
+          this.note("info", "research.redirected", { to: travel === "flight" ? "search_flights" : "search_stays", brief: args.brief.slice(0, 120) });
+          return redirectFor(travel);
+        }
         return this.startResearch(args);
       }
 
@@ -1532,13 +2187,13 @@ ${transcript}`,
         this.sql`DELETE FROM votes`;
         this.publish({
           title: args.title,
+          emoji: args.emoji,
           options,
           status: "voting",
           chosenOptionId: undefined,
           bookingNote: undefined,
         });
 
-        // A new set of options is a moment worth a photo; votes are not.
         await this.planTicketIfNew();
         // Edit the card in place while it is still on screen; once it has
         // scrolled away, a quiet edit is invisible, so post a new one.
@@ -1555,9 +2210,6 @@ ${transcript}`,
           );
 this.rememberCardId(id);
           this.setMeta("plan_card_at", String(Date.now()));
-          // Recipients without the extension see a static card with no
-          // affordance, so spell out the tapback convention once.
-          await this.say(`react to vote:\n${tapbackLegend(this.state)}`);
         }
 
         // The nudge is tied to this ballot. Without that, the timer from an
@@ -1580,6 +2232,122 @@ this.rememberCardId(id);
         });
       }
 
+      case "search_flights": {
+        const args = parseToolArgs("search_flights", rawArgs);
+        if (args.depart < today()) return `${args.depart} is in the past. Ask for the date.`;
+        try {
+          const flights = await searchFlights(this.env, args);
+          this.note("info", "source.flights", { from: args.from, to: args.to, depart: args.depart, found: flights.length });
+          if (!flights.length) return `Google Flights showed nothing for ${args.from} to ${args.to} on ${args.depart}. Check the airports and date with the group.`;
+          return JSON.stringify({ options: flights.map(flightOption), note: "Each option's bookingUrl opens Google Flights with a Book button; never say a flight is booked until someone confirms." });
+        } catch (err) {
+          return this.sourceFailure(err, "Google Flights");
+        }
+      }
+
+      case "search_stays": {
+        const args = parseToolArgs("search_stays", rawArgs);
+        if (args.checkin < today() || args.checkout <= args.checkin) return "Check-in must be today or later and before check-out. Ask for the dates.";
+        try {
+          const stays = await searchStays(this.env, args);
+          this.note("info", "source.stays", { where: args.where, checkin: args.checkin, found: stays.length });
+          if (!stays.length) return `Google Hotels showed nothing in ${args.where} for those dates.`;
+          return JSON.stringify({ options: stays.map(stayOption) });
+        } catch (err) {
+          return this.sourceFailure(err, "Google Hotels");
+        }
+      }
+
+      case "find_events": {
+        const args = parseToolArgs("find_events", rawArgs);
+        try {
+          const events = await findEvents(this.env, args);
+          this.note("info", "source.events", { city: args.city, query: args.query ?? "", found: events.length });
+          if (!events.length) return args.query ? `Ticketmaster has no upcoming ${args.query} dates in ${args.city}.` : `Luma lists nothing in ${args.city} for the next month.`;
+          return JSON.stringify({ options: events.map((e) => eventOption(e, cityTz(args.city))) });
+        } catch (err) {
+          return this.sourceFailure(err, args.query ? "Ticketmaster" : "Luma");
+        }
+      }
+
+      case "add_to_itinerary": {
+        const args = parseToolArgs("add_to_itinerary", rawArgs);
+        let item: Omit<ItineraryItem, "id">;
+        if (args.optionId) {
+          const option = this.state.options.find((o) => o.id === args.optionId);
+          if (!option) return "No such option";
+          const kind = args.kind ?? tripKind(option.bookingUrl);
+          if (!kind) return "Say what kind of stop the winner is: flight, stay, event or venue.";
+          item = { kind, title: option.title, subtitle: option.subtitle, url: option.bookingUrl, price: option.subtitle?.match(/(?:CA|US)?\$[\d,]+(?:\.\d\d)?/)?.[0], status: option.bookingUrl ? "handoff" : "confirmed" };
+        } else if (args.item) {
+          item = { ...args.item, status: args.item.url ? "handoff" : "confirmed" };
+        } else {
+          return "Pass the winning optionId (with kind) or an item.";
+        }
+        const added = await this.addItineraryItem(item);
+        if (args.optionId) {
+          this.sql`DELETE FROM votes`;
+          this.publish({ options: [], counts: {}, chosenOptionId: undefined, status: "idle", bookingNote: undefined });
+          this.setMeta("ballot_id", "");
+        }
+        await this.postItinerary();
+        const finish = added.url ? ` Finish it here: ${added.url}` : "";
+        const ask = added.kind === "flight" ? " Tell me the flight number once it's booked and I'll watch it." : added.kind === "stay" || added.kind === "event" ? " Tell me once it's booked and I'll mark it." : "";
+        await this.say(`${ITEM_EMOJI[added.kind]} ${added.title}${added.price ? `, ${added.price}` : ""}.${finish}${ask}`);
+        return `Added ${added.id}. The ticket and the link are posted; the ballot is clear for the next segment. Itinerary: ${this.itineraryContext()}`;
+      }
+
+      case "watch_flight": {
+        const args = parseToolArgs("watch_flight", rawArgs);
+        let item = args.itemId ? this.itinerary().find((i) => i.id === args.itemId) : undefined;
+        if (args.itemId && !item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        if (!item && !args.itemId) {
+          // No itemId given: attach to the one itinerary item this is clearly
+          // about, rather than adding a duplicate flight stop.
+          const unwatched = this.itinerary().filter((i) => i.kind === "flight" && !i.watch);
+          if (unwatched.length === 1) item = unwatched[0];
+        }
+        const wasNew = !item;
+        const previous = item ? { ...item } : undefined;
+        if (!item) item = await this.addItineraryItem({ kind: "flight", title: args.ident.toUpperCase(), status: "watching", watch: { flight: { ident: args.ident, date: args.date } } });
+        else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, status: "watching", note: args.ident.toUpperCase(), watch: { flight: { ident: args.ident, date: args.date } } } : i)));
+        this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+        try {
+          const status = await flightStatus(this.env, args.ident);
+          if (!status) {
+            // A bad ident must not leave a permanent watch: undo exactly what
+            // this call did, whether that was a new item or an existing one.
+            this.sql`DELETE FROM watches WHERE item_id = ${item.id}`;
+            if (wasNew) this.saveItinerary(this.itinerary().filter((i) => i.id !== item!.id));
+            else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...previous! } : i)));
+            return `FlightAware has no ${args.ident.toUpperCase()}. Check the flight number with them.`;
+          }
+          this.sql`UPDATE watches SET snapshot = ${JSON.stringify(status)}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+          const line = describeFlight(status);
+          this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, lastUpdate: line.replace(/^\S+ /, "") } : i)));
+          await this.scheduleWatches();
+          return `${line}. Watching it: changes are posted on their own, so say this once and stop.`;
+        } catch (err) {
+          await this.scheduleWatches();
+          return this.sourceFailure(err, "FlightAware");
+        }
+      }
+
+      case "confirm_item": {
+        const args = parseToolArgs("confirm_item", rawArgs);
+        const item = this.itinerary().find((i) => i.id === args.itemId);
+        if (!item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        const paidBy = args.paidBy ? this.nameOf(args.paidBy) : undefined;
+        this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, status: i.status === "watching" ? "watching" : "confirmed", note: args.note ?? i.note, price: args.price ?? i.price, paidBy: paidBy ?? i.paidBy } : i)));
+        this.note("info", "itinerary.confirmed", { id: item.id, paid: Boolean(args.price && paidBy) });
+        let expense = "";
+        if (args.price && paidBy) {
+          expense = await this.runTool("add_expense", JSON.stringify({ who: args.paidBy, amount: args.price, what: item.title.slice(0, 60) }));
+        }
+        await this.postItinerary();
+        return `${item.id} confirmed.${expense ? ` ${expense}` : ""} Itinerary: ${this.itineraryContext()}`;
+      }
+
       case "check_availability": {
         const args = parseToolArgs("check_availability", rawArgs);
         const checks = [
@@ -1596,7 +2364,7 @@ this.rememberCardId(id);
         if (!checks.length) return "None of those options has an online booking link, so there is nothing to check. Say so.";
 
         const params: AvailabilityParams = { mode: "availability", partySize: args.partySize, isoTime: args.isoTime, checks };
-        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
         this.note("info", "availability.started", { workflowId: short(workflowId), options: checks.map((c) => c.title) });
         return `Checking ${checks.length} booking page${checks.length === 1 ? "" : "s"} now; it takes a minute or two each and the results arrive on their own. Tell the group you're checking in one short line, then stop.`;
       }
@@ -1609,10 +2377,27 @@ this.rememberCardId(id);
         if (args.optionId && !onBallot) return "No such option";
         if (!onBallot && !args.venue) return "Say what to book: an optionId from the ballot, or a venue from the Research findings.";
         const option: { id?: string; title: string; bookingUrl?: string } = onBallot ?? { title: args.venue!.title, bookingUrl: args.venue!.bookingUrl };
+
+        // A flight, stay or event never goes through the pilot — a haiku
+        // model that has just been told "book it" will otherwise ask for a
+        // name and email nobody needs to give it. Send it to add_to_itinerary
+        // instead of driving a browser.
+        const kind = tripKind(option.bookingUrl);
+        if (kind) {
+          this.note("info", "booking.redirected", { kind });
+          return onBallot
+            ? this.runTool("add_to_itinerary", JSON.stringify({ optionId: args.optionId, kind }))
+            : this.runTool("add_to_itinerary", JSON.stringify({ item: { kind, title: option.title, url: option.bookingUrl } }));
+        }
+
         if (onBallot && (this.state.status === "booking" || this.state.status === "booked" || this.state.status === "handoff")) {
           return `Already ${this.state.status}`;
         }
         if (this.getMeta("booking_running") === "1") return "A booking is already running; one browser at a time. Wait for it to finish.";
+
+        // A restaurant or venue reservation genuinely needs a name and email —
+        // ask rather than invent either.
+        if (!args.contactName || !args.contactEmail) return "Ask who is booking and for their email; never make either up.";
 
         // Validate before touching state: a refused call must leave the plan as it was.
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {
@@ -1641,7 +2426,7 @@ this.rememberCardId(id);
             phone: args.contactPhone ?? (lastSpeaker && /^\+?\d{8,}$/.test(lastSpeaker) ? lastSpeaker : undefined),
           },
         };
-        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params);
+        const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
         this.note("info", "booking.started", { workflowId: short(workflowId), option: option.title });
         return "Booking started. The card updates and the chat is told when it finishes — do not announce success yet.";
       }
@@ -1707,6 +2492,31 @@ this.rememberCardId(id);
         return `Dropped the ${shop} cart. Its old checkout card is still in the thread, so tell the group in one line not to use it. ${this.shoppingListLine()}`;
       }
 
+      case "set_delivery": {
+        const { to, venue } = parseToolArgs("set_delivery", rawArgs);
+        // A new destination is a new question for everyone, including whoever chose to ship home.
+        this.sql`DELETE FROM meta WHERE key LIKE 'ship_choice:%'`;
+        if (to === "payer") {
+          this.setDelivery(undefined);
+          this.note("info", "delivery.cleared");
+          return "Done: each order ships to whoever pays for it.";
+        }
+        if (to === "event") {
+          this.setDelivery({ source: "event", confirmed: false });
+          this.note("info", "delivery.set", { source: "event" });
+          return "Set. The first person to pay types the event's address on a private form, and everyone after them gets it filled in to check. Say so in one short line; do not ask for the address in the chat.";
+        }
+        if (!venue) return "Say which venue: its exact name from the Research findings.";
+        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const report = this.sql<{ report: string }>`SELECT report FROM research WHERE ok = 1 ORDER BY id DESC LIMIT 1`[0];
+        const found = report ? (JSON.parse(report.report) as ResearchReport).candidates.find((c) => norm(c.name).includes(norm(venue)) || norm(venue).includes(norm(c.name))) : undefined;
+        // Only an address research read off the web: nothing is invented here.
+        if (!found?.address) return `No address is known for "${venue}". Use to=event instead and the person paying will type it.`;
+        this.setDelivery({ source: "venue", label: found.name, address: parseAddress(found.address), confirmed: false });
+        this.note("info", "delivery.set", { source: "venue", venue: found.name });
+        return `Set: orders ship to ${found.name}. Whoever pays first checks the address on a private form before anything is ordered. Say so in one short line, and mention that the venue should be told to expect a parcel.`;
+      }
+
       case "show_shopping_list": {
         const carts = this.carts();
         if (!carts.length) return "The shopping list is empty: no carts have been built.";
@@ -1725,10 +2535,50 @@ this.rememberCardId(id);
         if (!cart) return `Which store? "${named}" does not pick out one cart. ${this.shoppingListLine()}`;
         if (cart.paidBy) return `${cart.shop} is already marked paid by ${cart.paidBy}.`;
 
-        const paid = { ...cart, paidBy: who };
+        const paid = { ...cart, paidBy: this.nameOf(who) };
         this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
         await this.postTicket("cart", cartTicket(paid, this.headcount()));
-        return `PAID ticket posted for ${cart.shop}. ${this.shoppingListLine()}`;
+        await this.invoiceIfSettled();
+        const inv = this.invoice();
+        return `PAID ticket posted for ${cart.shop}. ${this.shoppingListLine()}${inv.ok && inv.settled ? " Every cart is paid, so the invoice ticket went out too: do not post it again." : ""}`;
+      }
+
+      case "add_expense": {
+        const args = parseToolArgs("add_expense", rawArgs);
+        const { cents } = parseMoney(args.amount);
+        if (!cents) return `"${args.amount}" is not an amount. Ask how much it was; never guess.`;
+        // "for everyone" is the default, not a person.
+        const among = (args.for ?? []).filter((n) => !/^(everyone|everybody|all|us)$/i.test(n.trim())).map((n) => this.nameOf(n));
+        const taken = new Set(this.expenses().map((e) => e.id));
+        let id = "";
+        do id = `e${crypto.randomUUID().slice(0, 4)}`;
+        while (taken.has(id));
+        const expense: Expense = {
+          id,
+          who: this.nameOf(args.who),
+          amount: args.amount.trim(),
+          what: args.what.trim().slice(0, 60),
+          ...(among.length ? { for: among } : {}),
+        };
+        this.publish({ expenses: [...this.expenses(), expense] });
+        this.note("info", "expense.added", { id: expense.id, amount: expense.amount, what: expense.what, for: expense.for?.length ?? "everyone" });
+        return `Logged ${expense.id}: ${expense.who} paid ${expense.amount} for ${expense.what}${expense.for ? ` (${expense.for.join(", ")} only)` : ""}. Invoice now: ${this.invoiceContext()}`;
+      }
+
+      case "drop_expense": {
+        const { id } = parseToolArgs("drop_expense", rawArgs);
+        const before = this.expenses();
+        if (!before.some((e) => e.id === id)) return `No expense ${id}. Invoice: ${this.invoiceContext()}`;
+        this.publish({ expenses: before.filter((e) => e.id !== id) });
+        this.note("info", "expense.dropped", { id });
+        return `Dropped ${id}. Invoice now: ${this.invoiceContext()}`;
+      }
+
+      case "show_invoice": {
+        const inv = this.invoice();
+        if (!inv.ok) return inv.reason === "empty" ? "There is nothing on the invoice yet: no carts and no logged expenses." : "The carts are in different currencies, so there is no single invoice to draw. Quote the amounts as they are.";
+        await this.postInvoice(inv);
+        return `Invoice ticket posted; it speaks for itself. The itemised version is at ${this.env.PUBLIC_BASE_URL}/w/${encodeURIComponent(this.name)} if anyone wants the detail. ${this.invoiceContext()}`;
       }
 
       case "show_venue": {
@@ -1760,6 +2610,7 @@ this.rememberCardId(id);
         this.setMeta("rsvp_open", "1");
         this.setMeta("rsvp_title", args.title ?? "");
         this.setMeta("rsvp_when", args.when ?? "");
+        this.publish({}); // a fresh headcount: the split is everyone again until people answer
         await this.postTicket("rsvp", rsvpTicket(this.rsvps()));
         return "Who's in ticket posted. People answer with a thumbs up or down on it; record_rsvp covers anyone who answers in words.";
       }
@@ -1792,7 +2643,13 @@ this.rememberCardId(id);
         const { who, blurb } = parseToolArgs("join_match_pool", rawArgs);
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
-        await upsertProfile(this.env, { id: person.handle, name: this.label(person.handle), blurb });
+        // The pool is a view of the profile. Writing the model's blurb straight to
+        // the index replaced what they had said about themselves, and left the
+        // opt-in unset, so find_matches still turned them away.
+        const store = peopleStore(this.env);
+        const before = (await store.getMany([person.handle]))[person.handle];
+        const saved = await store.save(person.handle, { matchOptIn: true, ...(before?.interests ? {} : { interests: blurb.slice(0, 200) }) });
+        if (!(await syncMatchPool(this.env, person.handle, saved))) this.note("warn", "match_pool.failed", {});
         return "added to the pool";
       }
 
@@ -1802,33 +2659,43 @@ this.rememberCardId(id);
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
         const store = peopleStore(this.env);
-        const profile = (await store.getMany([person.handle]))[person.handle];
+        // Their profile and who they have already been offered: two reads that need only the handle.
+        const [profiles, paired] = await Promise.all([store.getMany([person.handle]), store.pairedWith(person.handle)]);
+        const profile = profiles[person.handle];
         // Searching the pool means being findable in it: same consent both ways.
         if (!profile?.matchOptIn) return "They are not in the match pool themselves. Ask whether they want to be introduced to people (save_profile matchOptIn) before searching.";
         // A place they named beats where they live: "i'm visiting vancouver, anyone there?"
         const where = near || profile.area;
         const query = [lookingFor, profile.interests, where && `Based in ${where}`].filter(Boolean).join(". ");
-        const exclude = [person.handle, ...(await store.pairedWith(person.handle))];
+        const exclude = [person.handle, ...paired];
         // Vectorize understands meaning ("bouldering" finds "climbing") but takes a
         // minute or two to index a new profile, and is absent without a login; the
         // shared-word scan is instant and always there. Meaning first, then words.
         const [semantic, lexical] = await Promise.all([
-          findMatches(this.env, query, exclude).catch((err) => {
+          // Ask for more than are shown: entries that can no longer be reached are
+          // dropped below, and must not use up the three places.
+          findMatches(this.env, query, exclude, 10).catch((err) => {
             this.note("warn", "match.index_unavailable", errorFields(err));
             return [];
           }),
-          store.scanPool(query, exclude),
+          store.scanPool(query, exclude, 10),
         ]);
         const merged = [...semantic, ...lexical.filter((l) => !semantic.some((m) => m.id === l.id))];
         // Only people an introduction can actually reach: still opted in, with a
         // direct chat to ask them in. The index can hold entries older than that rule.
         const reachable = await store.getMany(merged.map((m) => m.id));
-        const matches = merged
-          .filter((m) => reachable[m.id]?.matchOptIn && reachable[m.id]?.dmChat)
-          .filter((m) => !near || (reachable[m.id]?.area ?? "").toLowerCase().includes(near.split(/[ ,]/)[0].toLowerCase()))
-          .slice(0, 3);
-        if (!matches.length && near) return `Nobody in the pool is based in ${near} yet. Say so plainly, and offer to look without the location.`;
-        if (!matches.length) return "Nobody new in the pool fits yet. Say so plainly; more people join over time.";
+        const canReach = merged.filter((m) => reachable[m.id]?.matchOptIn && reachable[m.id]?.dmChat);
+        // A place puts people there first; it never hides everyone else. The model
+        // fills `near` in with the asker's own city unasked, and as a wall that
+        // turned "anyone who likes art" into nobody.
+        const place = near?.split(/[ ,]/)[0].toLowerCase();
+        const isThere = (m: { id: string }) => !!place && (reachable[m.id]?.area ?? "").toLowerCase().includes(place);
+        const there = canReach.filter(isThere);
+        const matches = [...there, ...canReach.filter((m) => !isThere(m))].slice(0, 3);
+        if (!matches.length) {
+          this.note("info", "match.search", { candidates: 0, found: merged.length, near });
+          return "Nobody new in the pool fits yet. Say so plainly; more people join over time.";
+        }
 
         // The model gets refs and blurbs. Handles and names stay here, keyed by
         // ref, until the other person has said yes.
@@ -1838,7 +2705,8 @@ this.rememberCardId(id);
           return { ref: `c${i + 1}`, blurb: m.blurb, score: m.score };
         });
         this.setMeta("match_candidates", JSON.stringify(candidates));
-        this.note("info", "match.search", { candidates: shown.length, top: shown[0]?.score });
+        this.note("info", "match.search", { candidates: shown.length, top: shown[0]?.score, found: merged.length, near, there: there.length });
+        if (near && !there.length) return `Nobody in the pool is based in ${near} yet, so say that plainly. These are the closest fits elsewhere: ${JSON.stringify(shown)}`;
         return JSON.stringify(shown);
       }
 
@@ -1883,7 +2751,8 @@ this.rememberCardId(id);
       case "make_game": {
         const { topic } = parseToolArgs("make_game", rawArgs);
         try {
-          const made = await this.gameCreate(topic, "agent");
+          // "let's play a game" names no topic, and the model may leave it out too.
+          const made = await this.gameCreate(topic?.trim() || this.state.title || "general knowledge, a fun mix", "agent");
           return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
         } catch (err) {
           this.note("warn", "game.generate_failed", errorFields(err));
@@ -1953,12 +2822,88 @@ this.rememberCardId(id);
     this.setMeta("research_progress_at", String(Date.now()));
     this.setMeta("research_brief", params.brief.slice(0, 200));
     await this.schedule(RESEARCH_WATCHDOG_SECONDS, "researchWatchdog");
-    const workflowId = await this.runWorkflow("RESEARCH_WORKFLOW", params);
+    const workflowId = await this.runWorkflow("RESEARCH_WORKFLOW", params, WORKFLOW_OPTS);
     this.note("info", "research.started", { workflowId: short(workflowId), depth: params.depth, brief: params.brief.slice(0, 120), near: params.near });
     return "Research started; it takes a few minutes. Tell the group you're looking into it in one short line, then stop. The findings will arrive on their own.";
   }
 
   /** Called over RPC by ResearchWorkflow as it moves through its stages. */
+  // ---------------------------------------------------------------- location
+  // The agent takes a city, once, and then ends the share so it cannot look
+  // again. Coordinates and street addresses are never stored or logged.
+
+  /** How long after asking a share still counts as the answer to that ask. */
+  private static LOCATION_WINDOW_MS = 30 * 60 * 1000;
+
+  /** Webhook path: someone in this chat started sharing. */
+  async locationShared(sharedBy: string) {
+    this.note("info", "location.sharing_started", { who: mask(sharedBy) });
+    await this.takeLocation();
+  }
+
+  /** Scheduler callback: the fallback when no webhook is subscribed. */
+  async checkLocation() {
+    await this.takeLocation();
+  }
+
+  /**
+   * Reads the share and keeps the city. Returns the area it saved.
+   *
+   * Two cases, told apart by whether the agent asked:
+   *  - It asked (onboarding): the city was all it wanted, so it ends the share
+   *    and says so.
+   *  - The person shared on their own, from the conversation: that is consent
+   *    to be read, but the share is theirs — it is left running, which is also
+   *    what lets a group ask how far apart everyone is. The first version
+   *    ignored these shares entirely, which left a person who had said "here's
+   *    my location" talking to an agent that acted as if they had not.
+   */
+  private async takeLocation(simulated?: { handle: string; locality: string; region?: string }): Promise<string | null> {
+    const askedAt = Number(this.getMeta("location_asked_at") || 0);
+    const asked = Boolean(askedAt) && Date.now() - askedAt <= PlanAgent.LOCATION_WINDOW_MS;
+
+    const places = simulated ? [simulated] : await readLocation(this.env, this.name);
+    const place = places.find((pl) => pl.locality);
+    if (!place?.locality) return null;
+
+    if (!asked) {
+      const area = [place.locality, place.region].filter(Boolean).join(", ").slice(0, 120);
+      // A re-share, or the webhook and a poll both landing, should not repeat the message.
+      if (this.getMeta(`location_seen:${place.handle}`) === area) return area;
+      this.setMeta(`location_seen:${place.handle}`, area);
+      if (!this.getMeta("area")) this.setMeta("area", area);
+      await peopleStore(this.env).save(place.handle, { area });
+      this.note("info", "location.taken", { who: mask(place.handle), area, shareEnded: false, proactive: true });
+      await this.say(`got your location, using ${place.locality} as your area. i only look when someone asks something that needs it, like how far apart you are. stop sharing anytime from the chat details`);
+      return area;
+    }
+
+    // Claimed before anything slow, so the webhook and a poll cannot both act.
+    this.setMeta("location_asked_at", "");
+    const area = [place.locality, place.region].filter(Boolean).join(", ").slice(0, 120);
+    this.setMeta("area", area);
+    await peopleStore(this.env).save(place.handle, { area });
+    const stopped = simulated ? "dry" : await stopLocation(this.env, this.name, place.handle);
+    const ended = stopped === "ok" || stopped === "dry";
+    this.note("info", "location.taken", { who: mask(place.handle), area, shareEnded: ended });
+
+    await this.say(
+      ended
+        ? `got it, ${place.locality}. i only kept the city, and i've ended the share so i can't see where you are`
+        : `got it, ${place.locality}. i only kept the city. you can stop sharing from the chat details whenever you like`,
+    );
+    return area;
+  }
+
+  /** Simulator only: stands in for the person tapping "share" on their phone. */
+  async devShareLocation(handle: string, locality: string, region?: string) {
+    return this.takeLocation({ handle, locality, region });
+  }
+
+  async telemetryProgress(level: Level, event: string, fields: Fields) {
+    this.note(level, event, fields);
+  }
+
   async researchProgress(stage: string, fields: Fields = {}) {
     this.setMeta("research_progress_at", String(Date.now()));
     if (stage === "browser" && typeof fields.liveUrl === "string") {
@@ -2002,6 +2947,7 @@ this.rememberCardId(id);
   /** Called over RPC by ResearchWorkflow when it finishes, either way. */
   async researchFinished(report: ResearchReport) {
     this.setMeta("research_started", "0");
+    this.setMeta("research_failed", report.ok ? "0" : "1");
     this.note(report.ok ? "info" : "warn", "research.finished", {
       ok: report.ok,
       candidates: report.candidates.length,
@@ -2036,10 +2982,16 @@ this.rememberCardId(id);
             bookingUrl: c.bookingUrl,
             address: c.address,
             caveat: c.caveat,
+            details: c.details,
+            sources: c.sources,
+            checkedAt: c.checkedAt,
             independentSources: c.sources.length,
           })),
         })
       : `failed: ${report.detail}`;
+    // An old failure says nothing about the next run: left standing as "failed: <cause>",
+    // it reads as "research is broken" and the model stops calling it at all.
+    if (row.delivered && !report.ok) return { text: "none. The last run failed and the group was told. That is over: call research again for any new request that needs real places." };
     if (row.delivered) return { text: `earlier findings, already shared with the group: ${body}` };
     return {
       deliveredId: row.id,
@@ -2053,9 +3005,13 @@ this.rememberCardId(id);
   async dump() {
     return {
       state: this.state,
+      invoice: this.invoice(),
       research: this.sql<{ report: string }>`SELECT report FROM research ORDER BY id DESC LIMIT 1`.map((r) => JSON.parse(r.report))[0],
       transcript: this.sql<Row>`SELECT direction, author, body FROM messages ORDER BY id`,
       votes: this.sql<Row>`SELECT voter, option_id, source FROM votes`,
+      planPhotos: this.planPhotoIds(),
+      participants: this.participants().map((p) => p.handle),
+      area: this.getMeta("area"),
     };
   }
 
@@ -2064,8 +3020,10 @@ this.rememberCardId(id);
    * Deterministic and free, which makes it the way to iterate on cards.
    */
   async devRunTool(tool: string, args: unknown) {
-    this.note("info", "dev.tool", { tool });
-    return this.runTool(tool, JSON.stringify(args ?? {}));
+    return telemetryScope(this.note, async () => {
+      this.note("info", "dev.tool", { tool });
+      return traceOperation("agent.tool", "function", { tool }, () => this.runTool(tool, JSON.stringify(args ?? {})));
+    });
   }
 
   /** Simulator only: id of the agent's most recent text, to simulate replying to it. */
@@ -2075,6 +3033,11 @@ this.rememberCardId(id);
   }
 
   /** Simulator only: the open Who's in ticket's message id. */
+  /** The plan as the vote page and the card images see it. */
+  async publicState(): Promise<PlanState> {
+    return this.state;
+  }
+
   /** This chat's id, which is this agent's name. Lets a workflow find the agent again after a deploy. */
   async chatId() {
     return this.name;
@@ -2093,9 +3056,20 @@ this.rememberCardId(id);
     return cart ? this.cartMessages(shopKey(cart.shop)).at(-1) : undefined;
   }
 
+  /** Simulator only: the latest shopping list ticket's message id. */
+  async currentListId() {
+    return this.sql<{ message_id: string }>`
+      SELECT message_id FROM tickets WHERE kind = 'list' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
+  }
+
   async currentRsvpId() {
     return this.sql<{ message_id: string }>`
       SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
+  }
+
+  /** Simulator only: the open ballot's latest ticket photo, which is what a phone most often tapbacks. */
+  async currentPlanPhotoId() {
+    return this.planPhotoIds().at(-1);
   }
 
   /** Simulator only: the open ballot's id, so its nudge can be fired on demand. */
@@ -2124,7 +3098,10 @@ this.rememberCardId(id);
     this.note("info", "nudge", { awaiting: this.state.awaiting.length });
     // Only name people whose names are known; "…5178" is not how friends talk.
     const waiting = this.state.awaiting;
-    const named = waiting.every((w) => !w.startsWith("…"));
+    // A tap on the card is nobody in particular, so with any of those in, who
+    // exactly is still out is a guess: give the count, not names.
+    const taps = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM votes WHERE voter LIKE 'web:%'`[0]?.n ?? 0;
+    const named = taps === 0 && waiting.every((w) => !w.startsWith("…"));
     await this.say(
       named
         ? `still need a vote from ${waiting.join(", ")}`
@@ -2230,11 +3207,18 @@ this.rememberCardId(id);
         bookingNote: result.ok ? result.confirmation : result.detail,
       });
       await this.syncCard();
+      if (result.ok || handedOff) {
+        await this.addItineraryItem({ kind: "venue", title: name, status: result.ok ? "confirmed" : "handoff", note: result.ok ? result.confirmation : undefined, url: option?.bookingUrl });
+      }
       if (result.ok) await this.planTicketIfNew();
     }
 
     if (result.ok) {
-      await this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" });
+      // The dressing posts no message, so it cannot get ahead of the text in the thread.
+      await Promise.all([
+        this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" }),
+        onBallot ? this.dressChat() : undefined,
+      ]);
     } else if (handedOff) {
       await this.say(`${name}: ${result.detail}\nfinish it here: ${result.handoffUrl}`);
     } else {
@@ -2247,5 +3231,33 @@ this.rememberCardId(id);
         this.note("warn", "booking.shot_failed", errorFields(err)),
       );
     }
+  }
+
+  /**
+   * The chat becomes the plan: once booked, the group is renamed after the
+   * outing ("🍜 Friday dinner · Kinton Ramen"), its icon becomes the plan's
+   * stamp and its background changes. Code, never the model, and best-effort:
+   * Linq accepts each change asynchronously and a name or an icon is only for
+   * groups, so a direct chat is left alone and a failure is logged, not thrown.
+   */
+  private async dressChat() {
+    if (this.getMeta("is_group") === "0") return;
+    const name = groupName(this.state);
+    const outcome = await dressChat(this.env, this.name, { name, iconUrl: planIconUrl(this.env, this.name, this.state.version) });
+    this.note("info", "chat.dressed", { title: name, ...outcome });
+  }
+
+  /**
+   * Simulator only: land the booked outcome without a browser, on the first
+   * option or the one named. Exercises everything a real confirmation does —
+   * the ticket, the confetti, the chat's new name — so it can be shown on demand.
+   */
+  async devBooked(optionId?: string, confirmation = "DEMO-1234") {
+    const option = this.state.options.find((o) => !optionId || o.id === optionId);
+    if (!option) return { error: optionId ? "No such option" : "No options to book: propose_plan first" };
+    this.setMeta("booking_for", JSON.stringify({ title: option.title, onBallot: true }));
+    this.publish({ status: "booking", chosenOptionId: option.id });
+    await this.bookingFinished({ ok: true, status: "submitted", confirmation, detail: "confirmed" });
+    return { ok: true, name: groupName(this.state) };
   }
 }

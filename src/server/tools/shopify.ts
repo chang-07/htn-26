@@ -47,10 +47,11 @@ export function agentProfileUrl(env: Env) {
   return `${env.PUBLIC_BASE_URL}/.well-known/ucp-agent.json?v=2`;
 }
 
-const USER_AGENT = "htn-planner/1.0";
+const USER_AGENT = "whim/1.0";
 
-async function endpointFor(shop: string): Promise<string> {
-  const host = shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+const hostOf = (shop: string) => shop.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+
+async function readManifest(host: string): Promise<string> {
   // Some storefronts 403 a request with no User-Agent, which is what a Worker sends.
   const res = await fetch(`https://${host}/.well-known/ucp`, { headers: { "user-agent": USER_AGENT } });
   if (!res.ok) throw new NotShoppable(host);
@@ -62,6 +63,27 @@ async function endpointFor(shop: string): Promise<string> {
   return mcp.endpoint;
 }
 
+/**
+ * A store's MCP endpoint, remembered per isolate. Every UCP call used to start
+ * with a round trip for the manifest, so a search followed by a cart paid for
+ * it twice, and two stores searched together paid for it twice more. The
+ * manifest changes on the timescale of a store's deploys, so a short memory is
+ * safe; a call that then cannot reach the endpoint forgets it (below), and a
+ * refusal is never remembered, so a store that comes online is found.
+ */
+const ENDPOINT_TTL_MS = 10 * 60 * 1000;
+const endpoints = new Map<string, { at: number; endpoint: Promise<string> }>();
+
+function endpointFor(shop: string): Promise<string> {
+  const host = hostOf(shop);
+  const kept = endpoints.get(host);
+  if (kept && Date.now() - kept.at < ENDPOINT_TTL_MS) return kept.endpoint;
+  const endpoint = readManifest(host);
+  endpoints.set(host, { at: Date.now(), endpoint });
+  endpoint.catch(() => endpoints.delete(host));
+  return endpoint;
+}
+
 async function callUcp(
   env: Env,
   shop: string,
@@ -69,22 +91,28 @@ async function callUcp(
   args: Record<string, unknown>,
 ): Promise<any> {
   const endpoint = await endpointFor(shop);
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json", "user-agent": USER_AGENT },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: crypto.randomUUID(),
-      method: "tools/call",
-      params: {
-        name: tool,
-        arguments: {
-          meta: { "ucp-agent": { profile: agentProfileUrl(env) } },
-          ...args,
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": USER_AGENT },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "tools/call",
+        params: {
+          name: tool,
+          arguments: {
+            meta: { "ucp-agent": { profile: agentProfileUrl(env) } },
+            ...args,
+          },
         },
-      },
-    }),
-  });
+      }),
+    });
+  } catch (err) {
+    endpoints.delete(hostOf(shop)); // the endpoint may have moved: next call reads the manifest again
+    throw err;
+  }
   const body = (await res.json()) as any;
   if (body.error) {
     throw new Error(`${tool} failed: ${body.error.message} ${JSON.stringify(body.error.data ?? {})}`);
@@ -115,7 +143,63 @@ export const KNOWN_SHOPS: { shop: string; sells: string }[] = [
   { shop: "wildflowercases.com", sells: "patterned and cute phone cases" },
   { shop: "velvetcaviar.com", sells: "phone cases" },
   { shop: "pelacase.com", sells: "plain phone cases" },
-  { shop: "glossier.com", sells: "skincare, makeup" },
+  // Clothes. Each returned real black shorts for "black shorts".
+  { shop: "gymshark.com", sells: "gym clothes, shorts, leggings, hoodies" },
+  { shop: "everlane.com", sells: "everyday clothes: shorts, jeans, tees, sweaters" },
+  { shop: "chubbiesshorts.com", sells: "men's shorts, swim trunks" },
+  { shop: "fashionnova.com", sells: "cheap trendy clothes, dresses, shorts" },
+  { shop: "tentree.ca", sells: "casual clothes and outerwear, Canadian, prices in CAD" },
+  { shop: "allbirds.com", sells: "sneakers, shoes" },
+  // Sun, beach and travel. Like everything below, each returned real products
+  // for a plain query ("sunscreen spf", "swim trunks", "carry on suitcase").
+  { shop: "sunbum.com", sells: "sunscreen lotion and spray, after-sun, cheap" },
+  { shop: "supergoop.com", sells: "face and body sunscreen" },
+  { shop: "bluelizardsunscreen.com", sells: "mineral and sensitive-skin sunscreen, kids" },
+  { shop: "coola.com", sells: "organic sunscreen" },
+  { shop: "fairharborclothing.com", sells: "men's swim trunks, beach clothes" },
+  { shop: "summersalt.com", sells: "women's swimsuits, swim shorts" },
+  { shop: "andieswim.com", sells: "women's swimwear, bikinis, one-pieces" },
+  { shop: "goodr.com", sells: "cheap sunglasses" },
+  { shop: "knockaround.com", sells: "cheap sunglasses" },
+  { shop: "shadyrays.com", sells: "polarized sunglasses" },
+  { shop: "dockandbay.com", sells: "quick-dry beach towels" },
+  { shop: "sandcloud.com", sells: "beach towels" },
+  { shop: "oofos.com", sells: "slides, sandals" },
+  { shop: "awaytravel.com", sells: "suitcases, carry-ons" },
+  { shop: "monos.com", sells: "suitcases, carry-ons" },
+  { shop: "bagsmart.com", sells: "cheap luggage, toiletry bags, packing cubes" },
+  { shop: "calpaktravel.com", sells: "luggage, travel bags" },
+  { shop: "cotopaxi.com", sells: "travel backpacks, daypacks, jackets" },
+  // Toiletries.
+  { shop: "nativecos.com", sells: "deodorant, body wash" },
+  { shop: "harrys.com", sells: "razors, shaving, body wash" },
+  { shop: "drsquatch.com", sells: "soap, deodorant" },
+  // Drinkware, tech.
+  { shop: "owalalife.com", sells: "water bottles" },
+  { shop: "stanley1913.com", sells: "tumblers, water bottles" },
+  { shop: "brumate.com", sells: "insulated bottles, can coolers" },
+  { shop: "anker.com", sells: "chargers, power banks, cables" },
+  { shop: "nomadgoods.com", sells: "phone chargers, cables, watch bands" },
+  { shop: "jlab.com", sells: "cheap earbuds, headphones" },
+  { shop: "skullcandy.com", sells: "headphones, earbuds" },
+  // Snacks and drinks.
+  { shop: "feastables.com", sells: "chocolate bars, snacks" },
+  { shop: "chomps.com", sells: "meat sticks, jerky" },
+  { shop: "graza.co", sells: "potato chips, olive oil" },
+  { shop: "magicspoon.com", sells: "cereal, cereal treats" },
+  { shop: "davidprotein.com", sells: "protein bars" },
+  { shop: "athleticbrewing.com", sells: "non-alcoholic beer" },
+  // Camping.
+  { shop: "kelty.com", sells: "tents, sleeping bags, prices in CAD" },
+  { shop: "nemoequipment.com", sells: "tents, sleeping pads" },
+  { shop: "helinox.com", sells: "camp chairs, cots" },
+  // More clothes, candles.
+  { shop: "trueclassictees.com", sells: "men's tees, hoodies, basics" },
+  { shop: "stussy.com", sells: "streetwear, hoodies" },
+  { shop: "otherland.com", sells: "candles" },
+  { shop: "homesick.com", sells: "candles, gift boxes" },
+  { shop: "bando.com", sells: "novelty gifts, stationery" },
+  { shop: "glossier.com", sells: "skincare, makeup, SPF" },
   { shop: "brooklinen.com", sells: "candles, robes, bedding" },
 ];
 

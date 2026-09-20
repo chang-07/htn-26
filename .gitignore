@@ -6,6 +6,7 @@ dist
 .dev.vars
 *.tsbuildinfo
 .claude/
+.superpowers/
 
 # Xcode's per-user workspace state and generated build products.
 ios/build/

@@ -4,11 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Whim is the AI agent for your group chat. Plan a trip, make a game, and get everyone together." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script>
-      // Paint the right ground before React mounts: cream for the ticket pages, left alone for /runs.
-      if (!location.pathname.startsWith("/runs")) document.documentElement.style.background = "#efe7d6";
+      // Paint the right ground before React mounts, so nothing flashes white.
+      // The ticket pages are always cream; the run viewer is white unless it was
+      // last set to night.
+      (function () {
+        var ground = location.pathname.startsWith("/w/") ? "#efe7d6" : "#faf9f6";
+        if (location.pathname.startsWith("/runs")) {
+          var saved = null;
+          try { saved = localStorage.getItem("runs.theme"); } catch (e) {}
+          ground = saved === "dark" ? "#0b1013" : "#ffffff";
+        }
+        document.documentElement.style.background = ground;
+      })();
     </script>
-    <title>Plan</title>
+    <title>Whim</title>
   </head>
   <body style="margin: 0">
     <div id="root"></div>

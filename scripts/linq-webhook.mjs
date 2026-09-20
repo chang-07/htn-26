@@ -6,6 +6,7 @@
  *   node scripts/linq-webhook.mjs create <base-url> --env        secret -> .env   (tunnel / local dev)
  *   node scripts/linq-webhook.mjs create <base-url> --deployed   secret -> wrangler secret (deployed Worker)
  *   node scripts/linq-webhook.mjs use <url-substring>            activate the match, deactivate the rest
+ *   node scripts/linq-webhook.mjs events                         add newly needed events to existing subscriptions
  *   node scripts/linq-webhook.mjs prune                          delete inactive subscriptions
  *
  * Only ONE of our subscriptions should be active at a time: with two, every
@@ -20,7 +21,10 @@ import { execFileSync } from "node:child_process";
 import LinqAPIV3 from "@linqapp/sdk";
 
 const PATH = "/api/webhooks/linq";
-const EVENTS = ["message.received", "reaction.added"];
+// location.sharing.started lets the agent pick up a city the moment someone
+// accepts its request. It polls as a fallback, so a subscription created before
+// this was added still works — just a few seconds slower.
+const EVENTS = ["message.received", "reaction.added", "location.sharing.started"];
 
 const env = Object.fromEntries(
   fs.readFileSync(".env", "utf8").split("\n").filter((l) => /^[A-Z_]+=/.test(l))
@@ -78,6 +82,18 @@ if (cmd === "list") {
       console.log(`deleted ${s.id.slice(0, 8)}  ${s.target_url}`);
     }
   }
+} else if (cmd === "events") {
+  // Bring existing subscriptions up to the current event list in place.
+  // Recreating one would rotate its signing secret; this does not.
+  for (const s of await ours()) {
+    const missing = EVENTS.filter((e) => !s.subscribed_events.includes(e));
+    if (!missing.length) {
+      console.log(`ok       ${s.id.slice(0, 8)}  ${s.target_url}`);
+      continue;
+    }
+    await linq.webhookSubscriptions.update(s.id, { subscribed_events: [...new Set([...s.subscribed_events, ...EVENTS])] });
+    console.log(`updated  ${s.id.slice(0, 8)}  ${s.target_url}  (+${missing.join(", ")})`);
+  }
 } else {
-  console.log("commands: list | create <base-url> --env|--deployed | use <url-substring> | prune");
+  console.log("commands: list | create <base-url> --env|--deployed | use <url-substring> | events | prune");
 }

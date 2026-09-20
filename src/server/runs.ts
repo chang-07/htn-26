@@ -18,6 +18,9 @@
  * numbers and records message bodies as lengths. Nothing new is exposed — but
  * the viewer is reachable from the internet, so see requireRunsAuth().
  */
+import { RUN_TIMEOUT_MS } from "../shared/run-timeout";
+import { expireRunRecords } from "./run-timeouts";
+import { telemetryAdapter } from "./telemetry";
 import { Agent, getAgentByName, type Connection } from "agents";
 import type { Fields, Level } from "./log";
 import { errorFields, log } from "./log";
@@ -46,6 +49,8 @@ export type RunSummary = {
   steps: number | null;
   tools: string[];
   events: number;
+  /** The text that woke it, so the rail can name a run by what was asked. */
+  said?: string | null;
 };
 
 /** Sent to the viewer over the hub's WebSocket. */
@@ -77,6 +82,8 @@ const RUN_START = "turn.start";
  * continuation of the run that started it, however many turns that takes.
  */
 const HUMAN_EVENTS = new Set(["message.in", "message.stored", "message.duplicate", "vote.cast", "vote.ignored", "reaction.ignored", "dev.tool", "person.forgotten", "links.forgotten", "profile.saved_via_form"]);
+/** A thumbs up on a cart is a person acting; the same payment picking itself back up is not. */
+const byAPerson = (o: { event: string; fields: Fields }) => HUMAN_EVENTS.has(o.event) || (o.event === "pay.asked" && o.fields.source !== "resume");
 const CONTINUE_WITHIN_MS = 20 * 60 * 1000;
 const RUN_END = new Set(["turn.end", "turn.crashed"]);
 /** Loose events waiting to be adopted by the next turn are flushed after this. */
@@ -106,6 +113,7 @@ const RANK_SQL = (expr: string) => `(CASE ${expr} WHEN 'error' THEN 2 WHEN 'warn
 export class RunRecorder {
   private runId: string | null = null;
   private seq = 0;
+  private activeLevel: Level = "info";
   private orphans: { ts: number; level: Level; event: string; fields: Fields }[] = [];
   /** The most recent run, kept so that what follows from it can be appended to it. */
   private last: { runId: string; seq: number; started: number; endedAt: number; outcome: string; level: Level; tokens: number; steps: number; tools: string[] } | null = null;
@@ -117,7 +125,21 @@ export class RunRecorder {
     private readonly chat: string,
     /** Keeps the DO alive until the write lands; the turn itself never waits. */
     private readonly background: (p: Promise<unknown>) => void,
-  ) {}
+    /**
+     * Where the last run is remembered between wake-ups. In production a chat's
+     * Durable Object is evicted from memory within seconds of going quiet, so a
+     * recorder that only remembered in memory forgot its run before the next
+     * burst of events arrived — and one payment became three hidden runs.
+     */
+    private readonly memory?: { load: () => string | undefined; save: (json: string) => void },
+  ) {
+    try {
+      const kept = memory?.load();
+      if (kept) this.last = JSON.parse(kept);
+    } catch {
+      // Unreadable history only costs continuity, never a turn.
+    }
+  }
 
   record(level: Level, event: string, fields: Fields) {
     const ts = Date.now();
@@ -180,14 +202,19 @@ export class RunRecorder {
     // ended. It is the rest of that interaction, not an event of its own.
     if (this.continuesLast()) this.resume();
     else this.open({ trigger: this.orphans[0].event });
+    // A payment has no model turn to name its outcome, and "background" runs are
+    // hidden by default — so it is named for how the payment stands.
+    const payEvents = this.orphans.filter((o) => o.event.startsWith("pay."));
+    const finished = payEvents.find((o) => o.event === "pay.finished");
+    const outcome = finished ? String(finished.fields.status ?? "finished") : payEvents.length ? "paying" : "background";
     this.emit(this.drainOrphans());
     // Not a crash: nothing ran. Without an outcome close() would call it one.
-    this.close(worst, { outcome: "background" });
+    this.close(worst, { outcome });
   }
 
   /** True when nothing a person did stands between the last run and now. */
   private continuesLast(): boolean {
-    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && !this.orphans.some((o) => HUMAN_EVENTS.has(o.event));
+    return Boolean(this.last) && Date.now() - this.last!.endedAt < CONTINUE_WITHIN_MS && Date.now() - this.last!.started < RUN_TIMEOUT_MS && !this.orphans.some(byAPerson);
   }
 
   /** Pick the last run back up: same id, sequence numbers carry on, totals accumulate. */
@@ -195,12 +222,14 @@ export class RunRecorder {
     const last = this.last!;
     this.runId = last.runId;
     this.seq = last.seq;
+    this.activeLevel = last.level;
     this.carry = { started: last.started, tokens: last.tokens, steps: last.steps, tools: last.tools };
   }
 
   private open(fields: Fields) {
     this.runId = crypto.randomUUID();
     this.seq = 0;
+    this.activeLevel = "info";
     this.carry = { started: Date.now(), tokens: 0, steps: 0, tools: [] };
     const trigger =
       typeof fields.trigger === "string" ? fields.trigger : (this.orphans[0]?.event ?? RUN_START);
@@ -212,7 +241,6 @@ export class RunRecorder {
 
   private close(level: Level = "info", fields: Fields = {}) {
     if (!this.runId) return;
-    const rank: Record<Level, number> = { info: 0, warn: 1, error: 2 };
     const ended = Date.now();
     // A continued run reports the whole interaction: every turn's tokens and
     // tools, and the time from the first event to this one.
@@ -220,13 +248,18 @@ export class RunRecorder {
     const summary = {
       // "background" describes a tail of progress events, not the interaction: keep what the turns said.
       outcome: outcome === "background" && this.last?.runId === this.runId ? this.last.outcome : outcome,
-      level: this.last?.runId === this.runId && rank[this.last.level] > rank[level] ? this.last.level : level,
+      level: worst(this.activeLevel, level),
       tokens: this.carry.tokens + (num(fields.tokens) ?? 0),
       steps: this.carry.steps + (num(fields.steps) ?? 0),
       tools: [...this.carry.tools, ...(Array.isArray(fields.tools) ? (fields.tools as string[]) : [])],
     };
     this.send({ kind: "close", run: { runId: this.runId, ended, ms: ended - this.carry.started, ...summary } });
     this.last = { runId: this.runId, seq: this.seq, started: this.carry.started, endedAt: ended, ...summary };
+    try {
+      this.memory?.save(JSON.stringify(this.last));
+    } catch {
+      // as above
+    }
     this.runId = null;
   }
 
@@ -238,21 +271,23 @@ export class RunRecorder {
 
   private emit(items: { ts: number; level: Level; event: string; fields: Fields }[]) {
     const runId = this.runId!;
+    this.activeLevel = items.reduce((level, item) => worst(level, item.level), this.activeLevel);
     const rows: RunEventRow[] = items.map((i) => ({ ...i, runId, chat: this.chat, seq: this.seq++ }));
     this.send({ kind: "events", events: rows });
   }
 
+  private writes: Promise<unknown> = Promise.resolve();
+
   private send(msg: HubMessage) {
-    this.background(
-      (async () => {
+    this.writes = this.writes.then(async () => {
         const hub = await getAgentByName<Env, RunHub>(this.env.RunHub, HUB_NAME);
         await hub.ingest(msg);
-      })().catch((err) => {
+      }).catch((err) => {
         // Losing run history must never take down a turn, so this is logged and
         // dropped. If the hub is broken the chat still works.
         log("warn", "runs", "hub.ingest_failed", { chat: this.chat, ...errorFields(err) });
-      }),
-    );
+      });
+    this.background(this.writes);
   }
 }
 
@@ -276,6 +311,25 @@ type HubMessage =
  */
 export class RunHub extends Agent<Env, Record<string, never>> {
   initialState = {};
+  private sweep?: Promise<void>;
+
+  async onStart() {
+    // Cron schedules are persisted and idempotent in the Agents SDK.
+    await this.schedule("* * * * *", "expireRuns");
+  }
+
+  async expireRuns(): Promise<void> {
+    if (this.sweep) return this.sweep;
+    this.sweep = (async () => {
+      const expired = await expireRunRecords(this.env.RUNS_DB, (error, runId) =>
+        telemetryAdapter.error?.(error, { operation: "run.timeout", runId }));
+      for (const item of expired) {
+        this.push({ type: "events", events: [item.event] });
+        this.push({ type: "run.close", run: item.run });
+      }
+    })();
+    try { await this.sweep; } finally { this.sweep = undefined; }
+  }
 
   /** Called over RPC by every PlanAgent's recorder. */
   async ingest(msg: HubMessage) {
@@ -283,19 +337,21 @@ export class RunHub extends Agent<Env, Record<string, never>> {
     try {
       if (msg.kind === "open") {
         const { runId, chat, trigger, started } = msg.run;
-        await db
-          .prepare(`INSERT OR REPLACE INTO runs (run_id, chat, trigger, started) VALUES (?, ?, ?, ?)`)
+        const inserted = await db
+          .prepare(`INSERT OR IGNORE INTO runs (run_id, chat, trigger, started) VALUES (?, ?, ?, ?)`)
           .bind(runId, chat, trigger, started)
           .run();
+        if (!inserted.meta.changes) return; // A replayed open must not resurrect a terminal run.
       } else if (msg.kind === "close") {
         const r = msg.run;
-        await db
+        const updated = await db
           .prepare(
-            `UPDATE runs SET ended = ?, outcome = ?, level = ?, ms = ?, tokens = ?, steps = ?, tools = ?
-             WHERE run_id = ?`,
+            `UPDATE runs SET ended = ?, outcome = ?, level = CASE WHEN ${RANK_SQL("?")} > ${RANK_SQL("level")} THEN ? ELSE level END, ms = ?, tokens = ?, steps = ?, tools = ?
+             WHERE run_id = ? AND (outcome IS NULL OR outcome != 'timed_out')`,
           )
-          .bind(r.ended, r.outcome, r.level, r.ms, r.tokens, r.steps, JSON.stringify(r.tools), r.runId)
+          .bind(r.ended, r.outcome, r.level, r.level, r.ms, r.tokens, r.steps, JSON.stringify(r.tools), r.runId)
           .run();
+        if (!updated.meta.changes) return; // Late completion cannot erase a persisted timeout.
       } else if (msg.events.length) {
         const inserts = msg.events.map((e) =>
           db
@@ -338,6 +394,7 @@ export class RunHub extends Agent<Env, Record<string, never>> {
 
   /** New viewer: hand it the recent runs so it renders before anything happens. */
   async onConnect(connection: Connection) {
+    await this.expireRuns();
     const runs = await listRuns(this.env, { limit: 50 }).catch(() => []);
     connection.send(JSON.stringify({ type: "hello", runs } satisfies RunFeedMessage));
   }
@@ -355,6 +412,10 @@ export class RunHub extends Agent<Env, Record<string, never>> {
 
 type RunRow = Omit<RunSummary, "tools" | "runId"> & { run_id: string; tools: string };
 
+/** The first thing anyone said in the run. (run_id, seq) is the primary key, so this is one seek. */
+const SAID = `(SELECT json_extract(e.fields, '$.text') FROM run_events e
+  WHERE e.run_id = runs.run_id AND e.event IN ('message.in', 'message.stored') ORDER BY e.seq LIMIT 1) AS said`;
+
 const toSummary = (r: RunRow): RunSummary => ({
   runId: r.run_id,
   chat: r.chat,
@@ -368,7 +429,13 @@ const toSummary = (r: RunRow): RunSummary => ({
   steps: r.steps,
   tools: JSON.parse(r.tools || "[]"),
   events: r.events,
+  said: r.said ?? null,
 });
+
+export async function refreshRunTimeouts(env: Env) {
+  const hub = await getAgentByName<Env, RunHub>(env.RunHub, HUB_NAME);
+  await hub.expireRuns();
+}
 
 export async function listRuns(
   env: Env,
@@ -383,7 +450,7 @@ export async function listRuns(
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
 
   const { results } = await env.RUNS_DB.prepare(
-    `SELECT * FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    `SELECT *, ${SAID} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY started DESC LIMIT ?`,
   )
     .bind(...binds, limit)
@@ -392,7 +459,7 @@ export async function listRuns(
 }
 
 export async function getRun(env: Env, runId: string) {
-  const run = await env.RUNS_DB.prepare(`SELECT * FROM runs WHERE run_id = ?`).bind(runId).first<RunRow>();
+  const run = await env.RUNS_DB.prepare(`SELECT *, ${SAID} FROM runs WHERE run_id = ?`).bind(runId).first<RunRow>();
   if (!run) return null;
   const { results } = await env.RUNS_DB.prepare(
     `SELECT seq, ts, level, event, fields FROM run_events WHERE run_id = ? ORDER BY seq`,

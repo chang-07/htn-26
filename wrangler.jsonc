@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "htn-planner",
+  "name": "whim",
   "main": "src/server/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -71,9 +71,12 @@
     "LLM_PROFILE": "dev",
     "OPENAI_MODEL": "gpt-5.6-luna",
     "BOOKING_DRY_RUN": "true",
-    "IMESSAGE_APP_NAME": "Plan",
-    // "true" records message text and the model's reasoning into run history,
-    // so /runs can show the conversation and what the agent was thinking.
+    // Demo: with payments off, a thumbs up ends as a (mock) purchase instead of
+    // "dry run … nothing was charged". Remove, or turn PAYMENTS_LIVE on, to stop.
+    "PAY_MOCK": "true",
+    "IMESSAGE_APP_NAME": "Whim",
+    // "true" records message text into run history,
+    // so /runs can show the conversation. Decisions use structured summaries.
     // Run history is served over HTTP: turning this on means it holds what
     // real people wrote. Handles stay masked either way.
     "LOG_BODIES": "true"

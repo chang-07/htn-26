@@ -1,5 +1,7 @@
 /** Shapes shared by the Worker and the React vote page. */
 
+import type { Expense } from "./invoice";
+
 /** "handoff": the agent took the booking as far as it may (payment, or a dry run) and a person finishes it. */
 export type PlanStatus = "idle" | "voting" | "booking" | "booked" | "handoff" | "failed";
 
@@ -12,6 +14,31 @@ export type PlanOption = {
   /** Open times read off the venue's own booking page, e.g. "open Fri: 6:40 PM, 9:20 PM". */
   availability?: string;
 };
+
+/**
+ * One commitment on the trip: the flight the group picked, the hotel, the
+ * game, the venue the pilot booked, a paid order on its way. `handoff` means
+ * a person finishes it at `url`; `watching` means the agent is checking on it.
+ */
+export type ItineraryItem = {
+  id: string;
+  kind: "flight" | "stay" | "event" | "venue" | "order";
+  title: string;
+  subtitle?: string;
+  url?: string;
+  /** Display string, e.g. "CA$254". */
+  price?: string;
+  status: "handoff" | "confirmed" | "watching" | "done";
+  /** Confirmation number, flight number, tracking number. */
+  note?: string;
+  /** Display name. */
+  paidBy?: string;
+  watch?: { flight: { ident: string; date?: string } } | { order: { url: string; shop: string } };
+  /** The last line posted about it. */
+  lastUpdate?: string;
+};
+
+export const ITEM_EMOJI: Record<ItineraryItem["kind"], string> = { flight: "✈️", stay: "🏨", event: "🎟️", venue: "📍", order: "📦" };
 
 export type CartSummary = {
   shop: string;
@@ -28,8 +55,17 @@ export type CartSummary = {
  * holding the vote page, so it must never contain phone numbers or the
  * transcript — those live in the agent's private SQLite tables.
  */
-export type PlanState = {
+export type PlanMedia = {
   title: string;
+  cover?: { url: string; generated?: boolean; source?: string; credit?: string; attributionFree?: boolean };
+  logos: Record<string, string>;
+};
+
+export type PlanState = {
+  media?: PlanMedia;
+  title: string;
+  /** One emoji for the outing, picked by the model with the ballot. Badges the chat once it is booked. */
+  emoji?: string;
   status: PlanStatus;
   options: PlanOption[];
   counts: Record<string, number>;
@@ -46,6 +82,18 @@ export type PlanState = {
   /** The group playlist, oldest first. Lives here so the music page gets it over the same socket. */
   playlist?: Track[];
   bookingNote?: string;
+  /**
+   * Money paid outside any cart and logged from the conversation (the bill,
+   * a deposit, paying someone back). With the carts, the whole invoice.
+   */
+  expenses?: Expense[];
+  /**
+   * Display names every cost is split across: those who said they are in, or
+   * everyone in the chat until anyone has answered. Same footing as `awaiting`.
+   */
+  going?: string[];
+  /** The trip so far, one entry per settled segment. Display names only. */
+  itinerary?: ItineraryItem[];
   /** Bumped on every change; used to bust the card image cache. */
   version: number;
 };
@@ -68,6 +116,9 @@ export const EMPTY_PLAN: PlanState = {
   counts: {},
   awaiting: [],
   carts: [],
+  expenses: [],
+  going: [],
+  itinerary: [],
   version: 0,
 };
 

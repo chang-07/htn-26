@@ -1,5 +1,6 @@
 import { ImageResponse, loadGoogleFont } from "workers-og";
-import { SLOT_EMOJI, cartsTotal, type CartSummary, type PlanState } from "../types";
+import { ITEM_EMOJI, SLOT_EMOJI, cartsTotal, type CartSummary, type ItineraryItem, type PlanState } from "../types";
+import { fmtMoney, type Invoice } from "../invoice";
 
 /**
  * Every card the agent posts is the same object: the ticket stub from
@@ -135,11 +136,34 @@ export async function renderAvatar(initial = "P"): Promise<Response> {
   return new ImageResponse(html, { width: S, height: S, fonts: await loadFonts() });
 }
 
+/**
+ * The group icon once the plan is booked: the outing's emoji over the venue,
+ * in the "done" colours, because a booked plan is a settled one. Like the
+ * avatar it is cropped to a circle, so everything sits inside the middle 70%.
+ */
+export async function renderPlanIcon(emoji: string, venue: string): Promise<Response> {
+  const S = 1024;
+  // A long name is cut at a word when one falls in the back half ("The Ballroom
+  // Bowl Toronto" → "THE BALLROOM"), else mid-word with an ellipsis.
+  const MAX = 16;
+  const cut = venue.length > MAX ? venue.lastIndexOf(" ", MAX) : -1;
+  const label = (cut >= MAX / 2 ? venue.slice(0, cut) : clip(venue, MAX)).toUpperCase();
+  // Shorter names get bigger type; the longest still fits the circle.
+  const size = label.length <= 8 ? 96 : label.length <= 12 ? 78 : 62;
+  const html = `
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:#1f5f4f;color:#f0ece2;">
+    <div style="display:flex;font-size:360px;line-height:1;margin-top:-30px;">${emoji}</div>
+    <div style="display:flex;margin-top:54px;font-family:'Archivo';font-weight:800;font-size:${size}px;line-height:1;letter-spacing:-2px;text-align:center;">${esc(label)}</div>
+    <div style="display:flex;margin-top:30px;font-family:'IBM Plex Mono';font-size:34px;letter-spacing:8px;opacity:0.6;">· BOOKED ·</div>
+  </div>`;
+  return new ImageResponse(html, { width: S, height: S, emoji: "twemoji", fonts: await loadFonts() });
+}
+
 // ------------------------------------------------------------------ builders
 
 const STATUS_META: Record<PlanState["status"], string> = {
-  idle: "Plan",
-  voting: "React to vote",
+  idle: "Whim",
+  voting: "Tap to vote",
   booking: "Booking…",
   booked: "Confirmed",
   handoff: "Yours to finish",
@@ -242,6 +266,44 @@ export function shoppingListTicket(carts: CartSummary[], people = 0): Ticket {
   };
 }
 
+/**
+ * Who owes whom, one row a person. Cream while a store is still waiting to be
+ * paid, green once everything is bought and all that is left is squaring up
+ * between friends. Balances are the whole point, so they take the row: the
+ * store-by-store breakdown is the shopping list's job.
+ */
+export function invoiceTicket(inv: Invoice): Ticket {
+  if (!inv.ok) {
+    return {
+      tone: "open",
+      metaLeft: "Running tab",
+      title: inv.reason === "mixed" ? "Two currencies" : "Nothing yet",
+      rows: [{ text: inv.reason === "mixed" ? "Can't add these up" : "No carts, no expenses" }],
+      stub: { big: "?", label: "Total" },
+    };
+  }
+  const money = (cents: number) => fmtMoney(inv.symbol, cents);
+  const square = inv.lines.every((l) => l.net === 0);
+  const withStake = inv.lines.filter((l) => l.paid || l.share);
+  const shown = withStake.slice(0, 4);
+  const hidden = withStake.length - shown.length;
+  // The stub has room for about five characters, so drop the cents there.
+  const short = `${inv.symbol.slice(-1)}${Math.round(inv.total / 100)}`;
+
+  return {
+    tone: inv.settled ? "done" : "open",
+    metaLeft: inv.settled ? "Settle up" : "Running tab",
+    metaRight: inv.settled ? `${inv.people.length || inv.lines.length} people` : `${inv.unpaid.length} left to pay`,
+    title: inv.settled ? (square ? "All square" : "Who owes what") : "Tab so far",
+    rows: shown.map((l, i) => ({
+      text: (l.paid ? `${l.name} paid ${money(l.paid)}` : l.name) + (i === shown.length - 1 && hidden > 0 ? ` +${hidden}` : ""),
+      tail: l.net > 0 ? `gets ${money(l.net)}` : l.net < 0 ? `owes ${money(-l.net)}` : "even",
+      dim: l.net === 0 && !square,
+    })),
+    stub: square && inv.settled ? { big: "PAID", label: short } : { big: short, label: "Total" },
+  };
+}
+
 export type Venue = { name: string; kind?: string; price?: string; why?: string; address?: string; caveat?: string; photoUrl?: string };
 
 /** `slot` is this venue's position among the plan's options, when it is one. */
@@ -299,6 +361,30 @@ export function matchTicket(a: string, b: string, common: { emoji?: string; text
     rows: common.slice(0, 3).map((c) => ({ lead: c.emoji, text: c.text })),
     stub: { big: String(Math.min(common.length, 3)), label: "In common" },
     faces: [a, b],
+  };
+}
+
+const ITEM_STATUS: Record<ItineraryItem["status"], string> = { handoff: "yours to finish", confirmed: "booked", watching: "watching", done: "done" };
+
+/**
+ * The trip so far. Cream while anyone still has something to finish or the
+ * agent is still watching; green once every item is booked or done.
+ */
+export function itineraryTicket(items: ItineraryItem[], title: string): Ticket {
+  const open = items.some((i) => i.status === "handoff" || i.status === "watching");
+  const settled = items.filter((i) => i.status === "confirmed" || i.status === "done").length;
+  return {
+    tone: open ? "open" : "done",
+    metaLeft: "Itinerary",
+    metaRight: `${settled}/${items.length} set`,
+    title: title || "The trip",
+    rows: items.slice(0, 4).map((i) => ({
+      lead: ITEM_EMOJI[i.kind],
+      text: i.title,
+      tail: i.lastUpdate?.slice(0, 24) ?? ITEM_STATUS[i.status],
+      dim: i.status === "done",
+    })),
+    stub: { big: String(items.length), label: items.length === 1 ? "Stop" : "Stops" },
   };
 }
 

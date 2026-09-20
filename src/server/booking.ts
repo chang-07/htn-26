@@ -1,3 +1,4 @@
+import { telemetryScope, traceOperation, traceWorkflowSteps } from "./telemetry";
 import { liveAgent } from "./live-agent";
 import { fillCheckout, hasCardForm, payCheckout, type ShipTo } from "./checkout";
 import { cancelPayment, paymentCard, paymentSucceeded, requestPayment } from "./linq";
@@ -5,7 +6,9 @@ import { AgentWorkflow, type AgentWorkflowEvent, type AgentWorkflowStep } from "
 import type { PlanAgent } from "./agent";
 import { openBrowser, pooled, TABS } from "./browser";
 import { errorFields, log } from "./log";
-import { runPilot, type PilotStatus } from "./pilot";
+import type { PilotStatus } from "./pilot";
+import { runBrowserbasePilot } from "./browserbase/agent";
+import { skillForUrl } from "./browserbase/catalog";
 
 export type BookingParams = {
   title: string;
@@ -44,7 +47,11 @@ export type PayResult = {
   status: "paid" | "dry_run" | "over_cap" | "needs_connection" | "not_approved" | "no_card_form" | "failed";
   total?: string;
   confirmation?: string;
+  /** The store's order status page, which later says when it ships. */
+  orderUrl?: string;
   detail?: string;
+  /** Why it failed, for the run log only: never shown in the chat. */
+  cause?: string;
   /** Pay was pressed but the store never confirmed: it may or may not have charged. */
   unsure?: boolean;
   shotId?: string;
@@ -84,6 +91,11 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
   }
 
   async run(event: AgentWorkflowEvent<BookingParams | AvailabilityParams | PayParams>, step: AgentWorkflowStep) {
+    return telemetryScope((level, name, fields) => this.live.telemetryProgress(level, name, fields), () =>
+      traceOperation("booking.workflow", "workflow", { workflow: "booking" }, () => this.execute(event, traceWorkflowSteps(step, "booking"))));
+  }
+
+  private async execute(event: AgentWorkflowEvent<BookingParams | AvailabilityParams | PayParams>, step: AgentWorkflowStep) {
     if ("pay" in event.payload) {
       const pay = event.payload;
       // One step, no retries: a retry could pay twice. The card lives and dies
@@ -124,7 +136,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       session = await openBrowser(this.env, { timeoutSeconds: 570 });
     } catch (err) {
       log("error", "pay", "browser.failed", errorFields(err));
-      return { ...base, status: "failed", detail: "couldn't start a browser to check out with" };
+      return { ...base, status: "failed", detail: "couldn't start a browser to check out with", cause: String(err instanceof Error ? err.message : err).slice(0, 300) };
     }
     let paymentId: string | undefined;
     let shotId: string | undefined;
@@ -174,9 +186,12 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       if (paymentId.startsWith("dry-")) return { ...base, status: "dry_run", total: priced.line, shotId: await shoot() };
 
       await this.live.payProgress("paying", { shop: params.shop });
-      const done = await payCheckout(page, await paymentCard(this.env, paymentId), params.shipTo.name, priced.totalCents);
+      await this.live.payProgress("card_ready", { shop: params.shop });
+      const done = await payCheckout(page, await paymentCard(this.env, paymentId), params.shipTo.name, priced.totalCents, () =>
+        this.live.payProgress("submitted", { shop: params.shop, total: priced.line }),
+      );
       paymentId = undefined; // spent: nothing to cancel
-      return { ...base, status: "paid", total: priced.line, confirmation: done.confirmation, shotId: await shoot() };
+      return { ...base, status: "paid", total: priced.line, confirmation: done.confirmation, orderUrl: done.url, shotId: await shoot() };
     } catch (err) {
       log("warn", "pay", "failed", errorFields(err));
       // The store may have taken the order even though the page never said so.
@@ -209,7 +224,8 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
 
     let session: Awaited<ReturnType<typeof openBrowser>>;
     try {
-      session = await openBrowser(this.env, { timeoutSeconds: 420 });
+      const usesOpenTable = params.checks.some((c) => skillForUrl(c.url)?.id === "opentable.com/check-availability-f2fwrm");
+      session = await openBrowser(this.env, { timeoutSeconds: 420, verified: usesOpenTable, proxies: usesOpenTable });
     } catch (err) {
       log("warn", "book", "availability.failed", { option: "(all)", ...errorFields(err) });
       return params.checks.map(failed);
@@ -219,7 +235,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         let page;
         try {
           page = await session.browser.newPage();
-          const found = await runPilot(
+          const found = await runBrowserbasePilot(
             this.env,
             page,
             {
@@ -269,7 +285,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         : `${when.toLocaleDateString("en-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })} at ${when.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })}`;
       const [first, ...rest] = params.contact.name.trim().split(/\s+/);
 
-      const result = await runPilot(
+      const result = await runBrowserbasePilot(
         this.env,
         page,
         {

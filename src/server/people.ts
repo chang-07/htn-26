@@ -33,6 +33,11 @@ export type Profile = {
    * Never part of what the model reads.
    */
   shipTo?: { name: string; email: string; line1: string; line2?: string; city: string; region: string; postal: string; country: string };
+  /**
+   * The name and email half of `shipTo`, for someone who has only ever shipped
+   * to an event: the address then belongs to the chat, not to them.
+   */
+  contact?: { name: string; email: string };
   /** Set once they have connected a wallet for purchases they approve. Never any card detail. */
   payments?: "connected";
   /** What reading the links THEY shared turned up: interests, one line, and a

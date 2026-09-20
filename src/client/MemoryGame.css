@@ -1,0 +1,15 @@
+@scope (.dashboard) {
+  .memory-score { display:flex; justify-content:space-between; font-size:12px; margin:18px 0 12px; color:#6c6971; }
+  .memory-board { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+  .memory-board button { aspect-ratio:1; border:0; border-radius:12px; background:#c7b8ff; color:#38205f; font-weight:700; font-size:13px; padding:5px; overflow-wrap:anywhere; }
+  .memory-board button > span { font-size:30px; }
+  .memory-board button.revealed { background:#ffda72; color:#423413; }
+  .memory-board button.matched { background:#a7efd2; color:#245944; }
+  .memory-game > p { font-size:12px; color:#6c6971; margin:16px 0; }
+  .memory-reset { border:0; border-radius:8px; background:#ff467c; padding:9px 14px; font-size:12px; font-weight:650; }
+  .dash-widget-mini { height:96px; margin-bottom:16px; border-radius:10px; background:#e6dcff; display:grid; grid-template-columns:repeat(4,1fr); gap:7px; padding:14px; }
+  .dash-widget-mini span { display:grid; place-items:center; background:#b49aff; color:#38205f; border-radius:6px; font-size:20px; font-weight:700; }
+  .dash-widget-mini span:nth-child(2) { background:#a7efd2; color:#245944; }
+  .dash-widget-mini span:nth-child(3) { background:#ffda72; color:#423413; }
+  .dash-widget:has(.dash-widget-mini) .dash-widget-content { padding-top:16px; }
+}
