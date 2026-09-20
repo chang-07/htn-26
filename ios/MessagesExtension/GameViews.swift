@@ -164,7 +164,7 @@ struct TriviaGameView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .animation(.snappy(duration: 0.35), value: store.game)
         .onAppear { store.start() }
@@ -180,7 +180,7 @@ struct TriviaGameView: View {
 
     private func gameTint(_ g: GameView_) -> Color {
         switch g.visual?.accent {
-        case "coral": return .orange
+        case "coral": return Whim.coral
         case "violet": return .purple
         case "mint": return Whim.green
         default: return .accentColor

@@ -1,10 +1,18 @@
 import SwiftUI
 
-// The shared look, modeled on Linq's experience-card mocks: airy white card,
-// small app-avatar header, one hero element per card, pill CTAs, brand green.
+// The shared look, matched to the website (Landing.css): cream paper, near-black
+// ink, coral accent with mint support — pages pin light so they read like the
+// server-rendered ticket PNGs in any system appearance.
 
 enum Whim {
-    /// Brand green (the Whim tile).
+    /// Website palette (Landing.css).
+    static let paper = Color(red: 0xFA / 255, green: 0xF9 / 255, blue: 0xF6 / 255)
+    static let ink = Color(red: 0x28 / 255, green: 0x28 / 255, blue: 0x27 / 255)
+    static let coral = Color(red: 0xFF / 255, green: 0x46 / 255, blue: 0x7C / 255)
+    static let mint = Color(red: 0x84 / 255, green: 0xEF / 255, blue: 0xC4 / 255)
+    static let mintInk = Color(red: 0x15 / 255, green: 0x3C / 255, blue: 0x30 / 255)
+    static let orange = Color(red: 0xFF / 255, green: 0x75 / 255, blue: 0x3F / 255)
+    /// Brand green (the ticket PNGs' W tile).
     static let green = Color(red: 0x17 / 255, green: 0x9B / 255, blue: 0x6B / 255)
     static let greenDeep = Color(red: 0x0E / 255, green: 0x6F / 255, blue: 0x4C / 255)
 
@@ -25,13 +33,14 @@ struct WhimHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             if showTile {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Whim.tileGradient)
-                    .frame(width: 24, height: 24)
-                    .overlay(
-                        Text("W").font(.system(size: 13, weight: .heavy, design: .rounded))
-                            .foregroundStyle(.white)
-                    )
+                // The site wordmark: "whim" in ink with the coral asterisk.
+                HStack(spacing: 2) {
+                    Text("whim").font(.system(size: 17, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Whim.ink)
+                    Text("✳︎").font(.system(size: 13, weight: .heavy))
+                        .foregroundStyle(Whim.coral)
+                        .baselineOffset(5)
+                }
             }
             Text(context)
                 .font(.footnote.weight(.semibold))
@@ -99,18 +108,21 @@ struct PillButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 13)
             .background(
-                prominent ? AnyShapeStyle(Whim.tileGradient) : AnyShapeStyle(Color(uiColor: .secondarySystemBackground)),
+                prominent ? AnyShapeStyle(Whim.coral) : AnyShapeStyle(Whim.ink.opacity(0.06)),
                 in: Capsule()
             )
-            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .foregroundStyle(prominent ? Color(red: 0x29 / 255, green: 0x19 / 255, blue: 0x22 / 255) : Whim.ink)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
     }
 }
 
 extension View {
-    /// Card page chrome: padding rhythm + brand tint for interactive elements.
+    /// Card page chrome: the website's cream paper and coral accent, pinned to
+    /// light appearance so pages match the ticket PNGs in any system theme.
     func whimPage() -> some View {
-        self.tint(Whim.green)
+        self.tint(Whim.coral)
+            .background(Whim.paper)
+            .environment(\.colorScheme, .light)
     }
 }
