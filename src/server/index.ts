@@ -43,6 +43,17 @@ export default Sentry.withSentry(sentryOptions, {
       return handleLinqWebhook(request, env);
     }
 
+    if (url.pathname.startsWith("/api/plan-media/")) {
+      const match = url.pathname.match(/^\/api\/plan-media\/([^/]+)\/([a-f0-9]{64})$/);
+      if (!match || !["GET", "HEAD"].includes(request.method)) return new Response("Not found", { status: 404 });
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, decodeURIComponent(match[1]));
+      const file = await agent.getPlanMedia(match[2]);
+      if (!file) return new Response("Not found", { status: 404 });
+      return new Response(request.method === "HEAD" ? null : Uint8Array.from(atob(file.data), c => c.charCodeAt(0)), {
+        headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" },
+      });
+    }
+
     // Simulator: drive an agent without Linq. Never reachable once deployed.
     if (url.pathname.startsWith("/api/dev/") && isLocal(url)) {
       return handleDev(request, url, env);

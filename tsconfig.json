@@ -18,7 +18,8 @@
       "./worker-configuration.d.ts",
       "vite/client"
     ],
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "allowJs": true
   },
   "include": [
     "src",

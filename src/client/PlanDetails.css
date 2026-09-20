@@ -1,0 +1,73 @@
+@scope (.dashboard) {
+  .dash-dialog.plan-dialog { width: min(620px, calc(100vw - 24px)); max-height: 88svh; padding: 28px; border: 1px solid #e6e5e1; border-radius: 18px; background: #faf9f6; box-shadow: 0 20px 70px #22222226; color: #282827; }
+  .plan-dialog .dash-dialog-head { margin-bottom: 8px; align-items: start; }
+  .plan-dialog .dash-dialog-head h2 { font-size: 25px; letter-spacing: -.8px; line-height: 1.2; }
+  .plan-dialog .dash-icon-button { width: 28px; height: 28px; font-size: 20px; background: transparent; flex-shrink: 0; }
+  .plan-overline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; color: #77747a; font-size: 12px; }
+  .plan-example-note { font-size: 10px; color: #77747a; border: 1px solid #e4e1df; border-radius: 4px; padding: 2px 5px; }
+  .plan-detail-tabs { display: flex; gap: 24px; border-bottom: 1px solid #e7e5e0; margin: 20px 0; }
+  .plan-detail-tabs button { border: 0; border-bottom: 2px solid transparent; padding: 0 0 10px; font-size: 13px; background: transparent; color: #77747a; }
+  .plan-detail-tabs button[aria-current=page] { color: #282827; border-color: #ff467c; font-weight: 650; }
+  .plan-section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .plan-section-heading h3 { font-size: 13px; font-weight: 650; letter-spacing: 0; }
+  .plan-itinerary { margin-bottom: 24px; }
+  .plan-days { display: flex; gap: 3px; }
+  .plan-days button { border: 0; padding: 5px 9px; border-radius: 6px; background: transparent; font-size: 11px; color: #706b74; }
+  .plan-days button[aria-pressed=true] { background: #ffdae8; color: #9b234b; font-weight: 650; }
+  .plan-day-events { padding: 0 0 0 8px; }
+  .plan-event { position: relative; display: grid; grid-template-columns: 65px 1fr; gap: 16px; align-items: baseline; padding: 11px 0 11px 20px; border-left: 1px solid #e5dddF; }
+  .plan-event::before { content: ''; position: absolute; left: -4px; top: 17px; width: 7px; height: 7px; background: #ff467c; border-radius: 50%; }
+  .plan-event > span { color: #77747a; font-size: 12px; }
+  .plan-event strong { font-size: 13px; font-weight: 500; }
+  .plan-services { display: block; border: 1px solid #e6e5e1; background: #fff; border-radius: 12px; overflow: hidden; }
+  .plan-service { color: #282827; background: #fff; }
+  .plan-service > details { min-width: 0; }
+  .plan-service + .plan-service { border-top: 1px solid #eeece8; }
+  .plan-service summary { display: flex; align-items: center; gap: 9px; padding: 12px; cursor: pointer; list-style: none; }
+  .plan-details summary::-webkit-details-marker { display: none; }
+  .plan-service summary:hover, .plan-research summary:hover { background: #fafaf9; }
+  .plan-service-copy { flex: 1; min-width: 0; }
+  .plan-provider { display: block; font-size: 11px; color: #77747a; margin-bottom: 3px; }
+  .plan-service h3 { font-size: 13px; font-weight: 600; line-height: 1.35; letter-spacing: -.1px; color: #282827; }
+  .plan-logo { width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; display: grid; place-items: center; background: #f2f1ee; color: #77747a; }
+  .plan-logo img, .plan-logo svg { width: 20px; height: 20px; }
+  .plan-logo.doordash { background: #ff3008; }
+  .plan-logo.uber { background: #000; }
+  .plan-logo.booking { background: #003b95; }
+  .plan-logo img { filter: brightness(0) invert(1); }
+  .plan-service-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 5px; }
+  .plan-service-meta strong { font-size: 12px; font-weight: 600; }
+  .plan-state { color: #77747a; font-size: 10px; }
+  .plan-state.confirmed { color: #25805c; }
+  .plan-expand { font-size: 17px; color: #77747a; flex-shrink: 0; width: 16px; text-align: center; line-height: 1; }
+  details[open] > summary .plan-expand { transform: rotate(45deg); }
+  .plan-service-detail { padding: 0 12px 12px; font-size: 12px; color: #68646c; line-height: 1.5; }
+  .plan-service-detail p + p { margin-top: 6px; }
+  .plan-item-meta { font-weight: 600; }
+  .plan-service-detail a { display: inline-block; margin-top: 12px; font-weight: 600; padding: 7px 10px; border: 1px solid #e6e5e1; border-radius: 6px; color: #282827; }
+  .plan-research { border: 1px solid #e6e5e1; background: #fff; border-radius: 12px; overflow: hidden; }
+  .plan-research details + details { border-top: 1px solid #eeece8; }
+  .plan-research summary { display: flex; align-items: center; gap: 12px; padding: 15px; cursor: pointer; list-style: none; }
+  .plan-research summary > div { flex: 1; min-width: 0; }
+  .plan-research h3 { font-size: 13px; font-weight: 600; }
+  .plan-research summary p { font-size: 11px; color: #77747a; margin-top: 3px; }
+  .plan-research-detail { font-size: 12px; color: #68646c; padding: 0 12px 12px; }
+  .plan-empty { padding: 20px 0; color: #77747a; font-size: 13px; }
+  .plan-vote-link { display: inline-block; font-size: 12px; margin-top: 18px; text-decoration: underline; }
+  @media(max-width:480px) {
+    .dash-dialog.plan-dialog { padding: 22px 16px; }
+    .plan-dialog .dash-dialog-head h2 { font-size: 22px; }
+    .plan-service summary { gap: 8px; padding: 12px 10px; }
+    .plan-service-detail { padding-left: 16px; }
+    .plan-event { gap: 10px; }
+  }
+}
+@scope (.dashboard) {
+  .plan-booking-action { display: flex; align-items: center; align-self: center; flex-shrink: 0; }
+  .plan-booking-action a { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; background: transparent; color: #ff467c; border-radius: 5px; }
+  .plan-booking-action svg { display: block; stroke-linecap: round; stroke-linejoin: round; }
+  .plan-booking-action a:hover { background: transparent; color: #d72d60; }
+  .plan-booking-action small { font-size: 10px; font-weight: 400; overflow-wrap: anywhere; }
+  .plan-booking-action > p { max-width: 70px; font-size: 10px; color: #77747a; }
+
+}

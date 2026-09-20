@@ -1,3 +1,4 @@
+import { collectPlanMedia, generateCover, mediaKey, mediaCompanies, type MediaFile } from "./plan-media";
 import { findLocations, getWeather } from "./weather";
 import { telemetryScope, traceOperation, traceFields, safeFields } from "./telemetry";
 import { Agent, callable, getAgentByName } from "agents";
@@ -197,6 +198,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
   initialState: PlanState = EMPTY_PLAN;
 
   /** Set when something worth celebrating just happened; consumed by the next text sent. */
+  private mediaInFlight = new Set<string>();
+  private coverInFlight = new Map<string, Promise<MediaFile>>();
   private celebrateNextSend = false;
   private turnRunning = false;
   private turnRequested = false;
@@ -217,6 +220,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   async onStart() {
+    this.sql`CREATE TABLE IF NOT EXISTS plan_media (id TEXT PRIMARY KEY, data TEXT NOT NULL, type TEXT NOT NULL)`;
     this.sql`CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       linq_id TEXT UNIQUE,
@@ -244,6 +248,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
     )`;
+    this.queuePlanMedia();
   }
 
   /**
@@ -462,6 +467,59 @@ export class PlanAgent extends Agent<Env, PlanState> {
       going: this.splitNames(),
       version: this.state.version + 1,
     });
+    this.queuePlanMedia();
+  }
+
+  private queuePlanMedia() {
+    if (!this.state.title.trim()) return;
+    const key = mediaKey(this.state);
+    if (this.getMeta("media_requested") === key) return;
+    this.setMeta("media_requested", key);
+    this.ctx.waitUntil(this.schedule(1, "enrichPlanMedia").catch(() => {
+      this.setMeta("media_requested", "");
+    }));
+  }
+
+  /** Generate an event cover once; fetch company logos independently. */
+  async enrichPlanMedia() {
+    const snapshot = this.state;
+    const key = mediaKey(snapshot);
+    if (!snapshot.title.trim() || this.getMeta("media_completed") === key) return;
+    if (this.mediaInFlight.has(key)) return;
+    this.mediaInFlight.add(key);
+    try {
+      const cached = JSON.parse(this.getMeta("generated_cover") || "null") as { title: string; cover: NonNullable<PlanState["media"]>["cover"] } | null;
+      const input = cached?.title === snapshot.title && cached.cover?.generated
+        ? { ...snapshot, media: { title: snapshot.title, logos: snapshot.media?.logos ?? {}, cover: cached.cover } }
+        : snapshot;
+      const media = await collectPlanMedia(input, () => {
+        let pending = this.coverInFlight.get(snapshot.title);
+        if (!pending) {
+          pending = generateCover(snapshot.title, this.env);
+          this.coverInFlight.set(snapshot.title, pending);
+        }
+        return pending;
+      }, async (file: MediaFile) => {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(file.data));
+        const id = Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, "0")).join("");
+        this.sql`INSERT OR IGNORE INTO plan_media (id, data, type) VALUES (${id}, ${file.data}, ${file.type})`;
+        return `/api/plan-media/${encodeURIComponent(this.name)}/${id}`;
+      });
+      if (media.cover?.generated) this.setMeta("generated_cover", JSON.stringify({ title: snapshot.title, cover: media.cover }));
+      // A slow generation must never replace media belonging to a newer event.
+      if (mediaKey(this.state) !== key) return;
+      this.publish({ media });
+      const incomplete = !media.cover || mediaCompanies(snapshot).some(domain => !media.logos[domain]);
+      if (incomplete && this.getMeta("media_retried") !== key) {
+        this.setMeta("media_retried", key);
+        await this.schedule(60, "enrichPlanMedia");
+      } else this.setMeta("media_completed", key);
+    } finally { this.mediaInFlight.delete(key); this.coverInFlight.delete(snapshot.title); }
+  }
+
+  async getPlanMedia(id: string): Promise<MediaFile | null> {
+    if (!/^[a-f0-9]{64}$/.test(id)) return null;
+    return this.sql<MediaFile>`SELECT data, type FROM plan_media WHERE id = ${id}`[0] ?? null;
   }
 
   /** All message ids the plan card has had, newest last. */

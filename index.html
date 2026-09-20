@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="description" content="Whim: an agent in your iMessage group chat that finds the place, runs the vote, books the winner and builds the carts." />
+    <meta name="description" content="Whim is the AI agent for your group chat. Plan a trip, make a game, and get everyone together." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script>
@@ -12,7 +12,7 @@
       // The ticket pages are always cream; the run viewer is white unless it was
       // last set to night.
       (function () {
-        var ground = "#efe7d6";
+        var ground = location.pathname.startsWith("/w/") ? "#efe7d6" : "#faf9f6";
         if (location.pathname.startsWith("/runs")) {
           var saved = null;
           try { saved = localStorage.getItem("runs.theme"); } catch (e) {}
