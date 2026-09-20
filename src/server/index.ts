@@ -30,7 +30,7 @@ import { GAME_SURFACES, type GameSurface } from "./game-routing";
 import { ACCENT_PALETTE } from "../theme";
 
 /** Bump when the generated card design changes so R2 cannot serve an old palette forever. */
-const CARD_RENDER_VERSION = 3;
+const CARD_RENDER_VERSION = 4;
 
 import { PlanAgent as PlanAgentBase } from "./agent";
 export type PlanAgent = PlanAgentBase;

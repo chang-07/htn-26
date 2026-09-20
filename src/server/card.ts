@@ -212,6 +212,24 @@ export function planTicket(plan: PlanState): Ticket {
       stub: { big: "GO", label: "Booked" },
     };
   }
+  // A chosen option that is not yet booked still deserves the settled look:
+  // the winner as the headline, the losing options dimmed beneath it.
+  if (winner) {
+    return {
+      tone: "done",
+      metaLeft: "Decided",
+      metaRight: votes ? `${votes} vote${votes === 1 ? "" : "s"}` : "The group chose",
+      title: winner.title,
+      rows: [
+        ...(winner.subtitle ? [{ text: winner.subtitle }] : []),
+        ...plan.options
+          .filter((o) => o.id !== winner.id)
+          .slice(0, winner.subtitle ? 2 : 3)
+          .map((o) => ({ text: o.title, tail: plan.counts[o.id] ? `x${plan.counts[o.id]}` : undefined, dim: true })),
+      ],
+      stub: { big: "SET", label: "Decided" },
+    };
+  }
   return {
     tone: "open",
     metaLeft: STATUS_META[plan.status],
