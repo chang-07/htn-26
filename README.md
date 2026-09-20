@@ -537,7 +537,7 @@ code — `startPay` in `agent.ts`, the `pay` branch of `BookingWorkflow`, and
 2. **Price it.** A browser opens the store's checkout and fills contact and
    shipping by rote (every Shopify checkout has the same field names, so no
    model and no tokens). The store prices shipping and tax; the real total is
-   read off the page. Over `PAY_CAP_CENTS` (default 6000) → stop.
+   read off the page. Over `PAY_CAP_CENTS`, when one is set (there is no limit by default) → stop.
 3. **Mint a card.** `payments.create` for exactly that total at exactly that
    merchant, with an idempotency key per attempt. If Linq wants the person to
    add a card or approve with their passkey, a link card is sent once and the

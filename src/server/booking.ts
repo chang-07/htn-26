@@ -35,8 +35,8 @@ export type PayParams = {
   checkoutUrl: string;
   payer: string;
   shipTo: ShipTo;
-  /** Refuse anything above this, whatever the page says. */
-  capCents: number;
+  /** Refuse anything above this, whatever the page says. Unset: no limit. */
+  capCents?: number;
   /** One per attempt: what stops a retry from minting a second card. */
   key: string;
 };
@@ -151,7 +151,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       const priced = await fillCheckout(page, params.checkoutUrl, params.shipTo, (line) => void this.live.payProgress("step", { line }));
       await this.live.payProgress("priced", { shop: params.shop, total: priced.line });
 
-      if (priced.totalCents > params.capCents) return { ...base, status: "over_cap", total: priced.line, shotId: await shoot() };
+      if (params.capCents && priced.totalCents > params.capCents) return { ...base, status: "over_cap", total: priced.line, shotId: await shoot() };
       if (!(await hasCardForm(page))) return { ...base, status: "no_card_form", total: priced.line, shotId: await shoot() };
       if (!live) return { ...base, status: "dry_run", total: priced.line, shotId: await shoot() };
 
