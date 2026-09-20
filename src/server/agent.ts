@@ -1010,6 +1010,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const carts = this.carts();
     const cart = carts.find((c) => shopKey(c.shop) === result.shop);
 
+    // A demo with payments off still has to end somewhere. With PAY_MOCK the
+    // dry run — a real checkout, really priced, nothing charged — is played out
+    // as a purchase: the cart goes paid, the receipt and the split follow. It is
+    // marked as a mock in the run log, and PAYMENTS_LIVE always wins over it.
+    if (result.status === "dry_run" && cart && this.env.PAY_MOCK === "true" && this.env.PAYMENTS_LIVE !== "true") {
+      this.note("warn", "pay.mocked", { shop: result.shop, total: result.total, who: mask(result.payer) });
+      result = { ...result, status: "paid", confirmation: `DEMO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`, detail: "demo mode: nothing was charged" };
+    }
+
     if (result.status === "paid" && cart) {
       const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
       this.saveCarts(carts.map((c) => (c === cart ? paid : c)));

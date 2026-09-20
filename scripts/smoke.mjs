@@ -254,6 +254,15 @@ await check("a thumbs up on the shopping list offers to pay the one unpaid cart"
   expect(count(text, "pay.asked") === 1, `pay.asked fired ${count(text, "pay.asked")} times for a thumbs up on the list`);
   expect(!text.includes("not on the plan card"), "the tapback on the list was dropped");
 });
+await check("with PAY_MOCK a dry run ends as a purchase: cart paid, marked as a mock in the log", async () => {
+  const c = chat("paymock");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/payfinished", { chat: c, shop: "example-store.com", from: "+15550007777", status: "dry_run", total: "USD $14.50" });
+  const cart = (await dump(c)).state.carts.find((x) => x.shop === "example-store.com");
+  const text = await logs(c);
+  if (text.includes("pay.mocked")) expect(!!cart?.paidBy && cart.total === "USD $14.50", `mocked but cart is ${JSON.stringify(cart)}`);
+  else expect(!cart?.paidBy, "a dry run marked the cart paid with PAY_MOCK off");
+});
 await check("\"i'll pay\" with no cart in the chat is ordinary conversation", async () => {
   const c = chat("paytext");
   await post("/api/dev/message", { chat: c, group: true, from: "+15550007777", text: "i'll pay" });
