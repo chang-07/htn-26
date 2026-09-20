@@ -202,8 +202,13 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             }
         }
         // /game-web/<chat>/<id>: a generated web game — the sheet is the
-        // console, so expand before loading it.
+        // console. In the transcript the bubble shows a poster instead: a
+        // webview there swallows the tap Messages needs to expand the card.
         if path.hasPrefix("/game-web/") {
+            if presentationStyle == .transcript {
+                host(AnyView(WebGamePosterView()))
+                return
+            }
             if presentationStyle == .compact { requestPresentationStyle(.expanded) }
             showWeb(target)
             return
@@ -376,5 +381,25 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         spinner.stopAnimating()
+    }
+}
+
+/// The transcript face of a generated web game: a poster, never the game —
+/// the bubble's tap must reach Messages so the card can expand.
+struct WebGamePosterView: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "gamecontroller.fill")
+                .font(.system(size: 40))
+                .foregroundStyle(Whim.coral)
+            Text("A game built just for this chat")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Whim.ink)
+            Label("Tap to play", systemImage: "hand.tap")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Whim.paper)
     }
 }
