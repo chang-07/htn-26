@@ -942,7 +942,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
       checkoutUrl: cart.checkoutUrl,
       payer,
       shipTo,
-      capCents: Number(this.env.PAY_CAP_CENTS) || 6000,
+      // No limit unless one is configured: the person approves each exact total themselves.
+      capCents: Number(this.env.PAY_CAP_CENTS) || undefined,
       key: crypto.randomUUID(),
     };
     const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
@@ -1054,7 +1055,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.say(`paid. ${who} covered ${result.shop}: ${result.total ?? cart.total} with shipping and tax${result.confirmation ? `, order ${result.confirmation}` : ""}. ${result.detail ?? "the receipt goes to their email"}`, { screenEffect: "confetti" });
       return;
     }
-    const cap = `$${((Number(this.env.PAY_CAP_CENTS) || 6000) / 100).toFixed(0)}`;
+    const cap = `$${((Number(this.env.PAY_CAP_CENTS) || 0) / 100).toFixed(0)}`; // over_cap only happens when one is set
     const line: Record<Exclude<PayResult["status"], "paid">, string> = {
       dry_run: `dry run: ${result.shop} comes to ${result.total} with shipping and tax, and the card form is ready. nothing was charged (payments are switched off)`,
       over_cap: `${result.shop} comes to ${result.total}, over my ${cap} limit per purchase, so i didn't pay. here's the checkout: ${cart?.checkoutUrl ?? ""}`,
