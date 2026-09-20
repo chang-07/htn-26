@@ -2479,22 +2479,30 @@ this.rememberCardId(id);
         // minute or two to index a new profile, and is absent without a login; the
         // shared-word scan is instant and always there. Meaning first, then words.
         const [semantic, lexical] = await Promise.all([
-          findMatches(this.env, query, exclude).catch((err) => {
+          // Ask for more than are shown: entries that can no longer be reached are
+          // dropped below, and must not use up the three places.
+          findMatches(this.env, query, exclude, 10).catch((err) => {
             this.note("warn", "match.index_unavailable", errorFields(err));
             return [];
           }),
-          store.scanPool(query, exclude),
+          store.scanPool(query, exclude, 10),
         ]);
         const merged = [...semantic, ...lexical.filter((l) => !semantic.some((m) => m.id === l.id))];
         // Only people an introduction can actually reach: still opted in, with a
         // direct chat to ask them in. The index can hold entries older than that rule.
         const reachable = await store.getMany(merged.map((m) => m.id));
-        const matches = merged
-          .filter((m) => reachable[m.id]?.matchOptIn && reachable[m.id]?.dmChat)
-          .filter((m) => !near || (reachable[m.id]?.area ?? "").toLowerCase().includes(near.split(/[ ,]/)[0].toLowerCase()))
-          .slice(0, 3);
-        if (!matches.length && near) return `Nobody in the pool is based in ${near} yet. Say so plainly, and offer to look without the location.`;
-        if (!matches.length) return "Nobody new in the pool fits yet. Say so plainly; more people join over time.";
+        const canReach = merged.filter((m) => reachable[m.id]?.matchOptIn && reachable[m.id]?.dmChat);
+        // A place puts people there first; it never hides everyone else. The model
+        // fills `near` in with the asker's own city unasked, and as a wall that
+        // turned "anyone who likes art" into nobody.
+        const place = near?.split(/[ ,]/)[0].toLowerCase();
+        const isThere = (m: { id: string }) => !!place && (reachable[m.id]?.area ?? "").toLowerCase().includes(place);
+        const there = canReach.filter(isThere);
+        const matches = [...there, ...canReach.filter((m) => !isThere(m))].slice(0, 3);
+        if (!matches.length) {
+          this.note("info", "match.search", { candidates: 0, found: merged.length, near });
+          return "Nobody new in the pool fits yet. Say so plainly; more people join over time.";
+        }
 
         // The model gets refs and blurbs. Handles and names stay here, keyed by
         // ref, until the other person has said yes.
@@ -2504,7 +2512,8 @@ this.rememberCardId(id);
           return { ref: `c${i + 1}`, blurb: m.blurb, score: m.score };
         });
         this.setMeta("match_candidates", JSON.stringify(candidates));
-        this.note("info", "match.search", { candidates: shown.length, top: shown[0]?.score });
+        this.note("info", "match.search", { candidates: shown.length, top: shown[0]?.score, found: merged.length, near, there: there.length });
+        if (near && !there.length) return `Nobody in the pool is based in ${near} yet, so say that plainly. These are the closest fits elsewhere: ${JSON.stringify(shown)}`;
         return JSON.stringify(shown);
       }
 
