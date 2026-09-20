@@ -1,6 +1,6 @@
 # Parallelising the agent: where the time goes, and what was changed
 
-Written 2026-09-19 on the `parallel-agent` branch (worktree off `main` at d64d9bb).
+Written 2026-09-19 on the `parallel-agent` branch (worktree off `main` at d64d9bb; rebased onto #40 and #42 the same evening).
 
 The question: which parts of the agentic flow are serial today but need not be,
 and which of those are worth changing before the demo. Every item below was
@@ -110,6 +110,30 @@ What changed so the next occurrence is honest and diagnosable:
 | `research.ts` (PR #40, merged meanwhile) | A missing Jev key failed every run in 0 ms with "say the search came up empty" | Research runs without the key: the LLM picks sources and options go unscored. This branch's own "unavailable" signal for that case was dropped on rebase, since nothing triggers it any more |
 | `agent.ts` research tool + `research-routing.ts` | A hotel or flight brief would start a minutes-long run that ends in "nothing found" | Refused with the tool to call instead; venue briefs that merely mention a hotel or a flight still go to research (13 cases in `research-routing.test.mjs`) |
 | system prompt + `research` description | "To find real places, call research" | Flights, stays and events are named as never research |
+
+## On the production model, through the real loop
+
+After the branch was rebased onto #40 (research runs without the Jev key)
+and #42 (widgets, games), the worktree's server was pointed at the demo
+profile (gpt-5.6-luna) and driven through `/api/dev/*`:
+
+| Ask | What happened |
+|---|---|
+| "hotel in Toronto next Sunday Sept 20, one night" (fresh direct chat) | `search_stays` returned 3 hotels for the 20th; a ballot was posted |
+| "flights Toronto → Vancouver tonight, one person" (fresh direct chat) | The model chose to run first-contact onboarding instead ("what should I call you?") and never searched. Pre-existing behaviour of a brand-new direct chat; the phone that reported the problem is long past onboarding |
+| quick research, "late night ramen for 4 on Friday", downtown Toronto | 22 s end to end through #40's LLM fallback: 2 queries planned alongside routing in 2.2 s, 15 hits, 3 pages fetched in one wave, 2 read, a ballot of two ramen places posted |
+| "flights YYZ→YVR and a hotel in downtown Vancouver, cheapest of each" | Without the batching line: the two lookups came one step apart. With it: one step, both in flight together, direct and group chat. Group waited 15.2 s for both instead of 29.3 s; direct 19.2 s instead of 34.9 s. In a third try the model still split them, so the line raises the odds, it does not guarantee |
+
+The batching line was chosen by probing the model directly with the agent's
+prompt and tools, three tries each: without it, both calls in one reply 1
+time in 3; with it, 3 in 3.
+
+Seen along the way, not changed here: asked for flights and a hotel at
+once, the model calls `propose_plan` twice a few seconds apart, and the
+second ballot replaces the first, so the flight ballot is gone before anyone
+can vote. The prompt says one ballot at a time; the model reads that as one
+after another. Worth a rule in code (refuse a second ballot while one is
+open with no votes) before a trip demo.
 
 ## How to see the difference
 
