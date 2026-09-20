@@ -133,7 +133,9 @@ export default Sentry.withSentry(sentryOptions, {
             // sandbox (without allow-same-origin) gives the page a null
             // origin: generated code cannot reach the agent or widget APIs
             // even though it is served from this host.
-            "content-security-policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'",
+            // In a sandboxed (null-origin) document 'self' means nothing, so
+            // connect-src names the host explicitly — state sync only.
+            "content-security-policy": `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src ${new URL(request.url).origin}; form-action 'none'; base-uri 'none'; frame-ancestors 'self'`,
             "cross-origin-opener-policy": "same-origin",
             "cross-origin-resource-policy": "same-origin",
             "x-content-type-options": "nosniff",
