@@ -40,7 +40,8 @@ export type EventDocument = EventInput & {
 };
 const http = (value?: string) => value && url.safeParse(value).success ? value : undefined;
 const link = (value?: string, kind: "booking" | "checkout" = "booking") => http(value) ? [{ label: kind === "checkout" ? "Open checkout" : "Open booking", url: value!, kind }] : [];
-const provider = (value?: string) => { try { return { name: new URL(value!).hostname.replace(/^www\./, "") }; } catch { return undefined; } };
+// A "tel:" or "mailto:" link parses fine but has no host, and an empty provider name fails the schema.
+const provider = (value?: string) => { try { const name = new URL(value!).hostname.replace(/^www\./, ""); return name ? { name } : undefined; } catch { return undefined; } };
 
 /** Preserve generic items while adapting existing agent data into the same contract. */
 export function eventFromPlan(state: PlanState, groupId: string, id: string, now = Date.now()): EventDocument {

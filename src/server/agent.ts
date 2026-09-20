@@ -630,8 +630,16 @@ export class PlanAgent extends Agent<Env, PlanState> {
         .filter(item => item.source !== "agent" && Object.hasOwn(overrides, item.id))
         .map(item => [item.id, overrides[item.id]]));
       published.event.items = published.event.items.map(item => ({ ...item, ...retained[item.id] }));
-      published.event = { ...published.event, ...eventInputSchema.parse(published.event) };
-      this.setMeta("event_item_overrides", JSON.stringify(retained));
+      // The event page is derived: one item it cannot express must not stop the plan itself
+      // from publishing, or every vote, booking and cart in this chat fails with it.
+      const checked = eventInputSchema.safeParse(published.event);
+      if (checked.success) {
+        published.event = { ...published.event, ...checked.data };
+        this.setMeta("event_item_overrides", JSON.stringify(retained));
+      } else {
+        this.note("error", "event.invalid", { issues: checked.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`) });
+        published.event = this.state.event;
+      }
     }
     this.setState(published);
     this.queuePlanMedia();
