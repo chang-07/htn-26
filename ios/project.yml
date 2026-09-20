@@ -61,6 +61,7 @@ targets:
           - Archivo-Variable.ttf
           - IBMPlexMono-Regular.ttf
           - IBMPlexMono-Medium.ttf
+        NSCameraUsageDescription: Whim uses the camera only to turn a hand pinch into a jump in the infinite runner.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.message-payload-provider
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).MessagesViewController
