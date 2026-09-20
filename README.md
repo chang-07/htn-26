@@ -1,5 +1,7 @@
 # Whim
 
+https://whim.schangchang-li.workers.dev
+
 An iMessage group-chat agent that helps friends make plans, vote on options,
 book outings, build shopping carts, and play games. Built with Cloudflare
 Workers, a stateful agent per chat, React, and a native iMessage extension.
