@@ -749,7 +749,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     const tint = { coral: "#ff7a59", violet: "#8b5cf6", mint: "#179b6b" }[g.visual?.accent ?? ""] ?? "#179b6b";
     const tiles =
       g.kind === "blackjack"
-        ? [{ big: "♠", small: "Ace" }, { big: "♥", small: "King" }, { big: "♣", small: "Seven" }]
+        ? [{ big: "♠️", small: "Ace" }, { big: "♥️", small: "King" }, { big: "♣️", small: "Seven" }]
         : g.kind === "trivia"
           ? [{ big: "A" }, { big: "B", small: "?" }, { big: "C" }]
           : g.surface === "tap_dodge"
@@ -774,6 +774,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       title: "Group playlist",
       rows: tracks.slice(0, 3).map((t) => ({ lead: "♪", text: t.title, tail: t.artist.slice(0, 14) })),
       stub: { big: String(tracks.length), label: tracks.length === 1 ? "Track" : "Tracks" },
+      art: { tiles: [{ disc: true, small: "33" }, { disc: true, small: "45" }, { disc: true, small: "Mix" }], tint: "#179b6b" },
     };
     return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }

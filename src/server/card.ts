@@ -24,7 +24,7 @@ export type Ticket = {
   faces?: string[];
   photoUrl?: string;
   /** Fanned glyph tiles filling the body's empty space (game cards). */
-  art?: { tiles: { big: string; small?: string }[]; tint: string };
+  art?: { tiles: { big?: string; small?: string; disc?: boolean }[]; tint: string };
 };
 
 const W = 1200;
@@ -98,7 +98,15 @@ export async function renderTicket(t: Ticket): Promise<Response> {
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:170px;height:230px;margin:0 -14px;
       border-radius:22px;background:#ffffff;border:3px solid ${t.art!.tint};box-shadow:0 10px 24px rgba(0,0,0,0.14);
       transform:rotate(${spin}deg) translateY(${Math.abs(spin) * 1.6}px);color:${t.art!.tint};">
-      <div style="display:flex;font-family:'Archivo';font-weight:800;font-size:92px;line-height:1;">${esc(tile.big)}</div>
+      ${
+        tile.disc
+          ? `<div style="display:flex;align-items:center;justify-content:center;width:118px;height:118px;border-radius:59px;background:${ink};">
+        <div style="display:flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:23px;background:${t.art!.tint};">
+          <div style="display:flex;width:12px;height:12px;border-radius:6px;background:#ffffff;"></div>
+        </div>
+      </div>`
+          : `<div style="display:flex;font-family:'Archivo';font-weight:800;font-size:92px;line-height:1;">${esc(tile.big ?? "")}</div>`
+      }
       ${tile.small ? `<div style="display:flex;margin-top:10px;font-size:30px;letter-spacing:3px;opacity:0.7;">${esc(clip(tile.small, 8).toUpperCase())}</div>` : ""}
     </div>`;
         })
