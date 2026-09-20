@@ -83,6 +83,19 @@ final class GameStore: ObservableObject {
 
     private var gameURL: URL { base.appendingPathComponent("api/widget/\(chat)/game/\(gameId)") }
 
+    /// The server-rendered ticket PNG for this game. The `v` param tracks
+    /// phase/round/player count so AsyncImage refetches when the card changes.
+    var previewURL: URL? {
+        guard let g = game else { return nil }
+        var comps = URLComponents(url: base.appendingPathComponent("card/\(chat)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "kind", value: "game"),
+            URLQueryItem(name: "id", value: gameId),
+            URLQueryItem(name: "v", value: "\(g.phase)-\(g.round)-\(g.players.count)"),
+        ]
+        return comps.url
+    }
+
     func start() {
         refresh()
         timer?.invalidate()
@@ -176,15 +189,16 @@ struct TriviaGameView: View {
 
     // MARK: inline bubble
 
+    /// The bubble leads with the server-rendered ticket art; the text layout
+    /// stands in while it loads (or if it never arrives), so it's never blank.
     private func compact(_ g: GameView_) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            switch g.phase {
-            case "lobby": WhimHeader(context: "Game", chipText: "\(g.players.count) in — tap to join")
-            case "done": WhimHeader(context: "Game", chipText: "Final", chipTint: .orange)
-            default: WhimHeader(context: "Game", chipText: nil)
+        VStack(alignment: .leading, spacing: 6) {
+            AsyncImage(url: store.previewURL) { image in
+                image.resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } placeholder: {
+                compactText(g)
             }
-            Text(g.title).font(.system(.title3, design: .rounded).weight(.bold)).lineLimit(2)
-            if g.phase == "round" || g.phase == "reveal" { ProgressDots(total: g.totalRounds, current: g.round) }
             if g.phase == "done", let top = g.players.max(by: { $0.score < $1.score }) {
                 Label("\(top.name) wins — \(top.score)", systemImage: "crown.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(.orange)
@@ -193,8 +207,21 @@ struct TriviaGameView: View {
                     .font(.footnote.weight(.semibold)).foregroundStyle(Color.accentColor)
             }
         }
-        .padding(14)
+        .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func compactText(_ g: GameView_) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch g.phase {
+            case "lobby": WhimHeader(context: "Game", chipText: "\(g.players.count) in — tap to join")
+            case "done": WhimHeader(context: "Game", chipText: "Final", chipTint: .orange)
+            default: WhimHeader(context: "Game", chipText: nil)
+            }
+            Text(g.title).font(.system(.title3, design: .rounded).weight(.bold)).lineLimit(2)
+            if g.phase == "round" || g.phase == "reveal" { ProgressDots(total: g.totalRounds, current: g.round) }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: expanded sheet
