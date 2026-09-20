@@ -33,6 +33,8 @@ interface SecretBindings {
   PAYMENTS_LIVE?: string;
   /** The most one purchase may cost, in cents. Defaults to 6000. */
   PAY_CAP_CENTS?: string;
+  /** "true" plays a dry run out as a purchase, for demos. Ignored once PAYMENTS_LIVE is on. */
+  PAY_MOCK?: string;
 }
 
 interface Env extends SecretBindings {}

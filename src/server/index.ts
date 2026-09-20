@@ -16,6 +16,7 @@ import { planEmoji } from "../dressing";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, refreshRunTimeouts, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
+import type { PayResult } from "./booking";
 import { invoiceFor } from "../invoice";
 import { searchFlights } from "./sources/flights";
 import { searchStays } from "./sources/stays";
@@ -292,6 +293,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice|itinerary&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
+ *   POST /api/dev/payfinished {"chat":"demo","shop":"…","from":"+1…","status":"dry_run","total":"USD $12.00"}   the pay workflow's report, without a browser
  *   POST /api/dev/booked   {"chat":"demo","optionId"?:"…","confirmation"?:"…"}   land a confirmed booking without a browser
  *   GET  /api/dev/source?kind=flights|stays|events|flight|order&…   run one browse.sh recipe, no model
  *   POST /api/dev/watch     {"chat":"demo"}                          run the flight/order watch check now
@@ -456,6 +458,11 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/seedcart") {
     await agent.devSeedCart(String(body.shop), String(body.total ?? "$10.00"));
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/payfinished") {
+    // What the pay workflow reports back, without a browser: {"chat":"demo","shop":"…","payer":"+1…","status":"dry_run","total":"USD $12.00"}
+    await agent.payFinished({ shop: shopKey(String(body.shop)), payer: String(body.from ?? body.payer), status: (body.status ?? "dry_run") as PayResult["status"], total: body.total });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/tool") {

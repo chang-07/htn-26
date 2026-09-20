@@ -49,6 +49,8 @@ BROWSERBASE_CONTEXT_ID=
 # PAYMENTS_LIVE=true
 # The most one purchase may cost, in cents (default 6000).
 # PAY_CAP_CENTS=6000
+# Demo only: play a dry run out as a purchase. Ignored when PAYMENTS_LIVE=true.
+# PAY_MOCK=true
 
 # --- Sentry (optional; /runs diagnostics work without it) ---
 # Create a Cloudflare/JavaScript project in Sentry; set the DSN as a Worker secret.
