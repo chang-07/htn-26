@@ -140,6 +140,10 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                     var comps = URLComponents(url: known.base.appendingPathComponent("w/\(known.chat)"), resolvingAgainstBaseURL: false)!
                     comps.queryItems = [URLQueryItem(name: "cart", value: "any")]
                     self.present(url: comps.url!)
+                case .game(let id):
+                    guard let known = self.recallChat() else { return }
+                    if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
+                    self.present(url: known.base.appendingPathComponent("game/\(known.chat)/\(id)"))
                 }
             })))
             return

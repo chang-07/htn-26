@@ -67,9 +67,11 @@ struct TicketView: View {
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .firstTextBaseline, spacing: 18) {
-                HeroStat(value: "\(votes)", label: votes == 1 ? "vote" : "votes")
-                HeroStat(value: "\(plan.options.count)", label: plan.options.count == 1 ? "option" : "options", tint: .secondary)
+            if !plan.options.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 18) {
+                    HeroStat(value: "\(votes)", label: votes == 1 ? "vote" : "votes")
+                    HeroStat(value: "\(plan.options.count)", label: plan.options.count == 1 ? "option" : "options", tint: .secondary)
+                }
             }
         }
     }
@@ -141,7 +143,18 @@ struct TicketView: View {
                         }
                     }
                 }
-                if open {
+                if plan.options.isEmpty {
+                    // Never a dead end: an empty plan is an invitation to make one.
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Tell Whim what the group's thinking — options land here and everyone votes.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        AskWhimView(base: store.base, chat: store.chat)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                } else if open {
                     Text("Tap an option to vote. Everyone in the chat sees the tally live.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -152,8 +165,6 @@ struct TicketView: View {
                         .font(.subheadline)
                         .foregroundStyle(plan.status == "booked" ? .green : .secondary)
                 }
-                Divider()
-                GameComposerView(base: store.base, chat: store.chat)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .topLeading)

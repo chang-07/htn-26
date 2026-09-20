@@ -1936,6 +1936,22 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return g ? (isProceduralGame(g) ? viewProceduralGame(g, voter) : gameView(g, voter)) : null;
   }
 
+  /** Titles and status only — questions, answers and choices never leave here. */
+  async gamesList() {
+    return this.sql<{ json: string; ts: number }>`SELECT json, ts FROM games ORDER BY ts DESC LIMIT 8`
+      .map((row) => {
+        const g = JSON.parse(row.json) as StoredGame;
+        return {
+          id: g.id,
+          title: g.spec.title,
+          surface: isProceduralGame(g) ? g.spec.surface : g.spec.kind,
+          phase: g.phase,
+          players: Object.keys(g.players).length,
+          ts: row.ts,
+        };
+      });
+  }
+
   async gameAct(id: string, voter: string, act: GameAction) {
     let g = this.loadGame(id);
     if (!g) return null;

@@ -115,6 +115,10 @@ export default Sentry.withSentry(sentryOptions, {
         }));
         return Response.json({ status: "sent" });
       }
+      // The drawer's history: recent games, titles and status only.
+      if (action === "games" && request.method === "GET") {
+        return Response.json(await agent.gamesList(), { headers: { "cache-control": "no-store" } });
+      }
       // Games: prompt creation can produce a game or a safe surface picker; card views are redacted per player.
       if (action === "game") {
         if (!extra && request.method === "POST") {
