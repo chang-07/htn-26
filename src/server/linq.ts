@@ -290,6 +290,68 @@ export async function sendLinkCard(
   return res.message.id;
 }
 
+// ------------------------------------------------------------------ tickets
+
+/**
+ * A stored ticket (venue, RSVP, paid receipt, match intro) as an app card the
+ * extension renders natively from /ticket/<chat>/<id>. Callers fall back to
+ * the ticket PNG photo when no app identity is configured.
+ */
+export async function sendTicketCard(
+  env: Env,
+  chatId: string,
+  agentName: string,
+  ticketId: string,
+  t: { title: string; metaLeft: string; stubBig: string; stubLabel: string },
+): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.ticket_card", { chat: short(chatId), ticket: ticketId, title: t.title });
+    return `dry-ticket-${ticketId}`;
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
+    message: {
+      parts: [{
+        type: "imessage_app" as const,
+        app: { name: env.IMESSAGE_APP_NAME, team_id: env.IMESSAGE_TEAM_ID, bundle_id: env.IMESSAGE_BUNDLE_ID },
+        url: `${env.PUBLIC_BASE_URL}/ticket/${encodeURIComponent(agentName)}/${ticketId}`,
+        // Static: dates or addresses in the body would demote the card to text.
+        fallback_text: "Open the card",
+        layout: {
+          caption: t.title.slice(0, 64),
+          subcaption: t.metaLeft.slice(0, 120),
+          trailing_caption: t.stubBig.slice(0, 24),
+          trailing_subcaption: t.stubLabel.slice(0, 24),
+        },
+      }],
+    },
+  });
+  return res.message.id;
+}
+
+/** A generated game as an app card; the extension renders play from /game/<chat>/<id>. */
+export async function sendGameCard(env: Env, chatId: string, agentName: string, gameId: string, title: string, topic: string): Promise<string> {
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.game_card", { chat: short(chatId), game: gameId, title });
+    return `dry-game-${gameId}`;
+  }
+  const url = `${env.PUBLIC_BASE_URL}/game/${encodeURIComponent(agentName)}/${gameId}`;
+  if (!hasAppIdentity(env)) {
+    return sendLinkCard(env, chatId, { title: title.slice(0, 64), subtitle: topic.slice(0, 120), button: "Play", url });
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
+    message: {
+      parts: [{
+        type: "imessage_app" as const,
+        app: { name: env.IMESSAGE_APP_NAME, team_id: env.IMESSAGE_TEAM_ID, bundle_id: env.IMESSAGE_BUNDLE_ID },
+        url,
+        fallback_text: "Play the game",
+        layout: { caption: title.slice(0, 64), subcaption: topic.slice(0, 120), trailing_caption: "PLAY" },
+      }],
+    },
+  });
+  return res.message.id;
+}
+
 // ------------------------------------------------------------------- music
 
 /** The playlist as an app card: our extension renders the player from /music/<chat>. */

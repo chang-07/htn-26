@@ -19,7 +19,7 @@ import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive
 import type { FlightStatus, OrderStatus } from "./sources/types";
 import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
 import type { ShipTo } from "./checkout";
@@ -28,6 +28,7 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import { searchTrack } from "./tools/music";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
@@ -141,6 +142,9 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
+- When someone asks for a game ("make a trivia game about X"), call make_game
+  with their topic. The game card posts itself; people join and play on the
+  card. Never list the questions in text.
 - When someone names a song for the group playlist, call add_song once per
   song, exactly as they said it. The playlist card in the thread updates
   itself; never list the tracks in text. show_playlist reposts the card when
@@ -272,6 +276,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, json TEXT NOT NULL, message_id TEXT, ts INTEGER NOT NULL
     )`;
     this.sql`CREATE TABLE IF NOT EXISTS rsvps (handle TEXT PRIMARY KEY, answer TEXT NOT NULL)`;
+    this.sql`CREATE TABLE IF NOT EXISTS games (
+      id TEXT PRIMARY KEY, json TEXT NOT NULL, ts INTEGER NOT NULL
+    )`;
     this.sql`CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
@@ -551,6 +558,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
   // Every card the agent shows is a ticket (see card.ts). It is stored here,
   // rendered on demand at /card/<chat>?t=<id>, and sent as a photo.
 
+  /**
+   * Called over RPC by /api/widget. The stub does not proxy the `state`
+   * property, so the native widget reads it through this method instead.
+   */
+  async widgetState(): Promise<PlanState> {
+    return this.state;
+  }
+
   /** Called over RPC by the /card route. */
   async getTicket(id: string): Promise<Ticket | null> {
     const row = this.sql<{ json: string }>`SELECT json FROM tickets WHERE id = ${id}`[0];
@@ -563,7 +578,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO tickets (id, kind, json, ts) VALUES (${id}, ${kind}, ${JSON.stringify(ticket)}, ${Date.now()})`;
     this.sql`DELETE FROM tickets WHERE ts < ${Date.now() - 7 * 24 * 3600 * 1000}`;
     const url = `${this.env.PUBLIC_BASE_URL}/card/${encodeURIComponent(this.name)}?t=${id}`;
-    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id }, () => sendPhoto(this.env, this.name, url), this.note).catch(
+    // With our extension configured the ticket ships as a native app card;
+    // without it, the rendered PNG photo as before.
+    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id, native: hasAppIdentity(this.env) }, () =>
+      hasAppIdentity(this.env)
+        ? sendTicketCard(this.env, this.name, this.name, id, { title: ticket.title, metaLeft: ticket.metaLeft, stubBig: ticket.stub.big, stubLabel: ticket.stub.label })
+        : sendPhoto(this.env, this.name, url),
+      this.note,
+    ).catch(
       () => undefined,
     );
     if (messageId) this.sql`UPDATE tickets SET message_id = ${messageId} WHERE id = ${id}`;
@@ -1516,6 +1538,50 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.typingAt = 0; // a send clears the bubble
     const id = await timed("agent", "message.out", { chars: text.length, ...this.body(text) }, () => sendText(this.env, this.name, text, opts), this.note);
     this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${text}, ${Date.now()})`;
+  }
+
+  // ------------------------------------------------------------------ games
+
+  private loadGame(id: string): GameState | null {
+    const row = this.sql<{ json: string }>`SELECT json FROM games WHERE id = ${id}`[0];
+    return row ? (JSON.parse(row.json) as GameState) : null;
+  }
+
+  private saveGame(g: GameState) {
+    this.sql`INSERT INTO games (id, json, ts) VALUES (${g.id}, ${JSON.stringify(g)}, ${Date.now()})
+             ON CONFLICT(id) DO UPDATE SET json = excluded.json`;
+  }
+
+  /** Prompt -> spec -> stored game -> card in the thread. RPC from /api/widget and the make_game tool. */
+  async gameCreate(topic: string, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
+    const spec = await generateGame(this.env, topic.slice(0, 140));
+    const id = crypto.randomUUID().slice(0, 12);
+    let g = newGame(id, spec, creator);
+    if (creatorName) g = joinGame(g, creator, creatorName);
+    this.saveGame(g);
+    this.note("info", "game.created", { id, title: spec.title, questions: spec.questions.length });
+    await timed("agent", "game.card", { id }, () => sendGameCard(this.env, this.name, this.name, id, spec.title, spec.topic), this.note).catch(() => undefined);
+    return { id, title: spec.title };
+  }
+
+  /** The redacted per-player view; correct answers never leave early. */
+  async gameFetch(id: string, voter: string) {
+    const g = this.loadGame(id);
+    return g ? gameView(g, voter) : null;
+  }
+
+  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "advance" }) {
+    let g = this.loadGame(id);
+    if (!g) return null;
+    if (act.type === "join") g = joinGame(g, voter, act.name);
+    if (act.type === "answer") {
+      g = gameAnswer(g, voter, act.choice);
+      // Everyone in -> straight to the reveal; nobody waits on a host.
+      if (roundComplete(g)) g = gameAdvance(g);
+    }
+    if (act.type === "advance") g = gameAdvance(g);
+    this.saveGame(g);
+    return gameView(g, voter);
   }
 
   // ------------------------------------------------------------- agent turn
@@ -2478,6 +2544,17 @@ this.rememberCardId(id);
         this.note("info", "playlist.added", { title: found.title, artist: found.artist, tracks: playlist.length });
         await this.syncMusicCard();
         return `Added ${found.title} — ${found.artist}${found.previewUrl ? "" : " (no preview clip for this one)"}. Playlist has ${playlist.length} track${playlist.length === 1 ? "" : "s"}; its card in the thread updated itself. Do not list the songs in text.`;
+      }
+
+      case "make_game": {
+        const { topic } = parseToolArgs("make_game", rawArgs);
+        try {
+          const made = await this.gameCreate(topic, "agent");
+          return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
+        } catch (err) {
+          this.note("warn", "game.generate_failed", errorFields(err));
+          return "The game generator came up empty. Say so and offer to try a different topic.";
+        }
       }
 
       case "show_playlist": {
