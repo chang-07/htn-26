@@ -19,7 +19,10 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
    ├─ private SQLite: transcript, handles, votes
    ├─ public state ──WebSocket──► vote page (useAgent)   src/client/
    ├─ schedule(): batches bursts of texts into one turn; nudges non-voters
-   ├─ LLM tool loop (OpenAI, or a free dev provider)     src/server/llm.ts
+   ├─ triage: a small model call picks the lanes         src/server/triage.ts
+   │     the turn needs (venues, trip, shop, ...)          src/server/lanes.ts
+   ├─ specialist: the tool loop, with only those lanes'   src/server/llm.ts
+   │     │  rules and tools (OpenAI, or a free dev provider)
    │     │  lookups asked for in one step run together   src/server/tool-concurrency.ts
    │     ├─ propose_plan · get_votes
    │     ├─ research ──► ResearchWorkflow (durable, minutes-long)
@@ -696,6 +699,24 @@ plan, which rules out Kayak, Skyscanner, Booking.com, Airbnb, Expedia, OpenTable
 and every parcel carrier's own page. The parsers are pinned by fixtures in
 `scripts/fixtures/sources/`; when Google changes its markup, `source.empty` in
 the run viewer names the page that came back.
+
+### How a turn is scoped
+
+A turn is a two-stage pipeline. **Triage** (`src/server/triage.ts`) is a small
+model call with no tools that reads the last few transcript lines and picks
+which lanes the turn needs from `src/server/lanes.ts`: venues, trip, shop,
+money, people, fun. The **specialist** is then the tool loop with only those
+lanes' rules and tools, roughly a fifth of the prompt on a typical ask. Wakes
+whose job is fixed (everyone voted, an availability check finished) skip triage;
+so does a short answer to a question the agent just asked, which stays in the
+lanes the question came from. A group wake in which nobody asked the agent
+anything ends after triage, without the large call. If triage fails or takes
+over 8 s, the turn runs with every lane, which is the pre-pipeline behaviour.
+
+`/runs` shows each turn's `turn.route` event: the lanes, where the route came
+from (`triage`, `reason`, `sticky`, `fallback`) and what triage cost.
+`AGENT_PIPELINE` in `wrangler.jsonc` is `lanes`; set it to `single` to run
+the one-piece prompt and all tools on every call, as before.
 
 ### LLM usage sources
 

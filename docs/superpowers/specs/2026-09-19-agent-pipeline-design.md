@@ -33,7 +33,7 @@ webhook ─► ingestMessage ─► schedule ─► runTurn ─► think()
                                     ┌─────────────────┴──────────────────┐
                                     │ stage 2: specialist                 │
                                     │  the existing tool loop, with       │
-                                    │  systemFor(lanes) + toolsFor(lanes) │
+                                    │  systemFor(lanes), laneToolNames    │
                                     │  (all the same guards and runTool)  │
                                     └────────────────────────────────────┘
 ```
@@ -71,21 +71,26 @@ this change is the current behaviour.
 
 ## Stage 1: routing
 
-Routing has three sources, tried in this order:
+Routing has four sources, tried in this order:
 
 1. **The wake reason.** A `votes_in` turn's job is fixed: `core`, plus `trip`
    when the winner is a flight, stay or event (that is exactly when the
    prompt tells it to call `add_to_itinerary`), plus `venues` otherwise (the
    winner may need `book_option`). An `availability_in` turn only speaks:
    `core`. No model call.
-2. **The triage agent.** Otherwise a small structured call through `askJson`:
+2. **Sticky lanes.** A short message (eight words or fewer, no link) that
+   arrives inside the window of a question the agent asked is the answer to
+   it, and reuses the lanes of the turn that asked. "Friday" or "Sam,
+   sam@example.com" costs no triage call. A long message in that window is a
+   new ask and is triaged.
+3. **The triage agent.** Otherwise a small structured call through `askJson`:
    no tools, about a tenth of the specialist's prompt. It sees the last eight
    transcript lines, one line of plan status, whether there are carts, an
    itinerary and research findings, whether this is a direct chat, and the
    lane catalogue with a one-line description each. It returns
    `{ lanes: string[], why: string }`. Unknown lane names are dropped; an
    empty or invalid answer means "every lane".
-3. **Fallback.** If triage throws or takes longer than its budget (4 s), the
+4. **Fallback.** If triage throws or takes longer than its budget (8 s), the
    turn runs with every lane, and the route event says so.
 
 Triage runs concurrently with `aboutPeople` (the People Durable Object RPC)
@@ -102,7 +107,7 @@ already knows better:
   message is addressed to the agent, so an empty answer is treated as `core`.
 
 The route is recorded as a `turn.route` event with the lanes, the source
-(`reason`, `triage`, `fallback`), the triage tokens and its duration, so
+(`reason`, `sticky`, `triage`, `fallback`, `single`), the triage tokens and its duration, so
 `/runs` shows what the turn was scoped to and how much the routing cost.
 `turn.start` also carries the lanes.
 
@@ -113,7 +118,7 @@ The route is recorded as a `turn.route` event with the lanes, the source
 - `systemFor(lanes)`: the common block plus the selected lanes' blocks, in a
   fixed order, so the prompt for a given lane set is byte-identical across
   turns (and therefore cacheable by the provider).
-- `toolsFor(lanes)`: `openAiTools(names)` now takes an optional tool list and
+- `openAiTools(laneToolNames(lanes))`: `openAiTools` now takes an optional tool list and
   memoises the JSON schema array per lane-set key, keeping the once-per-isolate
   build from the parallel-agent pass.
 
@@ -162,3 +167,31 @@ so a demo-day regression has a one-line rollback that needs no code change.
   tokens, and which tools were called.
 - Deployed to the staging Worker and the same probes run there before the PR
   is called ready.
+
+## Measured
+
+Five asks, one fresh simulator chat each, on the production model
+(gpt-5.6-luna, `LLM_PROFILE=demo`) from the worktree's dev server, once in
+each mode. Numbers are the `turn.end` event's `ms` and `tokens` (lanes mode
+includes triage in both). One run each, so treat the latency column as
+indicative; the token column is deterministic in shape.
+
+| Ask | single: ms / tokens | lanes: ms / tokens | lanes chosen | What differed |
+|---|---|---|---|---|
+| direct chat, first message "thanks, that was perfect!" | 1816 / 8280, **silent** | 8785 / 14190, replied | people (harness: onboarding) | single mode said nothing to a first direct message, which the prompt forbids; lanes mode saved the profile and introduced itself over four steps |
+| group, "@whim lol you're the best, thanks" | 3079 / 8324, silent | 1411 / 612, silent | none | same outcome, one small call instead of the full one |
+| group, picnic weather at Trinity Bellwoods | 6140 / 16818 | 6548 / 7657 | venues | same tools (find_locations then a reply); triage's 1.1 s offset by cheaper steps |
+| group, balloons and a banner from partycity.com for 6 | 1682 / 8358 | 1923 / 4684 | shop | both asked one clarifying question |
+| group, YYZ to YVR Oct 10 to 13 plus a hotel | 6618 / 16827 | 2839 / 7440 | trip | both asked which year and airport; lanes mode did it in half the time |
+
+Per specialist step the full prompt is about 8.3k input tokens on this model;
+a single-lane step is 3.3k to 4k. Triage itself took 1.1 to 2.1 s and about
+600 tokens on every ask, and chose the right lane every time.
+
+On the free dev proxy (`npm run llm`, haiku through `claude -p`) every model
+call carries a fixed 4 to 5 s process start, so there triage is pure added
+latency and the 8 s budget is needed; the token savings are the same. That
+proxy also counts the full prompt at about 15k tokens.
+
+Also run: `npm test` (155), `npm run typecheck`, `npm run smoke` on the
+worktree's server in lanes mode, all green.
