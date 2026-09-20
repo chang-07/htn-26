@@ -22,7 +22,7 @@ const bundle = await build({ entryPoints: ["src/server/research.ts"], bundle: tr
 }] });
 const { ResearchWorkflow } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
 
-async function run(t, { key = true, sourceScore = 3, candidateScore = 3 } = {}) {
+async function run(t, { key = true, sourceScore = 3, candidateScore = 3, jevStatus = 200 } = {}) {
   const calls = [];
   const candidate = { name: "Real venue", kind: "activity", why: "Fits", address: "Toronto", details: ["Saturday"], bookingUrl: "https://venue.test/book" };
   globalThis.researchDeps = {
@@ -39,6 +39,7 @@ async function run(t, { key = true, sourceScore = 3, candidateScore = 3 } = {}) 
     let response;
     if (url.endsWith("/search")) { calls.push("search"); response = { results: [{ url: "https://venue.test/", title: "Real venue", snippet: "Toronto" }] }; }
     else if (url.endsWith("/fetch")) { calls.push("fetch"); response = { statusCode: 200, content: "Real venue in Toronto on Saturday" }; }
+    else if (jevStatus !== 200) { calls.push("jev-error"); return new Response("{}", { status: jevStatus }); }
     else {
       const extracted = body.questions.hit_0.instructions.includes("extracted candidate");
       calls.push(extracted ? "jev-candidate" : "jev-source");
@@ -78,4 +79,11 @@ test("accepted results pass both Jev gates before synthesis with original facts 
   assert.equal(report.ok, true);
   assert.equal(report.candidates[0].bookingUrl, "https://venue.test/book");
   assert.deepEqual(report.candidates[0].sources, ["https://venue.test/"]);
+});
+
+test("a rejected Jev key falls back to LLM selection and unscored options instead of failing the run", async (t) => {
+  const { calls, report } = await run(t, { jevStatus: 401 });
+  assert.deepEqual(calls, ["plan", "search", "jev-error", "llm-select", "fetch", "extract", "jev-error", "synthesize"]);
+  assert.equal(report.ok, true);
+  assert.equal(report.candidates[0].bookingUrl, "https://venue.test/book");
 });

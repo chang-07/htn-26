@@ -149,7 +149,7 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       // 3. Jev gates relevance AND confidence before spending on page retrieval.
       // New step name prevents replaying a pre-change, possibly unscored selection.
       const picked = await step.do("score-sources", STEP, async () => {
-        if (!jev) {
+        const llmPick = async () => {
           const r = await askJson(
             this.env,
             z.object({ indexes: z.array(z.number().int()) }),
@@ -162,13 +162,20 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
             urls: (urls.length ? urls : found.hits.map((h) => h.url)).slice(0, budget.pages),
             tokens: r.tokens, provider: "llm-fallback", scores: [] as { url: string; relevance: number; confidence: number }[],
           };
-        }
-        const scored = await scoreSources(this.env, ask, found.hits);
-        const selected = selectSources(this.env, scored.hits, budget.pages);
-        return {
-          urls: selected.map((hit) => hit.url), tokens: scored.tokens, provider: "jev-vercel-gateway",
-          scores: scored.hits.map(({ url, relevance, confidence }) => ({ url, relevance, confidence })),
         };
+        if (!jev) return llmPick();
+        try {
+          const scored = await scoreSources(this.env, ask, found.hits);
+          const selected = selectSources(this.env, scored.hits, budget.pages);
+          return {
+            urls: selected.map((hit) => hit.url), tokens: scored.tokens, provider: "jev-vercel-gateway",
+            scores: scored.hits.map(({ url, relevance, confidence }) => ({ url, relevance, confidence })),
+          };
+        } catch (err) {
+          // A rejected key or a gateway outage is not a reason to find nothing.
+          await progress("jev_fallback", { stage: "sources", ...errorFields(err) });
+          return llmPick();
+        }
       });
       tokens += picked.tokens;
       await progress("selected", { count: picked.urls.length, provider: picked.provider, scores: picked.scores, hosts: picked.urls.map((u) => new URL(u).host) });
@@ -246,10 +253,16 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
       if (extracted.length === 0) throw new Error(`read ${read.pages.length} pages and found no specific places`);
 
       const evaluated = jev
-        ? await step.do("score-candidates", STEP, () => scoreCandidates(this.env, ask, extracted))
-        : { candidates: extracted, scores: [], tokens: 0 };
+        ? await step.do("score-candidates", STEP, async () => {
+            try { return { ...(await scoreCandidates(this.env, ask, extracted)), provider: "jev-vercel-gateway" }; }
+            catch (err) {
+              await progress("jev_fallback", { stage: "candidates", ...errorFields(err) });
+              return { candidates: extracted, scores: [], tokens: 0, provider: "unscored" };
+            }
+          })
+        : { candidates: extracted, scores: [], tokens: 0, provider: "unscored" };
       tokens += evaluated.tokens;
-      await progress("candidates_scored", { provider: jev ? "jev-vercel-gateway" : "unscored", count: extracted.length,
+      await progress("candidates_scored", { provider: evaluated.provider, count: extracted.length,
         accepted: evaluated.candidates.length, scores: evaluated.scores });
       const all = evaluated.candidates;
       if (!all.length) throw new Error("No extracted options passed Jev's relevance and confidence thresholds. Try more specific constraints.");
