@@ -27,6 +27,12 @@
 .rv .rv-trace>summary { cursor: pointer; font-size: 15px; font-weight: 600; padding: 6px; }
 .rv .rv-trace>summary span { font-size: 11px; font-weight: 400; color: var(--soft); margin-left: 8px; }
 .rv .rv-trace>p { font-size: 12px; color: var(--soft); margin: 6px 6px 14px; }
+.rv .rv-row { grid-template-columns: 108px 14px minmax(0,1fr); }
+.rv .rv-event-time { display: flex; flex-direction: column; gap: 3px; align-self: start; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; line-height: 1.3; }
+.rv .rv-event-time strong { font-size: 12px; font-weight: 600; color: var(--ink); }
+.rv .rv-event-time small { font-size: 9px; color: var(--soft); }
+.rv .rv-event-time>span { margin-top: 3px; font-size: 10px; color: var(--soft); }
+@media(max-width:759px) { .rv .rv-row { grid-template-columns: 84px 11px minmax(0,1fr); } }
 .rv .rv-advanced { border-top: 1px solid var(--hair); margin: 24px 0; padding-top: 18px; }
 .rv .rv-advanced>summary { font-size: 13px; }
 .rv .rv-advanced>summary span { display: block; font-size: 11px; font-weight: 400; color: var(--soft); margin: 6px 0 0 16px; }

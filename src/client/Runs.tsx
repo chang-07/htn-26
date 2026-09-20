@@ -256,7 +256,7 @@ export function Runs() {
     if (!eventIds.current.has(key)) eventIds.current.set(key, eventIds.current.size + 1);
     return { ...event, seq: eventIds.current.get(key)! };
   }) : [];
-  const nodes = toNodes(combinedEvents);
+  const nodes = toNodes(combinedEvents, detail?.started);
   useEffect(() => {
     if (initialStep.current === null) return;
     const event = combinedEvents.find(event => event.sourceRunId === selected && event.sourceSeq === Number(initialStep.current));
@@ -350,12 +350,12 @@ export function Runs() {
                 {detailProblem && <p role="status" style={{ color: "var(--error)", fontSize: 12 }}>Some turns couldn’t load. Showing available activity; retrying automatically.</p>}
                 <p className="rv-conversation-note">{selectedSession?.runs.length} recorded runs in this conversation · turns and background activity share one trace.</p>
                 <RunOverview run={detail} events={nodes} onPick={setPicked} />
+                <details className="rv-advanced" key={detail.runId}><summary>Performance & technical details<span>Timing, model usage, traces, and all recorded errors</span></summary><RunDiagnostics events={nodes} onPick={setPicked} run={detail} /></details>
                 <details className="rv-trace" key={`trace-${detail.runId}`} open>
                   <summary>Activity trace <span>{nodes.length} events</span></summary>
-                  <p>Read from top to bottom. Select a step to inspect its details.</p>
+                  <p>Each row shows time since the previous recorded event, then total elapsed time. Select a step for details.</p>
                   <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
                 </details>
-                <details className="rv-advanced" key={detail.runId}><summary>Performance & technical details<span>Timing, model usage, traces, and all recorded errors</span></summary><RunDiagnostics events={nodes} onPick={setPicked} run={detail} /></details>
               </div>
             </>
           ) : (

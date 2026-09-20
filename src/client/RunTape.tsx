@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RunSummary } from "../server/runs";
 import { FieldList, SERVICES, dur, type ServiceId } from "./ui";
+import { eventTimings, elapsedLabel } from "../shared/event-timing";
+import { traceLabel } from "../shared/trace-labels";
 
 /**
  * A run as a tape: one row per step, printed top to bottom in the order it
@@ -30,6 +32,9 @@ export type Node = {
   sub: string;
   ts: number;
   ms: number | null;
+  gapMs: number;
+  totalMs: number;
+  firstEvent: boolean;
   level: string;
   event: string;
   fields: Record<string, unknown>;
@@ -158,10 +163,11 @@ const itemsOf = (fields: Record<string, unknown>): CartItem[] | null =>
 /** "$32.00" -> 32. Prices arrive already formatted by the store. */
 const priceNum = (p: string) => Number(String(p).replace(/[^0-9.]/g, "")) || 0;
 
-export function toNodes(events: TapeEvent[]): Node[] {
-  return events.map((e) => ({
+export function toNodes(events: TapeEvent[], started = events[0]?.ts ?? 0): Node[] {
+  return eventTimings(events, started).map((e) => ({
     seq: e.seq, ts: e.ts, level: e.level, event: e.event, fields: Object.fromEntries(Object.entries(e.fields).filter(([k]) => !/^(thinking|reasoning|chain.?of.?thought)$/i.test(k))),
-    ms: num(e.fields.ms) ?? null, ...classify(e),
+    gapMs: e.gapMs, totalMs: e.totalMs, firstEvent: e.firstEvent,
+    ms: num(e.fields.ms) ?? null, ...classify(e), ...traceLabel(e),
   }));
 }
 
@@ -430,7 +436,7 @@ function Pages({ nodes, t0, chat, picked, onPick }: { nodes: Node[]; t0: number;
   const found = nodes.reduce((s, n) => s + (num(n.fields.candidates) ?? 0), 0);
   return (
     <div className="rv-row is-static" style={{ paddingBottom: 12 }}>
-      <span style={timeStyle}>+{dur(nodes[0].ts - t0)}</span>
+      <EventTime node={nodes[0]} />
       <i className="rv-mark" style={{ background: "var(--s-browser)" }} title="Browser" />
       <span style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
         <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 500, fontSize: 13.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>
@@ -463,6 +469,14 @@ const timeStyle: React.CSSProperties = {
   fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)", fontVariantNumeric: "tabular-nums", textAlign: "right", whiteSpace: "nowrap",
 };
 
+function EventTime({ node }: { node: Node }) {
+  return <span className="rv-event-time" title={`${elapsedLabel(node.gapMs)} since ${node.firstEvent ? 'conversation start' : 'the previous recorded event'}; ${elapsedLabel(node.totalMs)} total elapsed`}>
+    <strong>{elapsedLabel(node.gapMs)}</strong>
+    <small>{node.firstEvent ? 'since start' : 'since previous'}</small>
+    <span>{elapsedLabel(node.totalMs)} total</span>
+  </span>;
+}
+
 function Row({
   node, t0, chat, isNew, showLive, selected, onPick, raw, qtyOf, dirty, pushing, onStep, onPush,
 }: {
@@ -477,10 +491,11 @@ function Row({
   const shot = shotFor(node.fields, chat);
   const items = itemsOf(node.fields);
   const text = str(node.fields.text);
-  const thinking = str(node.fields.decision);
+  // The decision row already explains the selected action in plain language.
+  const thinking = node.event === "turn.step" ? undefined : str(node.fields.decision);
   const stats = [
     node.ms != null && node.ms > 0 ? dur(node.ms) : null,
-    num(node.fields.tokens) ? `${num(node.fields.tokens)!.toLocaleString()} tok` : null,
+    num(node.fields.tokens) ? `${num(node.fields.tokens)!.toLocaleString()} tokens` : null,
     num(node.fields.candidates) != null ? `${num(node.fields.candidates)} found` : null,
   ].filter(Boolean);
   const total = items ? items.reduce((s, it, li) => s + qtyOf(node, li, items) * priceNum(it.price), 0) : 0;
@@ -494,17 +509,17 @@ function Row({
       data-seq={node.seq}
       onClick={onPick}
     >
-      <span style={timeStyle}>+{dur(node.ts - t0)}</span>
+      <EventTime node={node} />
       <i className="rv-mark" style={{ background: `var(${svc.v})` }} title={svc.label} />
       <button
         aria-pressed={selected}
         aria-label={`${svc.label}: ${node.title}${node.sub ? `, ${node.sub}` : ""}. Show what this step means`}
-        style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0, margin: 0, padding: 0, background: "none", border: 0, cursor: "pointer", font: "inherit", color: "inherit", textAlign: "left" }}
+        style={{ display: "flex", alignItems: "flex-start", flexWrap: "wrap", gap: "6px 12px", minWidth: 0, margin: 0, padding: 0, background: "none", border: 0, cursor: "pointer", font: "inherit", color: "inherit", textAlign: "left" }}
       >
-        <span className="rv-title" style={{ fontFamily: "var(--sans)", fontWeight: 500, fontSize: 13.5, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>{node.title}</span>
-        {node.sub && (
-          <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{node.sub}</span>
-        )}
+        <span style={{ flex: "1 1 200px", minWidth: 0 }}>
+          <span className="rv-title" style={{ display: "block", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 13.5, lineHeight: 1.45, overflowWrap: "anywhere" }}>{node.title}</span>
+          {node.sub && <span style={{ display: "block", marginTop: 4, fontFamily: "var(--sans)", fontSize: 12, lineHeight: 1.5, color: "var(--soft)", overflowWrap: "anywhere" }}>{node.sub}</span>}
+        </span>
         {stats.length > 0 && (
           <span style={{ marginLeft: "auto", paddingLeft: 12, fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--faint)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
             {stats.join("  ")}
@@ -635,7 +650,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
             {node.title}{node.sub ? <span style={{ fontWeight: 400, color: "var(--soft)" }}> · {node.sub}</span> : null}
           </h2>
           <p style={{ margin: "8px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
-            +{dur(node.ts - t0)}{node.ms != null && ` · ${dur(node.ms)}`} · seq {node.seq}
+            {elapsedLabel(node.gapMs)} since {node.firstEvent ? 'start' : 'previous event'} · {elapsedLabel(node.totalMs)} total elapsed{node.ms != null && ` · operation took ${elapsedLabel(node.ms)}`} · seq {node.seq}
           </p>
         </div>
         {onClose && (
