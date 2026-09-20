@@ -70,6 +70,30 @@ console.log("\nserver");
 await check("dev server is up", async () => expect((await get("/.well-known/ucp-agent.json")).status === 200, "not reachable — is `npm run dev` running?"));
 await check("vote page is served", async () => expect((await get("/w/x")).headers.get("content-type")?.includes("text/html"), "SPA not served"));
 
+console.log("\ngame widget HTTP pipeline");
+await check("blackjack can create, play, and reveal locally", async () => {
+  const c = chat("blackjack");
+  const voter = "local-player";
+  const made = await (await post("/api/dev/seedgame", {
+    chat: c,
+    voter,
+    name: "Luka",
+    spec: { version: 1, kind: "blackjack", title: "Local blackjack", topic: "Smoke table", rounds: 3, startingChips: 500 },
+  })).json();
+  expect(made.id, "game was not created");
+
+  const action = (sub) => post(`/api/widget/${encodeURIComponent(c)}/game/${made.id}/${sub}`, { voter });
+  await action("advance");
+  let view = await (await get(`/api/widget/${encodeURIComponent(c)}/game/${made.id}?voter=${encodeURIComponent(voter)}`)).json();
+  expect(view.kind === "blackjack" && view.phase === "round", `unexpected round: ${JSON.stringify(view)}`);
+  expect(view.bj?.dealer?.[1] === "??", "dealer hole card leaked during the round");
+
+  view = await (await action("stand")).json();
+  expect(view.phase === "reveal", `stand did not reveal: ${view.phase}`);
+  expect(view.bj?.dealer?.every((card) => card !== "??"), "dealer hole card stayed hidden after reveal");
+  expect(Array.isArray(view.bj?.outcomes) && view.bj.outcomes.length === 1, "round outcome missing");
+});
+
 console.log("\nplan, votes, cards");
 const a = chat("plan");
 await check("propose_plan opens a ballot with 3 options", async () => {

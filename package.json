@@ -7,6 +7,8 @@
     "llm": "node scripts/claude-llm-proxy.mjs",
     "smoke": "node scripts/smoke.mjs",
     "test": "node --test scripts/*.test.mjs",
+    "test:games": "node scripts/test-games.mjs",
+    "eval:games": "node scripts/eval-games.mjs",
     "runs:migrate": "wrangler d1 execute htn-runs --local --file migrations/0001_runs.sql",
     "runs:migrate:remote": "wrangler d1 execute htn-runs --remote --file migrations/0001_runs.sql",
     "build": "vite build",

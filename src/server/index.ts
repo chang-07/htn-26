@@ -113,6 +113,8 @@ export default Sentry.withSentry(sentryOptions, {
           const act =
             sub === "join" ? { type: "join" as const, name: body.name ?? "" }
             : sub === "answer" ? { type: "answer" as const, choice: Number(body.choice) }
+            : sub === "hit" ? { type: "hit" as const }
+            : sub === "stand" ? { type: "stand" as const }
             : sub === "advance" ? { type: "advance" as const }
             : null;
           if (!act) return new Response("Not found", { status: 404 });
@@ -472,6 +474,12 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     await agent.payFinished({ shop: shopKey(String(body.shop)), payer: String(body.from ?? body.payer), status: (body.status ?? "dry_run") as PayResult["status"], total: body.total, ...(body.unsure ? { unsure: true } : {}) });
     return Response.json({ ok: true });
   }
+  if (url.pathname === "/api/dev/seedgame") {
+    const spec = body.spec;
+    const voter = String(body.voter ?? "dev-player");
+    if (!spec || typeof spec !== "object") return new Response("spec is required", { status: 400 });
+    return Response.json(await agent.devCreateGame(spec as Parameters<PlanAgentClass["devCreateGame"]>[0], voter, body.name));
+  }
   if (url.pathname === "/api/dev/tool") {
     const { tool, args } = body as unknown as { tool: string; args?: unknown };
     return Response.json({ result: await agent.devRunTool(tool, args) });
@@ -717,6 +725,33 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   // class passes method calls through but answers undefined for a remote
   // property read, which took every card image down with a 500.
   const plan = (await agent.publicState()) as PlanState;
+
+  // Game and playlist preview images, so those cards are never blank.
+  const kindParam = url.searchParams.get("kind");
+  if (kindParam === "game" && url.searchParams.get("id")) {
+    const v = await agent.gameFetch(url.searchParams.get("id")!, "");
+    if (!v) return new Response("Not found", { status: 404 });
+    const ticket: Ticket = {
+      tone: v.phase === "done" ? "done" : "open",
+      metaLeft: "Game",
+      metaRight: v.phase === "lobby" ? "Join in" : v.phase === "done" ? "Final" : `Round ${v.round} of ${v.totalRounds}`,
+      title: v.title,
+      rows: [{ text: v.topic }, { text: `${v.players.length} playing` }],
+      stub: { big: v.phase === "done" ? "GG" : "▶", label: v.phase === "done" ? "Final" : "Play" },
+    };
+    return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+  }
+  if (kindParam === "music") {
+    const tracks = plan.playlist ?? [];
+    const ticket: Ticket = {
+      tone: "open",
+      metaLeft: "Playlist",
+      title: "Group playlist",
+      rows: tracks.slice(0, 3).map((t) => ({ lead: "♪", text: t.title, tail: t.artist.slice(0, 14) })),
+      stub: { big: String(tracks.length), label: tracks.length === 1 ? "Track" : "Tracks" },
+    };
+    return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+  }
 
   if (icon) {
     const key = `${name}/icon-${plan.version}.png`;

@@ -1,0 +1,265 @@
+import UIKit
+import Messages
+import SwiftUI
+import WebKit
+
+/// Hybrid shell. Plan, cart and playlist URLs render native SwiftUI; token'd
+/// forms (profile, address) and anything else load in a web view. The card's
+/// `url` — sent via Linq's imessage_app part — is the whole contract.
+class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate {
+
+    /// Drawer-open with no card tapped.
+    private let homeURL = URL(string: "https://whim.schangchang-li.workers.dev/")!
+
+    private var hosting: UIHostingController<AnyView>?
+    private var store: PlanStore?
+    private var storeChat: String?
+    private let presentation = PresentationInfo()
+
+    private lazy var webView: WKWebView = {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let wv = WKWebView(frame: .zero, configuration: config)
+        wv.navigationDelegate = self
+        wv.isOpaque = false
+        wv.backgroundColor = .systemBackground
+        wv.scrollView.contentInsetAdjustmentBehavior = .never
+        return wv
+    }()
+
+    private let spinner = UIActivityIndicatorView(style: .medium)
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.hidesWhenStopped = true
+        view.addGestureRecognizer(expandTap)
+    }
+
+    /// Live-layout contract: Messages does nothing when the inline bubble is
+    /// tapped — the extension must catch it and ask for the expanded sheet.
+    private lazy var expandTap: UITapGestureRecognizer = {
+        let g = UITapGestureRecognizer(target: self, action: #selector(expandFromTranscript))
+        g.cancelsTouchesInView = false
+        return g
+    }()
+
+    @objc private func expandFromTranscript() {
+        guard presentationStyle == .transcript else { return }
+        requestPresentationStyle(.expanded)
+    }
+
+    // MARK: - Lifecycle
+
+    override func willBecomeActive(with conversation: MSConversation) {
+        super.willBecomeActive(with: conversation)
+        convKey = Self.key(for: conversation)
+        syncPresentation()
+        present(url: conversation.selectedMessage?.url)
+        if conversation.selectedMessage != nil, presentationStyle == .compact {
+            requestPresentationStyle(.expanded)
+        }
+    }
+
+    override func didTransition(to presentationStyle: MSMessagesAppPresentationStyle) {
+        super.didTransition(to: presentationStyle)
+        syncPresentation()
+    }
+
+    override func didSelect(_ message: MSMessage, conversation: MSConversation) {
+        super.didSelect(message, conversation: conversation)
+        convKey = Self.key(for: conversation)
+        syncPresentation()
+        present(url: message.url)
+        if presentationStyle == .compact { requestPresentationStyle(.expanded) }
+    }
+
+    /// In the transcript bubble the native view must NOT swallow touches:
+    /// the tap has to reach Messages so it can expand the card.
+    private func syncPresentation() {
+        let transcript = presentationStyle == .transcript
+        presentation.isTranscript = transcript
+        // Touches stay ON: the inline tap is ours to handle (expandTap).
+        view.isUserInteractionEnabled = true
+        hosting?.view.isUserInteractionEnabled = true
+        expandTap.isEnabled = transcript
+    }
+
+    // MARK: - Conversation -> chat memory
+
+    /// Stable per-conversation key on this device: the other participants.
+    private var convKey: String?
+    private static func key(for conversation: MSConversation) -> String {
+        conversation.remoteParticipantIdentifiers.map(\.uuidString).sorted().joined(separator: ",")
+    }
+
+    private func rememberChat(base: URL, chat: String) {
+        guard let convKey else { return }
+        UserDefaults.standard.set(["base": base.absoluteString, "chat": chat], forKey: "whim.chat.\(convKey)")
+    }
+
+    private func recallChat() -> (base: URL, chat: String)? {
+        guard let convKey,
+              let dict = UserDefaults.standard.dictionary(forKey: "whim.chat.\(convKey)") as? [String: String],
+              let baseStr = dict["base"], let base = URL(string: baseStr), let chat = dict["chat"] else { return nil }
+        return (base, chat)
+    }
+
+    // MARK: - Routing
+
+    private func present(url: URL?) {
+        // Drawer-open, no card: the native home — never the website.
+        guard let target = url else {
+            let known = recallChat()
+            let base = known?.base ?? homeURL
+            host(AnyView(HomeView(base: base, chat: known?.chat, presentation: presentation, onRoute: { [weak self] route in
+                guard let self, let known = self.recallChat() else { return }
+                switch route {
+                case .plan: self.present(url: known.base.appendingPathComponent("w/\(known.chat)"))
+                case .playlist: self.present(url: known.base.appendingPathComponent("music/\(known.chat)"))
+                case .cart:
+                    var comps = URLComponents(url: known.base.appendingPathComponent("w/\(known.chat)"), resolvingAgainstBaseURL: false)!
+                    comps.queryItems = [URLQueryItem(name: "cart", value: "any")]
+                    self.present(url: comps.url!)
+                }
+            })))
+            return
+        }
+        let comps = URLComponents(url: target, resolvingAgainstBaseURL: false)
+        let path = target.path
+
+        if path.hasPrefix("/w/"), let chat = chatId(from: path, prefix: "/w/") {
+            rememberChat(base: baseURL(of: target), chat: chat)
+            let shop = comps?.queryItems?.first(where: { $0.name == "cart" })?.value
+            let store = planStore(base: baseURL(of: target), chat: chat)
+            if let shop {
+                host(AnyView(CartListView(store: store, presentation: presentation, focusShop: shop, onCheckout: { [weak self] url in
+                    self?.showWeb(url)
+                })))
+            } else {
+                host(AnyView(TicketView(store: store, presentation: presentation)))
+            }
+            store.start()
+            return
+        }
+        if path.hasPrefix("/music/"), let chat = chatId(from: path, prefix: "/music/") {
+            rememberChat(base: baseURL(of: target), chat: chat)
+            let store = planStore(base: baseURL(of: target), chat: chat)
+            host(AnyView(PlaylistView(store: store, presentation: presentation)))
+            store.start()
+            return
+        }
+        // /game/<chat>/<id>: a generated game, played natively.
+        if path.hasPrefix("/game/") {
+            let parts = path.dropFirst("/game/".count).split(separator: "/", maxSplits: 1).map(String.init)
+            if parts.count == 2 {
+                let chat = parts[0].removingPercentEncoding ?? parts[0]
+                rememberChat(base: baseURL(of: target), chat: chat)
+                let gs = GameStore(base: baseURL(of: target), chat: chat, gameId: parts[1])
+                host(AnyView(TriviaGameView(store: gs, presentation: presentation)))
+                return
+            }
+        }
+        // /p/<token> and /p/<token>/ship: the token'd forms, native.
+        if path.hasPrefix("/p/") {
+            let isShip = path.hasSuffix("/ship")
+            if isShip {
+                host(AnyView(ShipFormView(formURL: target, presentation: presentation)))
+            } else {
+                host(AnyView(ProfileFormView(formURL: target, presentation: presentation)))
+            }
+            return
+        }
+        // /ticket/<chat>/<id>: a stored ticket (venue, RSVP, paid, match, plan)
+        // rendered natively from its JSON.
+        if path.hasPrefix("/ticket/") {
+            let parts = path.dropFirst("/ticket/".count).split(separator: "/", maxSplits: 1).map(String.init)
+            if parts.count == 2 {
+                let chat = parts[0].removingPercentEncoding ?? parts[0]
+                host(AnyView(TicketCardView(base: baseURL(of: target), chat: chat, ticketId: parts[1], presentation: presentation)))
+                return
+            }
+        }
+        showWeb(target)
+    }
+
+    private func chatId(from path: String, prefix: String) -> String? {
+        let raw = String(path.dropFirst(prefix.count))
+        guard !raw.isEmpty else { return nil }
+        return raw.removingPercentEncoding ?? raw
+    }
+
+    private func baseURL(of url: URL) -> URL {
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        comps.path = ""
+        comps.query = nil
+        return comps.url ?? homeURL
+    }
+
+    private func planStore(base: URL, chat: String) -> PlanStore {
+        if let existing = store, storeChat == chat { return existing }
+        let fresh = PlanStore(base: base, chat: chat)
+        store = fresh
+        storeChat = chat
+        return fresh
+    }
+
+    private func host(_ root: AnyView) {
+        webView.removeFromSuperview()
+        spinner.removeFromSuperview()
+        if let hosting {
+            hosting.rootView = root
+        } else {
+            let host = UIHostingController(rootView: root)
+            hosting = host
+            addChild(host)
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(host.view)
+            NSLayoutConstraint.activate([
+                host.view.topAnchor.constraint(equalTo: view.topAnchor),
+                host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            ])
+            host.didMove(toParent: self)
+        }
+    }
+
+    private func showWeb(_ url: URL) {
+        store?.stop()
+        hosting?.willMove(toParent: nil)
+        hosting?.view.removeFromSuperview()
+        hosting?.removeFromParent()
+        hosting = nil
+
+        if webView.superview == nil {
+            webView.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(webView)
+            view.addSubview(spinner)
+            NSLayoutConstraint.activate([
+                webView.topAnchor.constraint(equalTo: view.topAnchor),
+                webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            ])
+        }
+        if webView.url?.absoluteString != url.absoluteString {
+            spinner.startAnimating()
+            webView.load(URLRequest(url: url))
+        }
+    }
+
+    // MARK: - WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        spinner.stopAnimating()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        spinner.stopAnimating()
+    }
+}

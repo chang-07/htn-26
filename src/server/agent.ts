@@ -29,7 +29,7 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
-import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
@@ -1741,11 +1741,20 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** Prompt -> spec -> stored game -> card in the thread. RPC from /api/widget and the make_game tool. */
   async gameCreate(topic: string, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
     const spec = await generateGame(this.env, topic.slice(0, 140));
+    return this.createGame(spec, creator, creatorName);
+  }
+
+  /** Local smoke-test entry point. The caller supplies an already validated spec, so no model is involved. */
+  async devCreateGame(spec: GameSpec, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
+    return this.createGame(GameSpecZ.parse(spec), creator, creatorName);
+  }
+
+  private async createGame(spec: GameSpec, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
     const id = crypto.randomUUID().slice(0, 12);
     let g = newGame(id, spec, creator);
     if (creatorName) g = joinGame(g, creator, creatorName);
     this.saveGame(g);
-    this.note("info", "game.created", { id, title: spec.title, questions: spec.questions.length });
+    this.note("info", "game.created", { id, title: spec.title, kind: spec.kind, rounds: spec.kind === "trivia" ? spec.questions.length : spec.rounds });
     await timed("agent", "game.card", { id }, () => sendGameCard(this.env, this.name, this.name, id, spec.title, spec.topic), this.note).catch(() => undefined);
     return { id, title: spec.title };
   }
@@ -1756,15 +1765,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return g ? gameView(g, voter) : null;
   }
 
-  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "advance" }) {
+  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "hit" } | { type: "stand" } | { type: "advance" }) {
     let g = this.loadGame(id);
     if (!g) return null;
     if (act.type === "join") g = joinGame(g, voter, act.name);
-    if (act.type === "answer") {
-      g = gameAnswer(g, voter, act.choice);
-      // Everyone in -> straight to the reveal; nobody waits on a host.
-      if (roundComplete(g)) g = gameAdvance(g);
-    }
+    if (act.type === "answer") g = gameAnswer(g, voter, act.choice);
+    if (act.type === "hit") g = bjHit(g, voter);
+    if (act.type === "stand") g = bjStand(g, voter);
+    // Everyone in -> straight to the reveal; nobody waits on a host.
+    if ((act.type === "answer" || act.type === "hit" || act.type === "stand") && roundComplete(g)) g = gameAdvance(g);
     if (act.type === "advance") g = gameAdvance(g);
     this.saveGame(g);
     return gameView(g, voter);

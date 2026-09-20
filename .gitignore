@@ -7,3 +7,8 @@ dist
 *.tsbuildinfo
 .claude/
 .superpowers/
+
+# Xcode's per-user workspace state and generated build products.
+ios/build/
+ios/**/*.xcuserstate
+**/xcuserdata/
