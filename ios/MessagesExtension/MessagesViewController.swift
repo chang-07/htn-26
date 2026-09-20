@@ -121,7 +121,9 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                     // Full sheet first: the camera permission prompt cannot
                     // present over the compact drawer.
                     if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
-                    self.host(AnyView(InfiniteRunnerView(presentation: self.presentation)))
+                    self.host(AnyView(InfiniteRunnerView(presentation: self.presentation, onChallenge: { [weak self] score, challenge in
+                        self?.sendRunnerChallenge(score, against: challenge)
+                    })))
                 case .plan:
                     guard let known = self.recallChat() else { return }
                     self.present(url: known.base.appendingPathComponent("w/\(known.chat)"))
@@ -171,6 +173,15 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                 host(AnyView(TriviaGameView(store: gs, presentation: presentation)))
                 return
             }
+        }
+        // /runner: a Camera Runner challenge card — open the game with the
+        // score to beat.
+        if path.hasPrefix("/runner") {
+            let target = comps?.queryItems?.first(where: { $0.name == "score" })?.value.flatMap(Int.init)
+            host(AnyView(InfiniteRunnerView(presentation: presentation, challengeScore: target, onChallenge: { [weak self] score, challenge in
+                self?.sendRunnerChallenge(score, against: challenge)
+            })))
+            return
         }
         // /p/<token> and /p/<token>/ship: the token'd forms, native.
         if path.hasPrefix("/p/") {
@@ -235,6 +246,49 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             ])
             host.didMove(toParent: self)
         }
+    }
+
+    /// Puts a score card in the input field; the person hits send. A fresh
+    /// challenge invites the chat; a reply to a challenge announces win or
+    /// loss and — reusing the tapped card's session — replaces the old card,
+    /// so the crown visibly changes heads (or holds).
+    private func sendRunnerChallenge(_ score: Int, against challenge: Int?) {
+        guard let conversation = activeConversation else { return }
+        let won = challenge.map { score > $0 }
+        // The card's target stays whatever the reigning score is.
+        let target = won == false ? challenge! : score
+        var comps = URLComponents(url: homeURL.appendingPathComponent("runner"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "score", value: String(target))]
+        let layout = MSMessageTemplateLayout()
+        switch won {
+        case true:
+            layout.caption = "👑 New champ: \(score)"
+            layout.subcaption = "The crown changed heads. Take it back?"
+        case false:
+            layout.caption = "Lost: \(score) vs \(challenge!)"
+            layout.subcaption = "The crown holds. Beat \(challenge!)?"
+        default:
+            layout.caption = "Camera Runner: \(score)"
+            layout.subcaption = "Pinch to jump. Beat it if you can."
+        }
+        layout.trailingCaption = "▶︎"
+        // The banner: dino course, the sender's runner, giant score.
+        let face = UserDefaults.standard.data(forKey: "whim.runner.avatar").flatMap(UIImage.init(data:))
+        let banner = RunnerCardBanner(
+            big: won == true ? "👑 \(score)" : "\(target)",
+            label: won == true ? "NEW CHAMP" : won == false ? "CROWN HOLDS" : "CAMERA RUNNER",
+            face: face,
+            crowned: won == true)
+        let renderer = ImageRenderer(content: banner)
+        renderer.scale = 3
+        layout.image = renderer.uiImage
+        let session = challenge != nil ? (conversation.selectedMessage?.session ?? MSSession()) : MSSession()
+        let message = MSMessage(session: session)
+        message.url = comps.url
+        message.layout = layout
+        message.summaryText = "A Camera Runner challenge"
+        conversation.insert(message)
+        requestPresentationStyle(.compact)
     }
 
     private func showWeb(_ url: URL) {
