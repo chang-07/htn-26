@@ -1,6 +1,6 @@
 # Parallelising the agent: where the time goes, and what was changed
 
-Written 2026-09-19 on the `parallel-agent` branch (worktree off `main` at d64d9bb; rebased onto #40 and #42 the same evening).
+Written 2026-09-19 on the `parallel-agent` branch (worktree off `main` at d64d9bb; rebased onto #40, #42 and then #43 to #46 the same evening).
 
 The question: which parts of the agentic flow are serial today but need not be,
 and which of those are worth changing before the demo. Every item below was
@@ -134,6 +134,28 @@ second ballot replaces the first, so the flight ballot is gone before anyone
 can vote. The prompt says one ballot at a time; the model reads that as one
 after another. Worth a rule in code (refuse a second ballot while one is
 open with no votes) before a trip demo.
+
+## Did main's later commits fix the phone?
+
+Main then gained #43 (a failed research run no longer poisons the next, and
+cannot be retried until someone texts) and #46 (production's Jev key is set
+but the gateway answers 401; scoring errors now fall back to LLM selection
+instead of failing the run). That is the loop the phone was in: research
+died at scoring in 0 ms, the model re-announced and retried, and every
+failure read as "came up empty".
+
+Main at #46 was checked out on its own, pointed at the demo profile
+(gpt-5.6-luna) and driven through `/api/dev/*` with this machine's keys:
+hotels for Sept 20 (3 results, ballot posted), flights tomorrow (3), flights
+plus a hotel in one ask (Flair CA$164 and a $137 hotel, both lookups in one
+step that time), and a quick research run in 11.6 s. So with a Browserbase
+key that behaves like this one, main fixes it. What cannot be verified from
+this account is production's own Browserbase key; `source.failed` in its run
+log would say if that is the remaining problem.
+
+This branch was rebased onto that main (one conflict, in the research tool
+handler: main's retry block and this branch's travel redirect now sit one
+after the other).
 
 ## How to see the difference
 
