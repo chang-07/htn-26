@@ -18,6 +18,8 @@
 		6709B2593E7D1202A2F9CD61 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A59574FF08050F7117C3875 /* DesignSystem.swift */; };
 		673FCBDFA28CA72E6C57DEE5 /* InfiniteRunnerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E751C5101CF59D480485EA /* InfiniteRunnerView.swift */; };
 		802301215DD27CF5F2C90F65 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F55E2EC104399805CA5F9BD4 /* Assets.xcassets */; };
+		84EC9698698BA987B66DEED0 /* SlotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1D084253C9B1CB087165AE /* SlotsView.swift */; };
+		889AB4A7CDDDC41643CFF780 /* SlotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1D084253C9B1CB087165AE /* SlotsView.swift */; };
 		8B07DA674165113B6AA85715 /* PreviewFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 861BCBD2F49B8913FF3704E6 /* PreviewFixtures.swift */; };
 		991132861A5BBD4E281F4CAC /* TicketView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F84881092D54FF0B3D601532 /* TicketView.swift */; };
 		993730DA6BCADDB7AE33509E /* PlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229BFC90036DADFD7BBEDD43 /* PlanStore.swift */; };
@@ -87,6 +89,7 @@
 		F84881092D54FF0B3D601532 /* TicketView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketView.swift; sourceTree = "<group>"; };
 		FAF7C986ECFF65C0B7E409E4 /* PlanApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanApp.swift; sourceTree = "<group>"; };
 		FDFF33A36BB3B09E5F8CB141 /* Messages.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Messages.framework; path = System/Library/Frameworks/Messages.framework; sourceTree = SDKROOT; };
+		FF1D084253C9B1CB087165AE /* SlotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlotsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -136,6 +139,7 @@
 				229BFC90036DADFD7BBEDD43 /* PlanStore.swift */,
 				861BCBD2F49B8913FF3704E6 /* PreviewFixtures.swift */,
 				5C63A7C1B9D04438B0101560 /* ProfileForms.swift */,
+				FF1D084253C9B1CB087165AE /* SlotsView.swift */,
 				D9D57D0505820A21CE1A0564 /* TicketCardView.swift */,
 				F84881092D54FF0B3D601532 /* TicketView.swift */,
 				C87D8DAFCDDDF1357DDEA81D /* Fonts */,
@@ -317,6 +321,7 @@
 				F5C97A8EC2E1127BD08A0522 /* PlanStore.swift in Sources */,
 				8B07DA674165113B6AA85715 /* PreviewFixtures.swift in Sources */,
 				520A08770B4B5EAAF78F5DFA /* ProfileForms.swift in Sources */,
+				84EC9698698BA987B66DEED0 /* SlotsView.swift in Sources */,
 				57B6BD7F36A75BB922D852C3 /* TicketCardView.swift in Sources */,
 				B22BCF342027A7ED7473F3AC /* TicketView.swift in Sources */,
 			);
@@ -335,6 +340,7 @@
 				5A07B024B67BB95F638C7DD3 /* PreviewFixtures.swift in Sources */,
 				27CAEF03ED4B1E9451AE4539 /* PreviewsApp.swift in Sources */,
 				ED8AE08DBBDC4EDD1CA78243 /* ProfileForms.swift in Sources */,
+				889AB4A7CDDDC41643CFF780 /* SlotsView.swift in Sources */,
 				AF2AE26753738FA7199A5760 /* TicketCardView.swift in Sources */,
 				991132861A5BBD4E281F4CAC /* TicketView.swift in Sources */,
 			);

@@ -124,6 +124,11 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                     self.host(AnyView(InfiniteRunnerView(presentation: self.presentation, onChallenge: { [weak self] score, challenge in
                         self?.sendRunnerChallenge(score, against: challenge)
                     })))
+                case .slots:
+                    if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
+                    self.host(AnyView(SlotsView(presentation: self.presentation, onShare: { [weak self] face, name in
+                        self?.sendSlotsResult(face: face, name: name)
+                    })))
                 case .plan:
                     guard let known = self.recallChat() else { return }
                     self.present(url: known.base.appendingPathComponent("w/\(known.chat)"))
@@ -287,6 +292,23 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         message.url = comps.url
         message.layout = layout
         message.summaryText = "A Camera Runner challenge"
+        conversation.insert(message)
+        requestPresentationStyle(.compact)
+    }
+
+    /// The verdict card: three reels frozen on the payer, into the input field.
+    private func sendSlotsResult(face: UIImage, name: String) {
+        guard let conversation = activeConversation else { return }
+        let layout = MSMessageTemplateLayout()
+        layout.caption = "\u{1F3B0} \(name) pays"
+        layout.subcaption = "The reels have spoken."
+        let renderer = ImageRenderer(content: SlotsCardBanner(face: face, name: name))
+        renderer.scale = 3
+        layout.image = renderer.uiImage
+        let message = MSMessage(session: MSSession())
+        message.url = homeURL.appendingPathComponent("slots")
+        message.layout = layout
+        message.summaryText = "Face slots verdict"
         conversation.insert(message)
         requestPresentationStyle(.compact)
     }
