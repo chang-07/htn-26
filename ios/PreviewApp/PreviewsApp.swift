@@ -41,28 +41,42 @@ struct GalleryView: View {
         ]
     }
 
+    /// CLI automation: SIMCTL_CHILD_SCREEN="Game · lobby" simctl launch …
+    /// renders that screen directly, so a script can screenshot every state.
+    private var forced: Screen? {
+        screens.first { $0.id == ProcessInfo.processInfo.environment["SCREEN"] }
+    }
+
     var body: some View {
-        NavigationStack {
-            List(screens) { s in
-                NavigationLink(s.id) {
-                    Group {
-                        if s.bubble {
-                            // Bubble states at bubble height, boxed like a transcript card.
-                            s.make()
-                                .frame(height: 300)
-                                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.quaternary, lineWidth: 1))
-                                .padding(16)
-                                .frame(maxHeight: .infinity, alignment: .top)
-                        } else {
-                            s.make()
-                        }
+        if let s = forced {
+            screenBody(s)
+        } else {
+            NavigationStack {
+                List(screens) { s in
+                    NavigationLink(s.id) {
+                        screenBody(s)
+                            .navigationTitle(s.id)
+                            .navigationBarTitleDisplayMode(.inline)
                     }
-                    .navigationTitle(s.id)
-                    .navigationBarTitleDisplayMode(.inline)
                 }
+                .navigationTitle("Whim widgets")
             }
-            .navigationTitle("Whim widgets")
+        }
+    }
+
+    private func screenBody(_ s: Screen) -> some View {
+        Group {
+            if s.bubble {
+                // Bubble states at bubble height, boxed like a transcript card.
+                s.make()
+                    .frame(height: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.quaternary, lineWidth: 1))
+                    .padding(16)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                s.make()
+            }
         }
     }
 }

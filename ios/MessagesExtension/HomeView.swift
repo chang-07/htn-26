@@ -18,7 +18,7 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                WhimHeader(context: "Whim", chipText: chat != nil ? "Connected" : nil, showTile: true)
+                WhimHeader(context: "", chipText: chat != nil ? "Connected" : nil, showTile: true)
                 Text("Plan, play, shop —\nright in the chat.")
                     .font(.system(.title3, design: .rounded).weight(.bold))
                     .fixedSize(horizontal: false, vertical: true)

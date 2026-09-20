@@ -228,34 +228,40 @@ struct TriviaGameView: View {
 
     @ViewBuilder
     private func expanded(_ g: GameView_) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil, chipTint: g.isProcedural ? gameTint(g) : Whim.green)
-                Text(g.title).font(.system(.title3, design: .rounded).weight(.bold))
-                if g.phase != "lobby" && g.phase != "done" { ProgressDots(total: g.totalRounds, current: g.round) }
+        // Header pins to the top; the phase content centers in whatever height
+        // is left, so a sparse lobby doesn't leave a page of empty paper.
+        GeometryReader { geo in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil, chipTint: g.isProcedural ? gameTint(g) : Whim.green)
 
-                Group {
-                    switch g.phase {
-                    case "lobby":
-                        if g.isProcedural { proceduralLobby(g) } else { lobby(g) }
-                    case "round":
-                        if g.isProcedural { proceduralRound(g) }
-                        else if g.kind == "blackjack" { bjRound(g) } else { round(g) }
-                    case "reveal":
-                        if g.isProcedural { proceduralReveal(g) }
-                        else if g.kind == "blackjack" { bjReveal(g) } else { reveal(g) }
-                    default:
-                        if g.isProcedural { proceduralDone(g) } else { scoreboard(g, final: true) }
+                    Spacer(minLength: 0)
+                    Text(g.title).font(.system(.title3, design: .rounded).weight(.bold))
+                    if g.phase != "lobby" && g.phase != "done" { ProgressDots(total: g.totalRounds, current: g.round) }
+                    Group {
+                        switch g.phase {
+                        case "lobby":
+                            if g.isProcedural { proceduralLobby(g) } else { lobby(g) }
+                        case "round":
+                            if g.isProcedural { proceduralRound(g) }
+                            else if g.kind == "blackjack" { bjRound(g) } else { round(g) }
+                        case "reveal":
+                            if g.isProcedural { proceduralReveal(g) }
+                            else if g.kind == "blackjack" { bjReveal(g) } else { reveal(g) }
+                        default:
+                            if g.isProcedural { proceduralDone(g) } else { scoreboard(g, final: true) }
+                        }
                     }
+                    .id(g.phase + String(g.round))
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                    Spacer(minLength: 0)
                 }
-                .id(g.phase + String(g.round))
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .opacity
-                ))
+                .padding(16)
+                .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
