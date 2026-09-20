@@ -1,125 +1,116 @@
 import SwiftUI
 
-// Native counterpart to src/theme.ts. Cards are tickets: warm paper, dark ink,
-// one heavy Archivo title, mono detail, perforations, and square actions.
-enum Whim {
-    static let ticketPaper = Color(red: 0xEF / 255, green: 0xE7 / 255, blue: 0xD6 / 255)
-    static let ticketInk = Color(red: 0x24 / 255, green: 0x1F / 255, blue: 0x17 / 255)
-    static let ticketGreen = Color(red: 0x1F / 255, green: 0x5F / 255, blue: 0x4F / 255)
-    static let ticketGreenInk = Color(red: 0xF0 / 255, green: 0xEC / 255, blue: 0xE2 / 255)
-    static let softInk = ticketInk.opacity(0.62)
-    static let rule = ticketInk.opacity(0.34)
+// The shared look, modeled on Linq's experience-card mocks: airy white card,
+// small app-avatar header, one hero element per card, pill CTAs, brand green.
 
-    static func display(_ size: CGFloat) -> Font { .custom("Archivo", size: size).weight(.heavy) }
-    static func mono(_ size: CGFloat) -> Font { .custom("IBM Plex Mono", size: size) }
+enum Whim {
+    /// Brand green (the Whim tile).
+    static let green = Color(red: 0x17 / 255, green: 0x9B / 255, blue: 0x6B / 255)
+    static let greenDeep = Color(red: 0x0E / 255, green: 0x6F / 255, blue: 0x4C / 255)
+
+    static var tileGradient: LinearGradient {
+        LinearGradient(colors: [green, greenDeep], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
 }
 
+/// The BodyBuddy-style header: app tile + name on the left, one chip on the right.
 struct WhimHeader: View {
     let context: String
     var chipText: String? = nil
-    var chipTint: Color = Whim.ticketInk
+    var chipTint: Color = Whim.green
+    /// Apple's bubble chrome already shows the app icon and name, so the tile
+    /// stays off in cards and on only where there is no chrome (Home, gallery).
     var showTile = false
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(spacing: 8) {
             if showTile {
-                Text("W")
-                    .font(Whim.display(13))
-                    .foregroundStyle(Whim.ticketPaper)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Whim.tileGradient)
                     .frame(width: 24, height: 24)
-                    .background(Whim.ticketInk)
+                    .overlay(
+                        Text("W").font(.system(size: 13, weight: .heavy, design: .rounded))
+                            .foregroundStyle(.white)
+                    )
             }
-            Text(context.uppercased())
-                .font(Whim.mono(11))
-                .tracking(1.3)
-                .foregroundStyle(Whim.softInk)
-                .lineLimit(1)
+            Text(context)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
             Spacer()
             if let chipText {
-                Text(chipText.uppercased())
-                    .font(Whim.mono(10))
-                    .tracking(0.9)
+                Text(chipText)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(chipTint)
-                    .lineLimit(1)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(chipTint.opacity(0.12), in: Capsule())
             }
         }
     }
 }
 
-struct TicketRule: View {
-    var body: some View {
-        Rectangle()
-            .fill(Whim.rule)
-            .frame(height: 1)
-            .overlay(alignment: .center) {
-                Rectangle()
-                    .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [2, 3]))
-                    .foregroundStyle(Whim.rule)
-            }
-    }
-}
-
+/// One giant number with a small caps label under it — the "350 CAL" move.
 struct HeroStat: View {
     let value: String
     let label: String
-    var tint: Color = Whim.ticketInk
+    var tint: Color = .primary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(Whim.display(36))
+                .font(.system(size: 40, weight: .heavy, design: .rounded))
                 .foregroundStyle(tint)
                 .monospacedDigit()
+                .contentTransition(.numericText())
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
             Text(label.uppercased())
-                .font(Whim.mono(10))
-                .tracking(1)
-                .foregroundStyle(Whim.softInk)
+                .font(.caption2.weight(.semibold))
+                .kerning(0.8)
+                .foregroundStyle(.secondary)
         }
     }
 }
 
+/// Round-progress dots, filled up to `current`.
 struct ProgressDots: View {
     let total: Int
     let current: Int
 
     var body: some View {
         HStack(spacing: 5) {
+
             ForEach(0..<max(total, 1), id: \.self) { i in
-                Rectangle()
-                    .fill(i < current ? Whim.ticketInk : Whim.ticketInk.opacity(0.16))
-                    .frame(width: i == current - 1 ? 14 : 6, height: 6)
+                Circle()
+                    .fill(i < current ? Whim.green : Color(uiColor: .systemFill))
+                    .frame(width: 6, height: 6)
+                    .scaleEffect(i == current - 1 ? 1.35 : 1)
             }
         }
     }
 }
 
+/// The full-width pill CTA from the ticket mock.
 struct PillButtonStyle: ButtonStyle {
     var prominent = true
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(Whim.mono(12))
-            .tracking(1.2)
-            .textCase(.uppercase)
+            .font(.subheadline.weight(.semibold))
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(prominent ? Whim.ticketInk : Whim.ticketPaper)
-            .foregroundStyle(prominent ? Whim.ticketPaper : Whim.ticketInk)
-            .overlay(Rectangle().stroke(Whim.ticketInk, lineWidth: prominent ? 0 : 1.5))
-            .opacity(configuration.isPressed ? 0.68 : 1)
+            .padding(.vertical, 13)
+            .background(
+                prominent ? AnyShapeStyle(Whim.tileGradient) : AnyShapeStyle(Color(uiColor: .secondarySystemBackground)),
+                in: Capsule()
+            )
+            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
     }
 }
 
 extension View {
-    /// Shared top clearance keeps all transcript cards below Messages' app chrome.
+    /// Card page chrome: padding rhythm + brand tint for interactive elements.
     func whimPage() -> some View {
-        self
-            .font(Whim.mono(14))
-            .tint(Whim.ticketInk)
-            .foregroundStyle(Whim.ticketInk)
-            .padding(.top, 24)
-            .background(Whim.ticketPaper)
+        self.tint(Whim.green)
     }
 }

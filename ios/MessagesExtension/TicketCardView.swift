@@ -35,7 +35,7 @@ struct TicketCardView: View {
     @State private var failed = false
 
     private var done: Bool { doc?.tone == "done" }
-    private var tint: Color { done ? Whim.ticketGreen : Whim.ticketInk }
+    private var tint: Color { done ? .green : .accentColor }
 
     var body: some View {
         Group {
@@ -72,7 +72,7 @@ struct TicketCardView: View {
             WhimHeader(context: doc.metaLeft, chipText: "\(doc.stub.big) \(doc.stub.label)", chipTint: tint)
 
             Text(doc.title)
-                .font(Whim.display(24))
+                .font(.system(.title3, design: .rounded).weight(.bold))
                 .fixedSize(horizontal: false, vertical: true)
 
             if let faces = doc.faces, !faces.isEmpty {
@@ -88,7 +88,7 @@ struct TicketCardView: View {
             }
 
             if !rows.isEmpty {
-                TicketRule()
+                Divider()
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         if let lead = row.lead, !lead.isEmpty {

@@ -122,7 +122,7 @@ struct TriviaGameView: View {
         Text(text)
             .font(.caption.weight(.semibold)).foregroundStyle(tint)
             .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(tint.opacity(0.12), in: Rectangle())
+            .background(tint.opacity(0.12), in: Capsule())
     }
 
     // MARK: inline bubble
@@ -134,7 +134,7 @@ struct TriviaGameView: View {
             case "done": WhimHeader(context: "Game", chipText: "Final", chipTint: .orange)
             default: WhimHeader(context: "Game", chipText: nil)
             }
-            Text(g.title).font(Whim.display(22)).lineLimit(2)
+            Text(g.title).font(.system(.title3, design: .rounded).weight(.bold)).lineLimit(2)
             if g.phase == "round" || g.phase == "reveal" { ProgressDots(total: g.totalRounds, current: g.round) }
             if g.phase == "done", let top = g.players.max(by: { $0.score < $1.score }) {
                 Label("\(top.name) wins — \(top.score)", systemImage: "crown.fill")
@@ -155,7 +155,7 @@ struct TriviaGameView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil)
-                Text(g.title).font(Whim.display(24))
+                Text(g.title).font(.system(.title3, design: .rounded).weight(.bold))
                 if g.phase != "lobby" && g.phase != "done" { ProgressDots(total: g.totalRounds, current: g.round) }
 
                 Group {
@@ -193,7 +193,7 @@ struct TriviaGameView: View {
                 TextField("Your name", text: $name)
                     .textFieldStyle(.roundedBorder)
                 Button("Join") { store.act("join", body: ["name": name]) }
-                    .buttonStyle(PillButtonStyle())
+                    .buttonStyle(.borderedProminent)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         } else {
@@ -218,8 +218,8 @@ struct TriviaGameView: View {
                     }
                     .padding(12)
                     .background(
-                        Rectangle()
-                            .fill(q.myAnswer == i ? Whim.ticketInk.opacity(0.10) : Whim.ticketPaper.opacity(0.45))
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(q.myAnswer == i ? Color.accentColor.opacity(0.12) : Color(uiColor: .secondarySystemBackground))
                     )
                 }
                 .buttonStyle(.plain)
@@ -271,10 +271,10 @@ struct TriviaGameView: View {
         .foregroundStyle(hidden ? Color.white : (red ? Color.red : Color.primary))
         .frame(width: big ? 46 : 38, height: big ? 64 : 54)
         .background(
-            Rectangle()
-                .fill(hidden ? AnyShapeStyle(Whim.ticketInk) : AnyShapeStyle(Whim.ticketPaper))
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hidden ? AnyShapeStyle(Whim.tileGradient) : AnyShapeStyle(Color(uiColor: .systemBackground)))
         )
-        .overlay(Rectangle().strokeBorder(Whim.rule, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.quaternary, lineWidth: 1))
         .shadow(color: .black.opacity(0.06), radius: 2, y: 1)
     }
 
@@ -313,7 +313,7 @@ struct TriviaGameView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Whim.ticketInk.opacity(0.06), in: Rectangle())
+            .background(Whim.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 
@@ -339,7 +339,7 @@ struct TriviaGameView: View {
                         }
                     }
                     .padding(12)
-                    .background(Whim.ticketPaper.opacity(0.5), in: Rectangle())
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 scoreboard(g, final: false)
                 Button(g.round >= g.totalRounds ? "Final chips" : "Next hand") { store.act("advance", body: [:]) }
@@ -363,7 +363,7 @@ struct TriviaGameView: View {
             }
         }
         .padding(12)
-        .background(Whim.ticketPaper.opacity(0.5), in: Rectangle())
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -396,7 +396,7 @@ struct GameComposerView: View {
                     } label: {
                         if working { ProgressView() } else { Text("Go") }
                     }
-                    .buttonStyle(PillButtonStyle())
+                    .buttonStyle(.borderedProminent)
                     .disabled(working || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 if working {

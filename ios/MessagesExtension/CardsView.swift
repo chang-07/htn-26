@@ -111,11 +111,11 @@ struct CartListView: View {
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 10)
                             }
-                            .buttonStyle(PillButtonStyle())
+                            .buttonStyle(.borderedProminent)
                         }
                     }
                     .padding(12)
-                    .background(Whim.ticketInk.opacity(0.06), in: Rectangle())
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 Text("Whoever pays taps through — or thumbs-up the cart in the chat and the agent handles it.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -197,7 +197,7 @@ struct PlaylistView: View {
                                 Color(uiColor: .secondarySystemFill)
                             }
                             .frame(width: 42, height: 42)
-                            .clipShape(Rectangle())
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(t.title).font(.subheadline.weight(.medium)).lineLimit(1).foregroundStyle(.primary)
                                 Text(t.artist + (t.addedBy.map { " · added by \($0)" } ?? ""))
@@ -209,7 +209,7 @@ struct PlaylistView: View {
                                 .foregroundStyle(t.previewUrl == nil ? Color(uiColor: .tertiaryLabel) : Color.accentColor)
                         }
                         .padding(10)
-                        .background(Whim.ticketInk.opacity(0.06), in: Rectangle())
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .disabled(t.previewUrl == nil)
