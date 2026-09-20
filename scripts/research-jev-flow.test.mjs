@@ -29,6 +29,7 @@ async function run(t, { key = true, sourceScore = 3, candidateScore = 3 } = {}) 
     live: { researchProgress: async () => {}, researchFinished: async () => {} },
     askJson: async (_env, _schema, system) => {
       if (system.startsWith("You plan web research")) { calls.push("plan"); return { value: { queries: ["Toronto activities"] }, tokens: 1 }; }
+      if (system.startsWith("Pick the")) { calls.push("llm-select"); return { value: { indexes: [0] }, tokens: 1 }; }
       if (system.startsWith("Extract specific")) { calls.push("extract"); return { value: { candidates: [candidate] }, tokens: 1 }; }
       calls.push("synthesize"); return { value: { summary: "A matching activity", ranked: [{ indexes: [0], why: "Fits" }] }, tokens: 1 };
     },
@@ -51,11 +52,11 @@ async function run(t, { key = true, sourceScore = 3, candidateScore = 3 } = {}) 
   return { calls, report };
 }
 
-test("research cannot spend on searches or use LLM selection when Jev is unconfigured", async (t) => {
+test("research falls back to LLM selection, never calling Jev, when it is unconfigured", async (t) => {
   const { calls, report } = await run(t, { key: false });
-  assert.deepEqual(calls, []);
-  assert.equal(report.ok, false);
-  assert.match(report.detail, /AI_GATEWAY_API_KEY/);
+  assert.deepEqual(calls, ["plan", "search", "llm-select", "fetch", "extract", "synthesize"]);
+  assert.equal(report.ok, true);
+  assert.equal(report.candidates[0].bookingUrl, "https://venue.test/book");
 });
 
 test("rejected sources never reach Fetch or specialist extraction", async (t) => {
