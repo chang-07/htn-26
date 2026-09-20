@@ -537,7 +537,36 @@ async function handleRuns(request: Request, url: URL, env: Env): Promise<Respons
 async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Response> {
   const name = decodeURIComponent(url.pathname.slice("/card/".length));
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
-  const plan = (await agent.state) as PlanState;
+  // Through the RPC method: the stub does not proxy the `state` property, and
+  // an undefined plan here broke every card image in production.
+  const plan = await agent.widgetState();
+
+  // Game and playlist preview images, so those cards are never blank.
+  const kindParam = url.searchParams.get("kind");
+  if (kindParam === "game" && url.searchParams.get("id")) {
+    const v = await agent.gameFetch(url.searchParams.get("id")!, "");
+    if (!v) return new Response("Not found", { status: 404 });
+    const ticket: Ticket = {
+      tone: v.phase === "done" ? "done" : "open",
+      metaLeft: "Game",
+      metaRight: v.phase === "lobby" ? "Join in" : v.phase === "done" ? "Final" : `Round ${v.round} of ${v.totalRounds}`,
+      title: v.title,
+      rows: [{ text: v.topic }, { text: `${v.players.length} playing` }],
+      stub: { big: v.phase === "done" ? "GG" : "▶", label: v.phase === "done" ? "Final" : "Play" },
+    };
+    return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+  }
+  if (kindParam === "music") {
+    const tracks = plan.playlist ?? [];
+    const ticket: Ticket = {
+      tone: "open",
+      metaLeft: "Playlist",
+      title: "Group playlist",
+      rows: tracks.slice(0, 3).map((t) => ({ lead: "♪", text: t.title, tail: t.artist.slice(0, 14) })),
+      stub: { big: String(tracks.length), label: tracks.length === 1 ? "Track" : "Tracks" },
+    };
+    return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+  }
 
   // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
   const bucket = (env as { CARDS?: R2Bucket }).CARDS;
