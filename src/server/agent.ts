@@ -143,9 +143,11 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
-- When someone asks for a game ("make a trivia game about X"), call make_game
-  with their topic. The game card posts itself; people join and play on the
-  card. Never list the questions in text.
+- When someone asks for a game ("let's play a game", "make a trivia game about
+  X"), call make_game straight away. With no topic named, do not ask for one:
+  pick it yourself from what this chat is about (the plan, the city, what
+  people here are into). The game card posts itself; people join and play on
+  the card. Never list the questions in text.
 - When someone names a song for the group playlist, call add_song once per
   song, exactly as they said it. The playlist card in the thread updates
   itself; never list the tracks in text. show_playlist reposts the card when
@@ -2630,7 +2632,8 @@ this.rememberCardId(id);
       case "make_game": {
         const { topic } = parseToolArgs("make_game", rawArgs);
         try {
-          const made = await this.gameCreate(topic, "agent");
+          // "let's play a game" names no topic, and the model may leave it out too.
+          const made = await this.gameCreate(topic?.trim() || this.state.title || "general knowledge, a fun mix", "agent");
           return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
         } catch (err) {
           this.note("warn", "game.generate_failed", errorFields(err));

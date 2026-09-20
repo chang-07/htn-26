@@ -232,7 +232,7 @@ export const toolSchemas = {
     paidBy: z.string().optional().describe("Who paid, as they are shown in the transcript"),
   }),
   make_game: z.object({
-    topic: z.string().describe("What the game should be about, in the asker's words"),
+    topic: z.string().optional().describe("What the game should be about, in the asker's words. When they named none (\"let's play a game\"), one you picked from what this chat is about."),
   }),
 } as const;
 
@@ -315,7 +315,7 @@ const descriptions: Record<ToolName, string> = {
   confirm_item:
     "When a person says they booked or paid for an itinerary stop, mark it confirmed. With price and paidBy it also logs the expense so the invoice splits it.",
   make_game:
-    "Generate a trivia game about the topic someone asked for and post its card. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
+    "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
 export function openAiTools() {
