@@ -436,7 +436,24 @@ export class PlanAgent extends Agent<Env, PlanState> {
     }
     // The version keeps climbing so an open vote page or card redraws as empty.
     this.setState({ ...EMPTY_PLAN, version: this.state.version + 1 });
-    this.note("info", "chat.reset", { kept: this.participants().length });
+
+    // An introduction is remembered for good, so that nobody is offered the
+    // same person twice — which also means a demo of matching runs once. Forget
+    // the ones these people were in, and the ask still open in their own chats.
+    const handles = this.participants().map((p) => p.handle);
+    const store = peopleStore(this.env);
+    const intros = await store.clearIntros(handles).catch(() => 0);
+    const profiles = await store.getMany(handles).catch(() => ({}) as Record<string, { dmChat?: string }>);
+    for (const h of handles) {
+      const dm = profiles[h]?.dmChat;
+      if (dm && dm !== this.name) await (await getAgentByName<Env, PlanAgent>(this.env.PlanAgent, dm)).clearPendingIntro().catch(() => {});
+    }
+    this.note("info", "chat.reset", { kept: handles.length, intros });
+  }
+
+  /** Drops an introduction ask that no longer exists. Called when another chat is reset. */
+  async clearPendingIntro() {
+    for (const key of ["pending_intro", "pending_intro_common", "pending_intro_at", "match_candidates"]) this.setMeta(key, "");
   }
 
   /** Why this message should wake the model, or null to stay asleep. */
