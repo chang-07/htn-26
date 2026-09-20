@@ -353,6 +353,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // Every message is remembered, but only one addressed to the agent wakes the
     // model. Group chatter costs no tokens and draws no interjections; when the
     // agent is finally called on, the whole conversation is already in its memory.
+    // A demo is run more than once. Handled in code so it costs nothing, cannot
+    // be talked out of, and wipes the message that asked for it too.
+    if (/^\s*(@\S+\s+)?\/reset\s*$/i.test(msg.text)) {
+      await this.resetChat();
+      await this.say("reset. fresh start, and i still know who you are");
+      return;
+    }
     if (await this.handlePayText(msg)) return;
 
     const wake = this.wakeReason(msg);
@@ -393,6 +400,43 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     // A short delay batches a burst of texts into a single turn.
     await this.schedule(2, "runTurn");
+  }
+
+  /**
+   * Back to a chat that has never planned anything, for running a demo again.
+   *
+   * Goes: the transcript, the plan, votes, carts, the itinerary, expenses,
+   * RSVPs, the playlist, games, research, tickets, watches and every timer.
+   * Stays: who is in the chat and their names, where the group is based, and
+   * that they have been onboarded. What people told the agent about themselves
+   * (profile, address, payments) lives with the person, not the chat, and is
+   * untouched. Run history stays too: a reset is itself worth seeing there.
+   * The thread on people's phones is theirs; nothing can unsend it.
+   */
+  async resetChat() {
+    for (const s of await this.listSchedules().catch(() => [])) await this.cancelSchedule(s.id).catch(() => false);
+    // Best effort: an abandoned store cart expires on its own.
+    for (const c of this.carts()) {
+      const cartId = this.getMeta(`cart_id:${shopKey(c.shop)}`);
+      if (cartId) await cancelCart(this.env, shopKey(c.shop), cartId).catch(() => false);
+    }
+
+    this.sql`DELETE FROM messages`;
+    this.sql`DELETE FROM votes`;
+    this.sql`DELETE FROM research`;
+    this.sql`DELETE FROM product_names`;
+    this.sql`DELETE FROM tickets`;
+    this.sql`DELETE FROM rsvps`;
+    this.sql`DELETE FROM games`;
+    this.sql`DELETE FROM watches`;
+    this.sql`DELETE FROM plan_media`;
+    const KEEP = ["is_group", "area", "onboarded", "profile_link_sent", "profile_card_sent", "profile_card_hold", "profile_ack_at", "contact_card_shared", "location_seen", "runs_last"];
+    for (const { key } of this.sql<{ key: string }>`SELECT key FROM meta`) {
+      if (!KEEP.includes(key)) this.sql`DELETE FROM meta WHERE key = ${key}`;
+    }
+    // The version keeps climbing so an open vote page or card redraws as empty.
+    this.setState({ ...EMPTY_PLAN, version: this.state.version + 1 });
+    this.note("info", "chat.reset", { kept: this.participants().length });
   }
 
   /** Why this message should wake the model, or null to stay asleep. */
@@ -2944,6 +2988,8 @@ this.rememberCardId(id);
       transcript: this.sql<Row>`SELECT direction, author, body FROM messages ORDER BY id`,
       votes: this.sql<Row>`SELECT voter, option_id, source FROM votes`,
       planPhotos: this.planPhotoIds(),
+      participants: this.participants().map((p) => p.handle),
+      area: this.getMeta("area"),
     };
   }
 

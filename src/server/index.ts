@@ -68,6 +68,16 @@ export default Sentry.withSentry(sentryOptions, {
 
     // Run history. Unlike /api/dev/*, this is reachable from the deployed
     // Worker: the runs worth looking at are the ones driven by real texts.
+    // Reset one chat for the next demo, from a laptop, without a text in the
+    // thread: POST /api/runs/reset/<chat id>?token=…  Same lock as run history.
+    if (url.pathname.startsWith("/api/runs/reset/") && request.method === "POST") {
+      const denied = requireRunsAuth(request, url, env);
+      if (denied) return denied;
+      const chat = decodeURIComponent(url.pathname.slice("/api/runs/reset/".length));
+      if (!chat) return new Response("Not found", { status: 404 });
+      await (await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat)).resetChat();
+      return Response.json({ ok: true, chat });
+    }
     if (url.pathname === "/api/runs" || url.pathname.startsWith("/api/runs/")) {
       return requireRunsAuth(request, url, env) ?? handleRuns(request, url, env);
     }
