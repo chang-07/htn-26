@@ -27,7 +27,7 @@ private struct FieldRow: View {
             } else {
                 TextField(hint, text: $value).textFieldStyle(.plain)
             }
-            Divider()
+            TicketRule()
         }
     }
 }
@@ -73,6 +73,7 @@ struct ProfileFormView: View {
             }
         }
         .background(Color(uiColor: .systemBackground))
+        .whimPage()
         .task { await load() }
     }
 
@@ -117,7 +118,7 @@ struct ProfileFormView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PillButtonStyle())
                 .disabled(saving || !loaded)
             }
             .padding(16)
@@ -207,6 +208,7 @@ struct ShipFormView: View {
             }
         }
         .background(Color(uiColor: .systemBackground))
+        .whimPage()
         .task { await load() }
     }
 
@@ -243,7 +245,7 @@ struct ShipFormView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PillButtonStyle())
                 .disabled(saving)
             }
             .padding(16)

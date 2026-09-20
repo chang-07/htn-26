@@ -20,7 +20,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 WhimHeader(context: "Whim", chipText: chat != nil ? "Connected" : nil, showTile: true)
                 Text("Plan, play, shop —\nright in the chat.")
-                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .font(Whim.display(24))
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let chat {
@@ -41,7 +41,7 @@ struct HomeView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(Whim.ticketInk.opacity(0.06), in: Rectangle())
                 }
             }
             .padding(16)
@@ -59,7 +59,7 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Whim.ticketInk.opacity(0.06), in: Rectangle())
             .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)

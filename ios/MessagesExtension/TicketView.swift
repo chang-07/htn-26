@@ -27,7 +27,7 @@ struct TicketView: View {
 
     private var statusTint: Color {
         switch store.plan?.status {
-        case "booked": return .green
+        case "booked": return Whim.ticketGreen
         case "failed": return .red
         default: return .accentColor
         }
@@ -64,7 +64,7 @@ struct TicketView: View {
         VStack(alignment: .leading, spacing: 10) {
             WhimHeader(context: "Plan", chipText: statusLabel, chipTint: statusTint)
             Text(plan.title.isEmpty ? "No plan yet" : plan.title)
-                .font(.system(.title3, design: .rounded).weight(.bold))
+                .font(Whim.display(26))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .firstTextBaseline, spacing: 18) {
@@ -83,7 +83,7 @@ struct TicketView: View {
             .padding(.vertical, 3)
             .background(
                 (count > 0 ? Color.accentColor.opacity(0.12) : Color(uiColor: .secondarySystemFill)),
-                in: Capsule()
+                in: Rectangle()
             )
     }
 
@@ -94,14 +94,14 @@ struct TicketView: View {
         return VStack(alignment: .leading, spacing: 10) {
             header(plan, votes: votes)
             if !plan.options.isEmpty {
-                Divider()
+                TicketRule()
                 ForEach(plan.options.prefix(2)) { option in
                     HStack(spacing: 8) {
                         Image(systemName: plan.chosenOptionId == option.id ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(plan.chosenOptionId == option.id ? .green : Color(uiColor: .tertiaryLabel))
                             .font(.body)
                         Text(option.title)
-                            .font(.subheadline.weight(.medium))
+                        .font(Whim.mono(14).weight(.medium))
                             .lineLimit(1)
                         Spacer(minLength: 6)
                         voteBadge(plan.counts[option.id] ?? 0)
@@ -135,7 +135,8 @@ struct TicketView: View {
             VStack(alignment: .leading, spacing: 14) {
                 header(plan, votes: votes)
                 if !plan.options.isEmpty {
-                    VStack(spacing: 8) {
+                    TicketRule()
+                    VStack(spacing: 0) {
                         ForEach(plan.options) { option in
                             optionRow(option, plan: plan, open: open)
                         }
@@ -147,12 +148,12 @@ struct TicketView: View {
                         .foregroundStyle(.secondary)
                 }
                 if let note = plan.bookingNote, !note.isEmpty {
-                    Divider()
+                    TicketRule()
                     Label(note, systemImage: plan.status == "booked" ? "checkmark.seal.fill" : "info.circle")
                         .font(.subheadline)
                         .foregroundStyle(plan.status == "booked" ? .green : .secondary)
                 }
-                Divider()
+                TicketRule()
                 GameComposerView(base: store.base, chat: store.chat)
             }
             .padding(16)
@@ -191,16 +192,11 @@ struct TicketView: View {
                 Spacer(minLength: 8)
                 voteBadge(plan.counts[option.id] ?? 0)
             }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(mine ? Color.accentColor.opacity(0.08) : Color(uiColor: .secondarySystemBackground))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(mine ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1.5)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.vertical, 11)
+            .padding(.horizontal, 2)
+            .background(mine ? Whim.ticketInk.opacity(0.07) : Color.clear)
+            .overlay(alignment: .bottom) { Rectangle().fill(Whim.rule).frame(height: 1) }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!open)
