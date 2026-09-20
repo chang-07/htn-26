@@ -115,6 +115,13 @@ export const KNOWN_SHOPS: { shop: string; sells: string }[] = [
   { shop: "wildflowercases.com", sells: "patterned and cute phone cases" },
   { shop: "velvetcaviar.com", sells: "phone cases" },
   { shop: "pelacase.com", sells: "plain phone cases" },
+  // Clothes. Each returned real black shorts for "black shorts".
+  { shop: "gymshark.com", sells: "gym clothes, shorts, leggings, hoodies" },
+  { shop: "everlane.com", sells: "everyday clothes: shorts, jeans, tees, sweaters" },
+  { shop: "chubbiesshorts.com", sells: "men's shorts, swim trunks" },
+  { shop: "fashionnova.com", sells: "cheap trendy clothes, dresses, shorts" },
+  { shop: "tentree.ca", sells: "casual clothes and outerwear, Canadian, prices in CAD" },
+  { shop: "allbirds.com", sells: "sneakers, shoes" },
   { shop: "glossier.com", sells: "skincare, makeup" },
   { shop: "brooklinen.com", sells: "candles, robes, bedding" },
 ];

@@ -143,6 +143,8 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
+  Pick the store by what it sells, not the first on the list. When a store has
+  nothing that fits, search one or two others that could before saying so.
 - When someone asks for a game ("let's play a game", "make a trivia game about
   X"), call make_game straight away. With no topic named, do not ask for one:
   pick it yourself from what this chat is about (the plan, the city, what
