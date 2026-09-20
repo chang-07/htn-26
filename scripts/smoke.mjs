@@ -110,7 +110,7 @@ await check("a new ballot forgets the old photo; a booking's confirmation photo 
 });
 await check("plan card renders as a PNG", async () => expect((await get(`/card/${a}?v=1`)).headers.get("content-type") === "image/png", "not a PNG"));
 await check("every ticket design renders", async () => {
-  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice", "icon"]) {
+  for (const kind of ["plan", "cart", "list", "venue", "rsvp", "match", "invoice", "itinerary", "icon"]) {
     const res = await get(`/api/dev/card?kind=${kind}`);
     expect(res.headers.get("content-type") === "image/png", `${kind}: ${res.status}`);
   }
@@ -230,6 +230,12 @@ await check("the invoice ticket renders in both states", async () => {
     expect(res.headers.get("content-type") === "image/png", `${state}: ${res.status}`);
   }
 });
+await check("the itinerary ticket renders in both states", async () => {
+  for (const state of ["open", "done"]) {
+    const res = await get(`/api/dev/card?kind=itinerary&state=${state}`);
+    expect(res.headers.get("content-type") === "image/png", `itinerary ${state}: ${res.status}`);
+  }
+});
 await check("paying the last cart posts the invoice ticket once, not before", async () => {
   // Three in the chat; two have names. Carts are seeded, not shopped, so nothing leaves the laptop.
   for (const from of ["+15550000001", "+15550000002", "+15550000003"]) await post("/api/dev/message", { chat: inv, group: true, from, text: "in" });
@@ -314,6 +320,130 @@ await check("with nobody sharing, read_locations says so rather than inventing a
   const c = chat("locread");
   const result = await tool(c, "read_locations", {});
   expect(/nobody/i.test(result) && /do not claim/i.test(result), `unexpected answer: ${result.slice(0, 120)}`);
+});
+
+console.log("\nitinerary (no network; the sources are not called)");
+const it = chat("it");
+await check("add_to_itinerary takes the winner, posts one ticket, clears the ballot", async () => {
+  await tool(it, "propose_plan", { title: "Vancouver weekend", options: [{ title: "Flair 1:55 PM → 4:05 PM, nonstop", subtitle: "CA$254 · 5 hr 10 min · Sat Oct 10", bookingUrl: "https://www.google.com/travel/flights?q=x" }, { title: "WestJet 10:30 PM → 12:44 AM +1, nonstop", subtitle: "CA$261 · 5 hr 14 min · Sat Oct 10", bookingUrl: "https://www.google.com/travel/flights?q=y" }] });
+  const before = await dump(it);
+  const out = await tool(it, "add_to_itinerary", { optionId: before.state.options[0].id, kind: "flight" });
+  expect(/^Added i[0-9a-f]{4}\./.test(out), `unexpected reply: ${out}`);
+  const { state } = await dump(it);
+  expect(state.itinerary.length === 1, `${state.itinerary.length} items`);
+  expect(state.itinerary[0].kind === "flight" && state.itinerary[0].status === "handoff" && state.itinerary[0].price === "CA$254", JSON.stringify(state.itinerary[0]));
+  expect(state.options.length === 0 && state.status === "idle", "ballot not cleared");
+  const text = await logs(it);
+  expect(count(text, "itinerary.added") === 1, "itinerary.added fired " + count(text, "itinerary.added"));
+  expect(/ticket\.out.*"kind":"itinerary"/.test(text), "no itinerary ticket posted");
+  expect(/Finish it here: https:\/\/www\.google\.com/.test(text), "the deep link was not said");
+});
+if (env.BROWSERBASE_API_KEY) {
+  await check("watch_flight with no itemId attaches to the lone unwatched flight item, and a bad ident reverts it", async () => {
+    const before = await dump(it);
+    const flightId = before.state.itinerary.find((i) => i.kind === "flight").id;
+    const out = await tool(it, "watch_flight", { ident: "ZZ9999" });
+    expect(/FlightAware has no ZZ9999/.test(out), `unexpected reply: ${out}`);
+    const { state } = await dump(it);
+    const flights = state.itinerary.filter((i) => i.kind === "flight");
+    expect(flights.length === 1 && flights[0].id === flightId && flights[0].status === "handoff", JSON.stringify(flights));
+    expect(!state.itinerary.some((i) => i.title === "ZZ9999"), "a ZZ9999 item was left behind");
+  });
+} else {
+  console.log("  PASS  watch_flight bad-ident revert check  (skipped: no BROWSERBASE_API_KEY in .env)");
+}
+await check("confirm_item marks it booked and logs the expense", async () => {
+  const { state } = await dump(it);
+  const out = await tool(it, "confirm_item", { itemId: state.itinerary[0].id, note: "F8 227", price: "CA$254", paidBy: "+15550001111" });
+  expect(/confirmed\./.test(out), out);
+  const after = await dump(it);
+  expect(after.state.itinerary[0].status === "confirmed" && after.state.itinerary[0].note === "F8 227", JSON.stringify(after.state.itinerary[0]));
+  expect(after.state.expenses.length === 1 && after.state.expenses[0].amount === "CA$254", "expense not logged");
+});
+await check("add_to_itinerary refuses a ballot option without a kind", async () => {
+  await tool(it, "propose_plan", { title: "Vancouver weekend", options: [{ title: "A" }, { title: "B" }] });
+  const { state } = await dump(it);
+  const out = await tool(it, "add_to_itinerary", { optionId: state.options[0].id });
+  expect(/Say what kind/.test(out), out);
+});
+await check("book_option on a flight redirects to add_to_itinerary, never the pilot", async () => {
+  const c = chat("it-flight-redirect");
+  await tool(c, "propose_plan", { title: "Vancouver weekend", options: [{ title: "Flair", bookingUrl: "https://www.google.com/travel/flights?q=a" }, { title: "WestJet", bookingUrl: "https://www.google.com/travel/flights?q=b" }] });
+  const { state } = await dump(c);
+  const out = await tool(c, "book_option", { optionId: state.options[0].id, partySize: 4, isoTime: "2026-10-10T19:00:00" });
+  expect(/^Added i[0-9a-f]{4}\./.test(out), `unexpected reply: ${out}`);
+  const after = await dump(c);
+  expect(after.state.itinerary.length === 1 && after.state.itinerary[0].kind === "flight" && after.state.itinerary[0].status === "handoff", JSON.stringify(after.state.itinerary));
+  expect(after.state.options.length === 0 && after.state.status === "idle", "ballot not cleared");
+  const text = await logs(c);
+  expect(text.includes("booking.redirected"), "booking.redirected not logged");
+  expect(!text.includes("booking.started"), "the pilot's booking.started fired for a flight");
+});
+await check("add_to_itinerary infers stay from a Google Hotels link with no kind given", async () => {
+  const c = chat("it-stay-infer");
+  await tool(c, "propose_plan", { title: "Where to stay", options: [{ title: "Rosewood", bookingUrl: "https://www.google.com/travel/search?q=x" }, { title: "Fairmont" }] });
+  const { state } = await dump(c);
+  const out = await tool(c, "add_to_itinerary", { optionId: state.options[0].id });
+  expect(/^Added i[0-9a-f]{4}\./.test(out), `unexpected reply: ${out}`);
+  const after = await dump(c);
+  expect(after.state.itinerary.length === 1 && after.state.itinerary[0].kind === "stay", JSON.stringify(after.state.itinerary));
+});
+await check("book_option on a plain venue link without contact fields asks who is booking", async () => {
+  const c = chat("it-venue-guard");
+  await tool(c, "propose_plan", { title: "Dinner", options: [{ title: "Room A", bookingUrl: "https://example.com/book" }, { title: "Room B" }] });
+  const { state } = await dump(c);
+  const out = await tool(c, "book_option", { optionId: state.options[0].id, partySize: 4, isoTime: "2026-10-14T19:00:00" });
+  expect(/ask who is booking/i.test(out), `unexpected reply: ${out}`);
+  expect((await dump(c)).state.status === "voting", "plan left in a booking state by a refused call");
+});
+await check("search_flights refuses a date in the past without calling anything", async () => {
+  const out = await tool(it, "search_flights", { from: "YYZ", to: "YVR", depart: "2020-01-01" });
+  expect(/in the past/.test(out), out);
+});
+if (env.BROWSERBASE_API_KEY) {
+  await check("search_flights returns real options (one proxied fetch)", async () => {
+    const d = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const out = JSON.parse(await tool(it, "search_flights", { from: "YYZ", to: "YVR", depart: d }));
+    expect(out.options?.length >= 1, "no flights");
+    expect(/CA\$\d/.test(out.options[0].subtitle), out.options[0].subtitle);
+  });
+} else {
+  console.log("  PASS  search_flights live check  (skipped: no BROWSERBASE_API_KEY in .env)");
+}
+
+console.log("\nwatching (snapshots injected; nothing fetched)");
+const w = chat("watch");
+await check("a shipped order is said once, with the tracking link, then delivered once", async () => {
+  const { id } = await (await post("/api/dev/seedorder", { chat: w, shop: "partycity.com", url: "https://partycity.com/orders/abc" })).json();
+  await post("/api/dev/shipped", { chat: w, itemId: id, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track?x=7023210000000001", eta: "Tuesday" });
+  await post("/api/dev/shipped", { chat: w, itemId: id, carrier: "Canada Post", tracking: "7023210000000001", trackingUrl: "https://www.canadapost-postescanada.ca/track?x=7023210000000001", eta: "Tuesday" });
+  let text = await logs(w);
+  expect(count(text, "watch.posted") === 1, `watch.posted fired ${count(text, "watch.posted")} times`);
+  expect(/partycity\.com shipped: Canada Post 7023210000000001, arriving Tuesday\. https:/.test(text), "shipped line wrong");
+  let { state } = await dump(w);
+  expect(state.itinerary[0].status === "watching" && /^shipped/.test(state.itinerary[0].lastUpdate ?? ""), JSON.stringify(state.itinerary[0]));
+  await post("/api/dev/shipped", { chat: w, itemId: id, delivered: true });
+  text = await logs(w);
+  expect(count(text, "watch.posted") === 2, "delivered not posted once");
+  ({ state } = await dump(w));
+  expect(state.itinerary[0].status === "done", "item not done after delivery");
+  expect(count(text, '"kind":"itinerary"') >= 1, "no itinerary ticket after delivery");
+});
+await check("a flight delay and a gate change are said; a 10 minute creep is not", async () => {
+  await tool(w, "add_to_itinerary", { item: { kind: "flight", title: "AC123 YYZ→YVR Oct 10", url: "https://www.google.com/travel/flights?q=z" } });
+  const { state } = await dump(w);
+  const item = state.itinerary.find((i) => i.kind === "flight");
+  // watch_flight would fetch; seed the watch row through the same path the tool uses, with a snapshot injected instead.
+  const T0 = Math.floor(Date.now() / 1000) + 3600;
+  const base = { ident: "ACA123", iata: "AC123", status: "scheduled", from: "YYZ", to: "YVR", fromTz: "America/Toronto", toTz: "America/Vancouver", gateFrom: "D22", terminalFrom: "1", gateTo: "C41", scheduledDeparture: T0, estimatedDeparture: T0, scheduledArrival: T0 + 18000, estimatedArrival: T0 + 18000, delayMinutes: 0, url: "https://fa" };
+  await post("/api/dev/seedflight", { chat: w, itemId: item.id, ident: "AC123" });
+  await post("/api/dev/flight", { chat: w, itemId: item.id, status: base });
+  await post("/api/dev/flight", { chat: w, itemId: item.id, status: { ...base, delayMinutes: 10, estimatedDeparture: T0 + 600 } });
+  await post("/api/dev/flight", { chat: w, itemId: item.id, status: { ...base, delayMinutes: 30, estimatedDeparture: T0 + 1800, gateFrom: "D30" } });
+  const text = await logs(w);
+  const posted = text.split("\n").filter((l) => l.includes("watch.posted") && l.includes(item.id));
+  expect(posted.length === 2, `${posted.length} lines posted for the flight`);
+  expect(/delayed 30 min/.test(text) && /gate D30, terminal 1/.test(text), "delay or gate line missing");
 });
 
 console.log("\nrun history");

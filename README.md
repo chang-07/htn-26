@@ -93,6 +93,8 @@ curl -X POST localhost:5173/api/dev/react -H 'content-type: application/json' \
 curl -X POST localhost:5173/api/dev/tool -H 'content-type: application/json' \
   -d '{"chat":"demo","tool":"propose_plan","args":{"title":"Friday dinner","options":[{"title":"A"},{"title":"B"}]}}'
 
+curl 'localhost:5173/api/dev/source?kind=flights&from=YYZ&to=YVR&depart=2026-10-10'   # one browse.sh recipe, no model
+
 # start a research run without going through the model
 curl -X POST localhost:5173/api/dev/research -H 'content-type: application/json' \
   -d '{"chat":"demo","brief":"late night ramen","near":"Toronto","depth":"quick"}'
@@ -384,7 +386,8 @@ navigation, so a run is bounded. `DEPTH` in `research.ts` is the whole budget:
 links in the report are copied from per-page extractions, never from the
 ranking step's retelling.
 
-Research requires `AI_GATEWAY_API_KEY` for Jev scoring through Vercel AI Gateway. It scores each search
+With `AI_GATEWAY_API_KEY` set, research uses Jev scoring through Vercel AI Gateway; without it, the LLM
+picks which results to read and extracted options go unscored (`research.jev_fallback` in the run log). Jev scores each search
 result's metadata for relevance to the brief, and returns confidence in that
 judgment separately. Defaults are relevance >= 2 on a 0–3 rubric and confidence
 >= 0.5; tune `RESEARCH_MIN_RELEVANCE` and `RESEARCH_MIN_CONFIDENCE` against real
@@ -422,7 +425,7 @@ Without an AI Gateway key, research stops before searching or opening a browser;
 there is no general-LLM or unscored fallback. Provider errors, omitted judgments and
 all-rejected batches also stop the run rather than weakening the gate. Without a
 Browserbase key, search and page reading use the existing browser path, with the
-same required Jev gates. The Search/Fetch API path creates no watchable browser
+same Jev gates. The Search/Fetch API path creates no watchable browser
 session; booking continues to use browser sessions.
 
 Run the isolated, mocked provider/selection checks with
@@ -626,6 +629,54 @@ curl -G localhost:5173/api/dev/pilot --data-urlencode mode=availability \
   --data-urlencode 'url=https://…' --data-urlencode 'task=Find times for 4 on Saturday evening'
 # mode=book fills the form; mode=inspect&find=<word> shows what the pilot sees and the raw markup
 ```
+
+### Trips — flights, stays, events, and what happens after
+
+The same chat plans a weekend away. Three tools read real options over
+Browserbase Fetch (residential proxies, no browser) using recipes from the
+[browse.sh](https://browse.sh) skill catalog, and return them in the same turn,
+shaped as ballot options:
+
+| Tool | Source | What comes back |
+|---|---|---|
+| `search_flights` | Google Flights (`/travel/flights?q=…`, server-rendered) | airline, times, stops, duration, price, a link with a Book button |
+| `search_stays` | Google Hotels (`/travel/search`, the page's data blob) | hotel, nightly price, rating, reviews, a link to its rates |
+| `find_events` | Ticketmaster's internal artist-events API, or Luma's city feed | title, date, venue, on-sale window, sold-out flags, a link |
+
+The group votes with tapbacks as always. Once a vote settles the model calls
+`add_to_itinerary`: the winner becomes a stop on the **itinerary** (a list on
+the plan), the itinerary ticket is posted, the chat gets the link to finish the
+booking themselves, and the ballot clears for the next segment. The agent never
+books or pays for flights, rooms or tickets: those links open the site's own
+checkout. `confirm_item` marks a stop booked when a person says so, and logs
+what they paid so the invoice splits it. A venue booked by the pilot and an
+order paid through a cart appear on the same itinerary.
+
+**Watching.** `watch_flight AC123` reads FlightAware now and every 15 minutes
+from 36 hours before departure until it lands, posting only changes: a delay of
+15 minutes or more (and each further 15), a gate or terminal change, departed,
+landed, cancelled. A paid order is watched through the store's order status
+page until it is delivered: "shipped" with the carrier and tracking link, then
+"delivered". Each is said once, as a text line.
+
+```sh
+curl 'localhost:5173/api/dev/source?kind=flights&from=YYZ&to=YVR&depart=2026-10-10'   # one recipe, no model
+curl 'localhost:5173/api/dev/source?kind=events&city=Toronto&query=Toronto%20Raptors'
+curl 'localhost:5173/api/dev/source?kind=flight&ident=AC123'
+curl -X POST localhost:5173/api/dev/watch -H 'content-type: application/json' -d '{"chat":"demo"}'   # check now
+curl -X POST localhost:5173/api/dev/shipped -H 'content-type: application/json' \
+  -d '{"chat":"demo","itemId":"i1a2b","carrier":"Canada Post","tracking":"7023…","trackingUrl":"https://…","eta":"Tuesday"}'   # demo a delivery
+curl -X POST localhost:5173/api/dev/seedflight -H 'content-type: application/json' \
+  -d '{"chat":"demo","itemId":"i1a2b","ident":"AC123"}'   # watch an item as a flight without reading FlightAware
+open 'http://localhost:5173/api/dev/card?kind=itinerary&state=open'
+```
+
+Only recipes that work from this account are wired: Browserbase's "verified"
+stealth mode is Enterprise-only and proxied browser sessions are not on the free
+plan, which rules out Kayak, Skyscanner, Booking.com, Airbnb, Expedia, OpenTable
+and every parcel carrier's own page. The parsers are pinned by fixtures in
+`scripts/fixtures/sources/`; when Google changes its markup, `source.empty` in
+the run viewer names the page that came back.
 
 ### LLM usage sources
 

@@ -11,12 +11,18 @@ import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
 import { observe, runPilot } from "./pilot";
 import { parseLinks, readInstagram, readLinks } from "./social";
-import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
+import { renderAvatar, renderPlanIcon, cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, renderCard, renderCartCard, renderTicket, rsvpTicket, shoppingListTicket, venueTicket, type Ticket } from "./card";
 import { planEmoji } from "../dressing";
 import { errorFields, log, short } from "./log";
 import { getRun, listChats, listRuns, refreshRunTimeouts, requireRunsAuth } from "./runs";
 import { cartsOf, shopKey, type PlanState } from "../types";
 import { invoiceFor } from "../invoice";
+import { searchFlights } from "./sources/flights";
+import { searchStays } from "./sources/stays";
+import { findEvents } from "./sources/events";
+import { flightStatus } from "./sources/flight-status";
+import { orderStatus } from "./sources/order-status";
+import type { FlightStatus } from "./sources/types";
 
 import { PlanAgent as PlanAgentBase } from "./agent";
 export type PlanAgent = PlanAgentBase;
@@ -34,6 +40,7 @@ import { People as PeopleBase } from "./people";
 export type People = PeopleBase;
 export const People: typeof PeopleBase = Sentry.instrumentDurableObjectWithSentry(sentryOptions, PeopleBase);
 import { handleProfile } from "./profile";
+import { handleDemo } from "./demos";
 
 export default Sentry.withSentry(sentryOptions, {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -63,6 +70,68 @@ export default Sentry.withSentry(sentryOptions, {
     // Worker: the runs worth looking at are the ones driven by real texts.
     if (url.pathname === "/api/runs" || url.pathname.startsWith("/api/runs/")) {
       return requireRunsAuth(request, url, env) ?? handleRuns(request, url, env);
+    }
+
+    // The native iMessage widget: plain HTTP where the web page uses the
+    // WebSocket. Public plan state only, and the unguessable chat id is the
+    // capability, exactly as on /w/<chat>.
+    if (url.pathname.startsWith("/api/widget/")) {
+      const [chatEnc, action, extra, sub] = url.pathname.slice("/api/widget/".length).split("/");
+      const chat = decodeURIComponent(chatEnc ?? "");
+      if (!chat) return new Response("Not found", { status: 404 });
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
+      // Games: create from a prompt, fetch the redacted view, act (join/answer/advance).
+      if (action === "game") {
+        if (!extra && request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { prompt?: string; voter?: string; name?: string };
+          if (!body.prompt || !body.voter) return new Response("prompt and voter are required", { status: 400 });
+          try {
+            const made = await agent.gameCreate(body.prompt, body.voter, body.name);
+            return Response.json(made);
+          } catch (err) {
+            return new Response(err instanceof Error ? err.message : "generation failed", { status: 502 });
+          }
+        }
+        if (extra && !sub && request.method === "GET") {
+          const v = await agent.gameFetch(extra, url.searchParams.get("voter") ?? "");
+          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        if (extra && sub && request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { voter?: string; name?: string; choice?: number };
+          if (!body.voter) return new Response("voter is required", { status: 400 });
+          const act =
+            sub === "join" ? { type: "join" as const, name: body.name ?? "" }
+            : sub === "answer" ? { type: "answer" as const, choice: Number(body.choice) }
+            : sub === "advance" ? { type: "advance" as const }
+            : null;
+          if (!act) return new Response("Not found", { status: 404 });
+          const v = await agent.gameAct(extra, body.voter, act);
+          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        return new Response("Not found", { status: 404 });
+      }
+      if (!action && request.method === "GET") {
+        return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
+      }
+      // A stored ticket's JSON, for the native ticket card. Tickets are
+      // immutable once posted, so they cache hard.
+      if (action === "ticket" && extra && request.method === "GET") {
+        const ticket = await agent.getTicket(extra);
+        return ticket
+          ? Response.json(ticket, { headers: { "cache-control": "public, max-age=86400" } })
+          : new Response("Not found", { status: 404 });
+      }
+      if (action === "vote" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { optionId?: string; voter?: string };
+        if (!body.optionId || !body.voter) return new Response("optionId and voter are required", { status: 400 });
+        try {
+          await agent.vote(body.optionId, String(body.voter).slice(0, 80));
+        } catch (err) {
+          return new Response(err instanceof Error ? err.message : "vote failed", { status: 400 });
+        }
+        return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
+      }
+      return new Response("Not found", { status: 404 });
     }
 
     if (url.pathname.startsWith("/p/")) {
@@ -95,6 +164,11 @@ export default Sentry.withSentry(sentryOptions, {
 
     if (url.pathname.startsWith("/card/")) {
       return handleCard(url, env, ctx);
+    }
+
+    // The Linq showcase suite: six demo apps a card can open into.
+    if (url.pathname === "/demo" || url.pathname.startsWith("/demo/")) {
+      return handleDemo(url);
     }
 
     // Shopify fetches this to validate every UCP call the agent makes.
@@ -205,10 +279,16 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
  *                          + "group": true, and "mention": true or "replyTo": "last" | "photo", to test the wake gate
  *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", or "cart"+"shop"
  *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
- *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
+ *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice|itinerary&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
  *   POST /api/dev/tool     {"chat":"demo","tool":"propose_plan","args":{...}}   no LLM involved
  *   POST /api/dev/booked   {"chat":"demo","optionId"?:"…","confirmation"?:"…"}   land a confirmed booking without a browser
+ *   GET  /api/dev/source?kind=flights|stays|events|flight|order&…   run one browse.sh recipe, no model
+ *   POST /api/dev/watch     {"chat":"demo"}                          run the flight/order watch check now
+ *   POST /api/dev/seedorder {"chat":"demo","shop":"…","url":"…"}     an order item to watch, without buying
+ *   POST /api/dev/shipped   {"chat":"demo","itemId":"…","carrier":"…","tracking":"…","trackingUrl":"…","eta":"…"}   the store shipped
+ *   POST /api/dev/flight    {"chat":"demo","itemId":"…","status":{…}}   FlightAware now says this
+ *   POST /api/dev/seedflight {"chat":"demo","itemId":"…","ident":"AC123"}   watch an item as a flight without reading FlightAware
  *   POST /api/dev/fire     {"chat":"demo","callback":"researchWatchdog"}        run a scheduled callback now
  *   GET  /api/dev/dump?chat=demo
  *   GET  /api/dev/logs?chat=demo     the chat's event history, as text
@@ -305,6 +385,16 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
           [...people, "Alex"],
         ),
       ),
+      // state=open: a flight to book and an order on its way · done: everything landed
+      itinerary: itineraryTicket(
+        [
+          { id: "i1", kind: "flight", title: "Flair YYZ→YVR Oct 10", status: done ? "done" : "confirmed", note: "F8 227", lastUpdate: done ? "landed 4:01 PM" : undefined },
+          { id: "i2", kind: "stay", title: "JW Marriott Parq", status: done ? "confirmed" : "handoff", price: "$277/night" },
+          { id: "i3", kind: "event", title: "Raptors vs Spurs Dec 17", status: "confirmed" },
+          { id: "i4", kind: "order", title: "partycity.com", status: done ? "done" : "watching", lastUpdate: done ? "delivered" : "shipped, arriving Tue" },
+        ],
+        "Vancouver weekend",
+      ),
     };
     const kind = url.searchParams.get("kind") ?? "plan";
     if (!(kind in tickets)) return new Response(`kind must be one of ${Object.keys(tickets).join(", ")}`, { status: 404 });
@@ -365,9 +455,44 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     // Land a confirmed booking without a browser: {"chat":"demo","optionId"?:…,"confirmation"?:…}
     return Response.json(await agent.devBooked(body.optionId || undefined, body.confirmation || undefined));
   }
+  if (url.pathname === "/api/dev/watch") {
+    // Run the watch check now: {"chat":"demo"}
+    await agent.checkWatches();
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/seedorder") {
+    // An order item to watch without buying anything: {"chat":"demo","shop":"partycity.com","url":"https://…/orders/abc"}
+    return Response.json(await agent.devSeedOrder(String(body.shop), String(body.url)));
+  }
+  if (url.pathname === "/api/dev/shipped") {
+    // The store shipped: {"chat":"demo","itemId":"i1a2b","carrier":"Canada Post","tracking":"7023…","trackingUrl":"https://…","eta":"Tuesday","delivered":false}
+    const b = body as unknown as { itemId: string; carrier?: string; tracking?: string; trackingUrl?: string; eta?: string; delivered?: boolean };
+    return Response.json(await agent.devShipped(b.itemId, { fulfilled: true, delivered: b.delivered === true, carrier: b.carrier, tracking: b.tracking, trackingUrl: b.trackingUrl, eta: b.eta }));
+  }
+  if (url.pathname === "/api/dev/flight") {
+    // FlightAware now says: {"chat":"demo","itemId":"i1a2b","status":{…a FlightStatus…}}
+    const b = body as unknown as { itemId: string; status: FlightStatus };
+    return Response.json(await agent.devFlightSnapshot(b.itemId, b.status));
+  }
+  if (url.pathname === "/api/dev/seedflight") {
+    // Watch an itinerary item as a flight without reading FlightAware: {"chat":"demo","itemId":"…","ident":"AC123"}
+    return Response.json(await agent.devSeedFlight(String(body.itemId), String(body.ident)));
+  }
+  if (url.pathname === "/api/dev/source") {
+    // One source, no model: ?kind=flights&from=YYZ&to=YVR&depart=2026-10-10 | kind=stays&where=Vancouver&checkin=…&checkout=… | kind=events&city=Toronto&query=Raptors | kind=flight&ident=AC123 | kind=order&url=…
+    const q = Object.fromEntries(url.searchParams) as Record<string, string>;
+    const rows =
+      q.kind === "flights" ? await searchFlights(env, { from: q.from, to: q.to, depart: q.depart, return: q.return || undefined, adults: q.adults ? Number(q.adults) : undefined })
+      : q.kind === "stays" ? await searchStays(env, { where: q.where, checkin: q.checkin, checkout: q.checkout, adults: q.adults ? Number(q.adults) : undefined })
+      : q.kind === "events" ? await findEvents(env, { city: q.city, query: q.query || undefined, country: q.country || undefined })
+      : q.kind === "flight" ? await flightStatus(env, q.ident)
+      : q.kind === "order" ? await orderStatus(env, q.url)
+      : { error: "kind must be flights, stays, events, flight or order" };
+    return Response.json(rows ?? null);
+  }
   if (url.pathname === "/api/dev/fire") {
     // Run a scheduled callback now instead of waiting for its timer.
-    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn() };
+    const callbacks = { researchWatchdog: () => agent.researchWatchdog(), nudge: async () => agent.nudge({ ballot: await agent.currentBallot() }), runTurn: () => agent.runTurn(), checkWatches: () => agent.checkWatches() };
     const run = callbacks[body.callback as keyof typeof callbacks];
     if (!run) return Response.json({ error: `callback must be one of ${Object.keys(callbacks).join(", ")}` }, { status: 400 });
     await run();

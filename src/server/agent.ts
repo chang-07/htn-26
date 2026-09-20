@@ -4,14 +4,23 @@ import { telemetryScope, traceOperation, traceFields, safeFields } from "./telem
 import { Agent, callable, getAgentByName } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
-import { EMPTY_PLAN, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type PlanOption, type PlanState } from "../types";
+import { EMPTY_PLAN, ITEM_EMOJI, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type ItineraryItem, type PlanOption, type PlanState } from "../types";
 import { llmFor, modelExtras } from "./llm";
 import { readLinks } from "./social";
 import { missingFields, ONBOARDING, people as peopleStore, profileLines, syncMatchPool, type Profile } from "./people";
 import { errorFields, log, mask, short, timed, type Fields, type Level } from "./log";
-import { cartTicket, invoiceTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { cartTicket, invoiceTicket, itineraryTicket, matchTicket, planTicket, rsvpTicket, shoppingListTicket, venueTicket, type Rsvps, type Ticket } from "./card";
+import { SourceError } from "./sources/fetch";
+import { flightOption, searchFlights } from "./sources/flights";
+import { searchStays, stayOption } from "./sources/stays";
+import { cityTz, eventOption, findEvents } from "./sources/events";
+import { describeFlight, flightStatus } from "./sources/flight-status";
+import { orderStatus } from "./sources/order-status";
+import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive } from "./sources/watch";
+import type { FlightStatus, OrderStatus } from "./sources/types";
+import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
 import type { ShipTo } from "./checkout";
@@ -19,6 +28,8 @@ import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
+import { searchTrack } from "./tools/music";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
@@ -65,6 +76,20 @@ on a time, book it, and order anything they need.
   appear under "Research" below when done: tell the group you're on it, then
   stop. Never start a second run while one is in progress, and never invent
   places, prices or links — propose only what research found.
+- For a trip or a night out, work in segments and open one ballot at a time:
+  flights first, then where to stay, then what to do. search_flights,
+  search_stays and find_events return real options in this turn with their
+  prices: put 2-4 on propose_plan and quote the prices exactly. Their links
+  open the site's own checkout, so you never book those yourself: once a vote
+  settles, call add_to_itinerary, which posts the link, then move to the next
+  segment. Flights, stays and events need nobody's name or email and never go
+  through book_option: the moment the vote settles, call add_to_itinerary and
+  hand the group the link. When someone says they booked it, call confirm_item
+  (with what they paid and who paid, so the split is right); when they give a
+  flight number, call watch_flight. Never say a flight, room or ticket is
+  booked until a person says so. The Itinerary below is the trip so far.
+  When the group says "go ahead" or "book it" about a flight, stay or event,
+  that means add_to_itinerary.
 - When someone comes back to a plan after a while, call propose_plan again
   with the options that still apply: that puts the card back in front of them
   instead of pointing at one far up the thread.
@@ -76,10 +101,11 @@ on a time, book it, and order anything they need.
   individual votes.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
-- book_option drives a real browser through the venue's booking page. Call it
-  at most once per plan. It needs the full name and email the reservation goes
-  under: if nobody has given them, ask who is booking and for their email, and
-  never make either up.
+- book_option drives a real browser through a restaurant or venue's booking
+  page — never a flight, a hotel room or a ticket, which go to
+  add_to_itinerary. Call it at most once per plan. It needs the full name and
+  email the reservation goes under: if nobody has given them, ask who is
+  booking and for their email, and never make either up.
 - Payment setup is not yours to run. If someone wants you to be able to pay for
   things, tell them to text you "set up payments" in a direct chat; "remove my
   payments" undoes it. Never ask for or accept card details in the chat. You
@@ -117,6 +143,13 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
+- When someone asks for a game ("make a trivia game about X"), call make_game
+  with their topic. The game card posts itself; people join and play on the
+  card. Never list the questions in text.
+- When someone names a song for the group playlist, call add_song once per
+  song, exactly as they said it. The playlist card in the thread updates
+  itself; never list the tracks in text. show_playlist reposts the card when
+  someone asks to see or play it.
 - Tickets are photos the group sees: show_venue when someone asks about one
   place, ask_rsvp once a time and place are fixed, mark_paid when a person says
   they paid, introduce_match for a pair from the pool. A ticket speaks for
@@ -145,6 +178,9 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   request, start by confirming what you understood in one line.
 - If, despite being woken, there is truly nothing for you to do, reply with
   exactly NOOP and nothing else.`;
+
+/** Today as YYYY-MM-DD in Toronto, the demo's zone; date-only comparisons use it. */
+const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
 
 const MAX_STEPS = 8;
 /**
@@ -244,10 +280,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, json TEXT NOT NULL, message_id TEXT, ts INTEGER NOT NULL
     )`;
     this.sql`CREATE TABLE IF NOT EXISTS rsvps (handle TEXT PRIMARY KEY, answer TEXT NOT NULL)`;
+    this.sql`CREATE TABLE IF NOT EXISTS games (
+      id TEXT PRIMARY KEY, json TEXT NOT NULL, ts INTEGER NOT NULL
+    )`;
     this.sql`CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
       level TEXT NOT NULL, event TEXT NOT NULL, fields TEXT NOT NULL
     )`;
+    this.sql`CREATE TABLE IF NOT EXISTS watches (item_id TEXT PRIMARY KEY, snapshot TEXT, failures INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, checked INTEGER)`;
     this.queuePlanMedia();
   }
 
@@ -308,6 +348,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (await this.handlePayText(msg)) return;
 
     const wake = this.wakeReason(msg);
+    // Someone asking again is what re-arms research after a failure.
+    if (wake) this.setMeta("research_failed", "0");
     this.note("info", wake ? "message.in" : "message.stored", {
       from: mask(msg.from),
       chars: msg.text.length,
@@ -548,6 +590,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.setMeta("plan_photo_ids", JSON.stringify([...this.planPhotoIds().filter((x) => x !== id), id].slice(-10)));
   }
 
+  /** Keeps the playlist card's track count current: first change posts it, later ones redraw it. */
+  private async syncMusicCard() {
+    const count = (this.state.playlist ?? []).length;
+    const existing = this.getMeta("music_card_id");
+    if (existing) {
+      const newId = await timed("agent", "music_card.update", { tracks: count }, () => updateMusicCard(this.env, existing, this.name, count), this.note).catch(() => undefined);
+      if (newId) this.setMeta("music_card_id", newId);
+      return;
+    }
+    const id = await timed("agent", "music_card.out", { tracks: count }, () => sendMusicCard(this.env, this.name, this.name, count), this.note).catch(() => undefined);
+    if (id) this.setMeta("music_card_id", id);
+  }
+
   private async syncCard() {
     const messageId = this.getMeta("card_message_id");
     if (!messageId) return;
@@ -563,6 +618,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
   // Every card the agent shows is a ticket (see card.ts). It is stored here,
   // rendered on demand at /card/<chat>?t=<id>, and sent as a photo.
 
+  /**
+   * Called over RPC by /api/widget. The stub does not proxy the `state`
+   * property, so the native widget reads it through this method instead.
+   */
+  async widgetState(): Promise<PlanState> {
+    return this.state;
+  }
+
   /** Called over RPC by the /card route. */
   async getTicket(id: string): Promise<Ticket | null> {
     const row = this.sql<{ json: string }>`SELECT json FROM tickets WHERE id = ${id}`[0];
@@ -575,7 +638,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO tickets (id, kind, json, ts) VALUES (${id}, ${kind}, ${JSON.stringify(ticket)}, ${Date.now()})`;
     this.sql`DELETE FROM tickets WHERE ts < ${Date.now() - 7 * 24 * 3600 * 1000}`;
     const url = `${this.env.PUBLIC_BASE_URL}/card/${encodeURIComponent(this.name)}?t=${id}`;
-    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id }, () => sendPhoto(this.env, this.name, url), this.note).catch(
+    // With our extension configured the ticket ships as a native app card;
+    // without it, the rendered PNG photo as before.
+    const messageId = await timed("agent", "ticket.out", { kind, tone: ticket.tone, id, native: hasAppIdentity(this.env) }, () =>
+      hasAppIdentity(this.env)
+        ? sendTicketCard(this.env, this.name, this.name, id, { title: ticket.title, metaLeft: ticket.metaLeft, stubBig: ticket.stub.big, stubLabel: ticket.stub.label })
+        : sendPhoto(this.env, this.name, url),
+      this.note,
+    ).catch(
       () => undefined,
     );
     if (messageId) this.sql`UPDATE tickets SET message_id = ${messageId} WHERE id = ${id}`;
@@ -609,7 +679,19 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const person = this.participants()[0];
     if (!person) return false;
     const token = await peopleStore(this.env).tokenFor(person.handle);
-    await this.say(`${intro}${this.env.PUBLIC_BASE_URL}/p/${token}`);
+    const url = `${this.env.PUBLIC_BASE_URL}/p/${token}`;
+    // The same tappable card onboarding offers, so asking for the profile later
+    // gets the card again rather than a bare address. The plain link is what is
+    // left if the card cannot be sent.
+    const id = await timed(
+      "agent",
+      "profile_card.out",
+      { asked: true },
+      () => sendLinkCard(this.env, this.name, { title: "Your profile", subtitle: "Change anything, anytime.", button: "Open", url }),
+      this.note,
+    ).catch(() => undefined);
+    if (id) this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${"[profile card]"}, ${Date.now()})`;
+    else await this.say(`${intro}${url}`);
     this.setMeta("profile_link_sent", "1");
     return true;
   }
@@ -859,6 +941,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (result.status === "paid" && cart) {
       const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
       this.saveCarts(carts.map((c) => (c === cart ? paid : c)));
+      if (result.orderUrl) {
+        const item = await this.addItineraryItem({ kind: "order", title: result.shop, status: "watching", paidBy: who, url: result.orderUrl, watch: { order: { url: result.orderUrl, shop: result.shop } } });
+        this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+        await this.scheduleWatches();
+      }
       await this.postTicket("cart", cartTicket(paid, this.headcount()));
       // The store's receipt first, then — if that was the last one — the split.
       await this.invoiceIfSettled();
@@ -1186,6 +1273,173 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.publish({ carts, cart: undefined });
   }
 
+  private itinerary(): ItineraryItem[] {
+    return this.state.itinerary ?? [];
+  }
+
+  private saveItinerary(items: ItineraryItem[]) {
+    this.publish({ itinerary: items });
+  }
+
+  private async addItineraryItem(item: Omit<ItineraryItem, "id">): Promise<ItineraryItem> {
+    const taken = new Set(this.itinerary().map((i) => i.id));
+    let id = "";
+    do id = `i${crypto.randomUUID().slice(0, 4)}`;
+    while (taken.has(id));
+    const added: ItineraryItem = { id, ...item };
+    this.saveItinerary([...this.itinerary(), added]);
+    this.note("info", "itinerary.added", { id, kind: item.kind, status: item.status, title: item.title.slice(0, 60) });
+    return added;
+  }
+
+  private async postItinerary() {
+    const items = this.itinerary();
+    if (!items.length) return;
+    await this.postTicket("itinerary", itineraryTicket(items, this.state.title));
+  }
+
+  /** One line per stop for the model. */
+  private itineraryContext(): string {
+    const items = this.itinerary();
+    if (!items.length) return "nothing settled yet";
+    return items.map((i) => `${i.id} ${ITEM_EMOJI[i.kind]} ${i.title} — ${i.status}${i.note ? ` (${i.note})` : ""}${i.price ? `, ${i.price}` : ""}${i.lastUpdate ? `; ${i.lastUpdate}` : ""}`).join(" | ");
+  }
+
+  /** A source failed: log the cause, tell the model something it can say. */
+  private sourceFailure(err: unknown, what: string): string {
+    this.note("warn", "source.failed", { what, ...errorFields(err) });
+    if (err instanceof SourceError && err.code === "no_browserbase") return `${what} needs BROWSERBASE_API_KEY, which is not set here. Say you can't look that up right now.`;
+    return `${what} did not answer this time. Say so in one line and offer to try again.`;
+  }
+
+  private static WATCH_SECONDS = 15 * 60;
+
+  /** One timer at a time: a watch added while one is pending does not add a second. */
+  private async scheduleWatches() {
+    if (!this.activeWatches().length) return;
+    if (this.getMeta("watch_timer") === "1") return;
+    // Set the flag only once schedule() has actually resolved: if it throws,
+    // the flag must not be left set with no timer behind it.
+    await this.schedule(PlanAgent.WATCH_SECONDS, "checkWatches");
+    this.setMeta("watch_timer", "1");
+  }
+
+  private activeWatches(): { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] {
+    const now = Date.now();
+    const out: { item: ItineraryItem; row: { snapshot: string | null; failures: number; started: number } }[] = [];
+    for (const item of this.itinerary()) {
+      if (!item.watch || item.status === "done") continue;
+      const row = this.sql<{ snapshot: string | null; failures: number; started: number }>`SELECT snapshot, failures, started FROM watches WHERE item_id = ${item.id}`[0];
+      if (!row) continue;
+      let snap: FlightStatus | OrderStatus | undefined;
+      if (row.snapshot) {
+        try {
+          snap = JSON.parse(row.snapshot) as FlightStatus | OrderStatus;
+        } catch (err) {
+          this.note("warn", "watch.snapshot_bad", { id: item.id, ...errorFields(err) });
+        }
+      }
+      const active = "flight" in item.watch ? flightWatchActive(snap as FlightStatus | undefined, now) : orderWatchActive(row.started, snap as OrderStatus | undefined, now);
+      if (active) out.push({ item, row });
+    }
+    return out;
+  }
+
+  /**
+   * Scheduled: read every active watch, post only what changed, reschedule
+   * while anything is still worth watching. Three failures in a row on one
+   * item say so once and back off to hourly for it.
+   */
+  async checkWatches() {
+    this.setMeta("watch_timer", "");
+    try {
+      const watches = this.activeWatches();
+      this.note("info", "watch.check", { active: watches.length });
+      for (const { item, row } of watches) {
+        if (row.failures >= 3 && row.failures % 4 !== 3) {
+          this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
+          continue; // hourly, in 15-minute ticks
+        }
+        const watch = item.watch!; // activeWatches only returns items with one
+        try {
+          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+          if ("flight" in watch) {
+            const next = await flightStatus(this.env, watch.flight.ident);
+            if (!next) throw new Error("no status");
+            await this.applyWatch(item, next, diffFlight(prev, next), prev);
+          } else {
+            const next = await orderStatus(this.env, watch.order.url);
+            await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop), prev);
+          }
+        } catch (err) {
+          const failures = row.failures + 1;
+          this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+          this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
+          if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+        }
+      }
+    } finally {
+      await this.scheduleWatches();
+    }
+  }
+
+  /**
+   * Post the lines, then persist the snapshot and settle the item once it is
+   * over: an unsent line survives to the next tick. For a flight, the
+   * persisted delay holds at the last-announced value (`baselineFor`) so a
+   * creeping delay is not lost between the 15-minute steps that get posted.
+   */
+  private async applyWatch(item: ItineraryItem, next: FlightStatus | OrderStatus, lines: string[], prev?: FlightStatus | OrderStatus) {
+    for (const line of lines) {
+      await this.say(line);
+      this.note("info", "watch.posted", { id: item.id, line: line.slice(0, 80) });
+    }
+    const snapshot = item.watch && "flight" in item.watch ? baselineFor(prev as FlightStatus | undefined, next as FlightStatus, lines) : next;
+    this.sql`UPDATE watches SET snapshot = ${JSON.stringify(snapshot)}, failures = 0, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+    const over = "delivered" in next ? next.delivered : next.status === "landed" || next.status === "cancelled";
+    if (lines.length || over) {
+      const last = lines.at(-1);
+      this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, ...(over ? { status: "done" as const } : {}), ...(last ? { lastUpdate: last.replace(/^\S+ (is |now )?/, "").replace(/\.\s*https?:\/\/\S+$/, "") } : {}) } : i)));
+    }
+    if (over) await this.postItinerary();
+  }
+
+  /** Simulator: the store shipped (or delivered) this order. */
+  async devShipped(itemId: string, snap: OrderStatus) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item || !item.watch || !("order" in item.watch)) return { error: `no order item ${itemId}` };
+    const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
+    const prev = row?.snapshot ? (JSON.parse(row.snapshot) as OrderStatus) : undefined;
+    await this.applyWatch(item, snap, diffOrder(prev, snap, item.watch.order.shop), prev);
+    return { ok: true };
+  }
+
+  /** Simulator: FlightAware now says this about the flight. */
+  async devFlightSnapshot(itemId: string, snap: FlightStatus) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item || !item.watch || !("flight" in item.watch)) return { error: `no flight item ${itemId}` };
+    const row = this.sql<{ snapshot: string | null }>`SELECT snapshot FROM watches WHERE item_id = ${itemId}`[0];
+    const prev = row?.snapshot ? (JSON.parse(row.snapshot) as FlightStatus) : undefined;
+    await this.applyWatch(item, snap, diffFlight(prev, snap), prev);
+    return { ok: true };
+  }
+
+  /** Simulator: an order item to watch, without a real purchase. */
+  async devSeedOrder(shop: string, url: string) {
+    const item = await this.addItineraryItem({ kind: "order", title: shop, status: "watching", watch: { order: { url, shop } } });
+    this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+    return { id: item.id };
+  }
+
+  /** Simulator: watch this item as a flight without reading FlightAware. */
+  async devSeedFlight(itemId: string, ident: string) {
+    const item = this.itinerary().find((i) => i.id === itemId);
+    if (!item) return { error: `no item ${itemId}` };
+    this.saveItinerary(this.itinerary().map((i) => (i.id === itemId ? { ...i, status: "watching" as const, note: ident.toUpperCase(), watch: { flight: { ident } } } : i)));
+    this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${itemId}, NULL, 0, ${Date.now()}, NULL)`;
+    return { ok: true };
+  }
+
   /**
    * Who a cost is split across: the people who said they are in, once anyone
    * has; until then everyone in the chat.
@@ -1346,6 +1600,50 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${text}, ${Date.now()})`;
   }
 
+  // ------------------------------------------------------------------ games
+
+  private loadGame(id: string): GameState | null {
+    const row = this.sql<{ json: string }>`SELECT json FROM games WHERE id = ${id}`[0];
+    return row ? (JSON.parse(row.json) as GameState) : null;
+  }
+
+  private saveGame(g: GameState) {
+    this.sql`INSERT INTO games (id, json, ts) VALUES (${g.id}, ${JSON.stringify(g)}, ${Date.now()})
+             ON CONFLICT(id) DO UPDATE SET json = excluded.json`;
+  }
+
+  /** Prompt -> spec -> stored game -> card in the thread. RPC from /api/widget and the make_game tool. */
+  async gameCreate(topic: string, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
+    const spec = await generateGame(this.env, topic.slice(0, 140));
+    const id = crypto.randomUUID().slice(0, 12);
+    let g = newGame(id, spec, creator);
+    if (creatorName) g = joinGame(g, creator, creatorName);
+    this.saveGame(g);
+    this.note("info", "game.created", { id, title: spec.title, questions: spec.questions.length });
+    await timed("agent", "game.card", { id }, () => sendGameCard(this.env, this.name, this.name, id, spec.title, spec.topic), this.note).catch(() => undefined);
+    return { id, title: spec.title };
+  }
+
+  /** The redacted per-player view; correct answers never leave early. */
+  async gameFetch(id: string, voter: string) {
+    const g = this.loadGame(id);
+    return g ? gameView(g, voter) : null;
+  }
+
+  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "advance" }) {
+    let g = this.loadGame(id);
+    if (!g) return null;
+    if (act.type === "join") g = joinGame(g, voter, act.name);
+    if (act.type === "answer") {
+      g = gameAnswer(g, voter, act.choice);
+      // Everyone in -> straight to the reveal; nobody waits on a host.
+      if (roundComplete(g)) g = gameAdvance(g);
+    }
+    if (act.type === "advance") g = gameAdvance(g);
+    this.saveGame(g);
+    return gameView(g, voter);
+  }
+
   // ------------------------------------------------------------- agent turn
 
   /**
@@ -1399,9 +1697,28 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const direct = this.getMeta("is_group") === "0";
     const about = await this.aboutPeople(people, direct);
 
-    // Carts get their own "Shopping list" line below, whatever the plan's status.
-    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined });
+    // Carts get their own "Shopping list" line below, and the itinerary its own
+    // "Itinerary" line, whatever the plan's status.
+    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined, itinerary: undefined });
     const research = this.researchContext();
+
+    // The generic votes-in nudge just names the winner and asks whether to book
+    // it — right for a restaurant or venue, which does need book_option. A
+    // flight, stay or event never does: when the vote settled on exactly one
+    // winner and its link says which kind it is, tell the model to call
+    // add_to_itinerary directly so it cannot go fish for a name and email.
+    let votesInText =
+      "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else.";
+    if (votesIn) {
+      const tally = this.state.options.map((o) => ({ option: o, count: this.state.counts[o.id] ?? 0 }));
+      const top = Math.max(0, ...tally.map((t) => t.count));
+      const winners = tally.filter((t) => t.count === top);
+      const winner = winners.length === 1 ? winners[0].option : undefined;
+      const kind = winner ? tripKind(winner.bookingUrl) : undefined;
+      if (winner && kind) {
+        votesInText = `You were woken because everyone has now voted, not because of a new message. The winner is "${winner.title}" (optionId ${winner.id}), a ${kind} from the trip sources. Call add_to_itinerary with that optionId and kind "${kind}" now — no name, email or booking step is needed, and never call book_option for it — then say one line and stop.`;
+      }
+    }
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: SYSTEM },
@@ -1415,13 +1732,14 @@ Shopping list: ${this.shoppingListContext()}
 Delivery: ${this.deliveryContext()}
 Headcount: ${this.headcountContext()}
 Invoice: ${this.invoiceContext()}
+Itinerary: ${this.itineraryContext()}
 Research: ${research.text}
 Now: ${new Date().toISOString()}
 ${
   availabilityIn
     ? `You were woken because the availability check just finished; each ballot option's real open times are in its availability field in the plan above, read from the venue's own booking page. Tell the group in one or two lines which options have which times, plainly, including any that have nothing open or could not be checked. Say nothing else.${this.getMeta("side_availability") ? ` Venues not on the ballot: ${this.getMeta("side_availability")}.` : ""}`
     : votesIn
-    ? "You were woken because everyone has now voted, not because of a new message. Call get_votes, then name the winner in one line and ask whether to book it. If it is a tie, say so and ask the group to break it. Say nothing else."
+    ? votesInText
     : this.getMeta("is_group") === "0"
       ? `This is a direct one-to-one chat, so every message is addressed to you: reply once rather than staying silent, then stop.${about.onboarding}${this.pendingIntroContext()}`
       : ""
@@ -1701,7 +2019,7 @@ ${transcript}`,
         if (this.getMeta("is_group") !== "0") {
           return "Not in a group: the link is private. Tell them to text you directly and say 'profile'.";
         }
-        return (await this.sendProfileLink()) ? "Link sent as its own message. Do not paste it again." : "Nobody to send it to yet.";
+        return (await this.sendProfileLink()) ? "Profile card sent as its own message. Do not paste a link or describe it again." : "Nobody to send it to yet.";
       }
 
       case "forget_person": {
@@ -1726,6 +2044,12 @@ ${transcript}`,
 
       case "research": {
         const args = parseToolArgs("research", rawArgs);
+        // A run that fails at once wakes the model, which would start another,
+        // fail again, and text the chat each time round. One failure, one text.
+        if (this.getMeta("research_failed") === "1") {
+          this.note("warn", "research.retry_blocked", {});
+          return "Research just failed and nobody has asked for anything since. Do not retry. Tell them once, in one line, that the search didn't work and ask what to change.";
+        }
         return this.startResearch(args);
       }
 
@@ -1789,6 +2113,122 @@ this.rememberCardId(id);
         });
       }
 
+      case "search_flights": {
+        const args = parseToolArgs("search_flights", rawArgs);
+        if (args.depart < today()) return `${args.depart} is in the past. Ask for the date.`;
+        try {
+          const flights = await searchFlights(this.env, args);
+          this.note("info", "source.flights", { from: args.from, to: args.to, depart: args.depart, found: flights.length });
+          if (!flights.length) return `Google Flights showed nothing for ${args.from} to ${args.to} on ${args.depart}. Check the airports and date with the group.`;
+          return JSON.stringify({ options: flights.map(flightOption), note: "Each option's bookingUrl opens Google Flights with a Book button; never say a flight is booked until someone confirms." });
+        } catch (err) {
+          return this.sourceFailure(err, "Google Flights");
+        }
+      }
+
+      case "search_stays": {
+        const args = parseToolArgs("search_stays", rawArgs);
+        if (args.checkin < today() || args.checkout <= args.checkin) return "Check-in must be today or later and before check-out. Ask for the dates.";
+        try {
+          const stays = await searchStays(this.env, args);
+          this.note("info", "source.stays", { where: args.where, checkin: args.checkin, found: stays.length });
+          if (!stays.length) return `Google Hotels showed nothing in ${args.where} for those dates.`;
+          return JSON.stringify({ options: stays.map(stayOption) });
+        } catch (err) {
+          return this.sourceFailure(err, "Google Hotels");
+        }
+      }
+
+      case "find_events": {
+        const args = parseToolArgs("find_events", rawArgs);
+        try {
+          const events = await findEvents(this.env, args);
+          this.note("info", "source.events", { city: args.city, query: args.query ?? "", found: events.length });
+          if (!events.length) return args.query ? `Ticketmaster has no upcoming ${args.query} dates in ${args.city}.` : `Luma lists nothing in ${args.city} for the next month.`;
+          return JSON.stringify({ options: events.map((e) => eventOption(e, cityTz(args.city))) });
+        } catch (err) {
+          return this.sourceFailure(err, args.query ? "Ticketmaster" : "Luma");
+        }
+      }
+
+      case "add_to_itinerary": {
+        const args = parseToolArgs("add_to_itinerary", rawArgs);
+        let item: Omit<ItineraryItem, "id">;
+        if (args.optionId) {
+          const option = this.state.options.find((o) => o.id === args.optionId);
+          if (!option) return "No such option";
+          const kind = args.kind ?? tripKind(option.bookingUrl);
+          if (!kind) return "Say what kind of stop the winner is: flight, stay, event or venue.";
+          item = { kind, title: option.title, subtitle: option.subtitle, url: option.bookingUrl, price: option.subtitle?.match(/(?:CA|US)?\$[\d,]+(?:\.\d\d)?/)?.[0], status: option.bookingUrl ? "handoff" : "confirmed" };
+        } else if (args.item) {
+          item = { ...args.item, status: args.item.url ? "handoff" : "confirmed" };
+        } else {
+          return "Pass the winning optionId (with kind) or an item.";
+        }
+        const added = await this.addItineraryItem(item);
+        if (args.optionId) {
+          this.sql`DELETE FROM votes`;
+          this.publish({ options: [], counts: {}, chosenOptionId: undefined, status: "idle", bookingNote: undefined });
+          this.setMeta("ballot_id", "");
+        }
+        await this.postItinerary();
+        const finish = added.url ? ` Finish it here: ${added.url}` : "";
+        const ask = added.kind === "flight" ? " Tell me the flight number once it's booked and I'll watch it." : added.kind === "stay" || added.kind === "event" ? " Tell me once it's booked and I'll mark it." : "";
+        await this.say(`${ITEM_EMOJI[added.kind]} ${added.title}${added.price ? `, ${added.price}` : ""}.${finish}${ask}`);
+        return `Added ${added.id}. The ticket and the link are posted; the ballot is clear for the next segment. Itinerary: ${this.itineraryContext()}`;
+      }
+
+      case "watch_flight": {
+        const args = parseToolArgs("watch_flight", rawArgs);
+        let item = args.itemId ? this.itinerary().find((i) => i.id === args.itemId) : undefined;
+        if (args.itemId && !item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        if (!item && !args.itemId) {
+          // No itemId given: attach to the one itinerary item this is clearly
+          // about, rather than adding a duplicate flight stop.
+          const unwatched = this.itinerary().filter((i) => i.kind === "flight" && !i.watch);
+          if (unwatched.length === 1) item = unwatched[0];
+        }
+        const wasNew = !item;
+        const previous = item ? { ...item } : undefined;
+        if (!item) item = await this.addItineraryItem({ kind: "flight", title: args.ident.toUpperCase(), status: "watching", watch: { flight: { ident: args.ident, date: args.date } } });
+        else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, status: "watching", note: args.ident.toUpperCase(), watch: { flight: { ident: args.ident, date: args.date } } } : i)));
+        this.sql`INSERT OR REPLACE INTO watches (item_id, snapshot, failures, started, checked) VALUES (${item.id}, NULL, 0, ${Date.now()}, NULL)`;
+        try {
+          const status = await flightStatus(this.env, args.ident);
+          if (!status) {
+            // A bad ident must not leave a permanent watch: undo exactly what
+            // this call did, whether that was a new item or an existing one.
+            this.sql`DELETE FROM watches WHERE item_id = ${item.id}`;
+            if (wasNew) this.saveItinerary(this.itinerary().filter((i) => i.id !== item!.id));
+            else this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...previous! } : i)));
+            return `FlightAware has no ${args.ident.toUpperCase()}. Check the flight number with them.`;
+          }
+          this.sql`UPDATE watches SET snapshot = ${JSON.stringify(status)}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
+          const line = describeFlight(status);
+          this.saveItinerary(this.itinerary().map((i) => (i.id === item!.id ? { ...i, lastUpdate: line.replace(/^\S+ /, "") } : i)));
+          await this.scheduleWatches();
+          return `${line}. Watching it: changes are posted on their own, so say this once and stop.`;
+        } catch (err) {
+          await this.scheduleWatches();
+          return this.sourceFailure(err, "FlightAware");
+        }
+      }
+
+      case "confirm_item": {
+        const args = parseToolArgs("confirm_item", rawArgs);
+        const item = this.itinerary().find((i) => i.id === args.itemId);
+        if (!item) return `No itinerary item ${args.itemId}. Itinerary: ${this.itineraryContext()}`;
+        const paidBy = args.paidBy ? this.nameOf(args.paidBy) : undefined;
+        this.saveItinerary(this.itinerary().map((i) => (i.id === item.id ? { ...i, status: i.status === "watching" ? "watching" : "confirmed", note: args.note ?? i.note, price: args.price ?? i.price, paidBy: paidBy ?? i.paidBy } : i)));
+        this.note("info", "itinerary.confirmed", { id: item.id, paid: Boolean(args.price && paidBy) });
+        let expense = "";
+        if (args.price && paidBy) {
+          expense = await this.runTool("add_expense", JSON.stringify({ who: args.paidBy, amount: args.price, what: item.title.slice(0, 60) }));
+        }
+        await this.postItinerary();
+        return `${item.id} confirmed.${expense ? ` ${expense}` : ""} Itinerary: ${this.itineraryContext()}`;
+      }
+
       case "check_availability": {
         const args = parseToolArgs("check_availability", rawArgs);
         const checks = [
@@ -1818,10 +2258,27 @@ this.rememberCardId(id);
         if (args.optionId && !onBallot) return "No such option";
         if (!onBallot && !args.venue) return "Say what to book: an optionId from the ballot, or a venue from the Research findings.";
         const option: { id?: string; title: string; bookingUrl?: string } = onBallot ?? { title: args.venue!.title, bookingUrl: args.venue!.bookingUrl };
+
+        // A flight, stay or event never goes through the pilot — a haiku
+        // model that has just been told "book it" will otherwise ask for a
+        // name and email nobody needs to give it. Send it to add_to_itinerary
+        // instead of driving a browser.
+        const kind = tripKind(option.bookingUrl);
+        if (kind) {
+          this.note("info", "booking.redirected", { kind });
+          return onBallot
+            ? this.runTool("add_to_itinerary", JSON.stringify({ optionId: args.optionId, kind }))
+            : this.runTool("add_to_itinerary", JSON.stringify({ item: { kind, title: option.title, url: option.bookingUrl } }));
+        }
+
         if (onBallot && (this.state.status === "booking" || this.state.status === "booked" || this.state.status === "handoff")) {
           return `Already ${this.state.status}`;
         }
         if (this.getMeta("booking_running") === "1") return "A booking is already running; one browser at a time. Wait for it to finish.";
+
+        // A restaurant or venue reservation genuinely needs a name and email —
+        // ask rather than invent either.
+        if (!args.contactName || !args.contactEmail) return "Ask who is booking and for their email; never make either up.";
 
         // Validate before touching state: a refused call must leave the plan as it was.
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {
@@ -2141,6 +2598,40 @@ this.rememberCardId(id);
         return "Asked them privately. Tell the asker, in one or two short lines: you have asked, and a group chat with the two of them opens the moment the other person says yes. Do not promise a yes.";
       }
 
+      case "add_song": {
+        const { title, artist, who } = parseToolArgs("add_song", rawArgs);
+        const found = await searchTrack(title, artist);
+        if (!found) return `iTunes has nothing for "${title}"${artist ? ` by ${artist}` : ""}. Ask for another spelling or a different song.`;
+        const playlist = [...(this.state.playlist ?? [])];
+        const key = (t: { title: string; artist: string }) => `${t.title}|${t.artist}`.toLowerCase();
+        if (playlist.some((t) => key(t) === key(found))) return `${found.title} — ${found.artist} is already on the playlist (${playlist.length} tracks).`;
+        playlist.push({ ...found, addedBy: who });
+        this.publish({ playlist });
+        this.note("info", "playlist.added", { title: found.title, artist: found.artist, tracks: playlist.length });
+        await this.syncMusicCard();
+        return `Added ${found.title} — ${found.artist}${found.previewUrl ? "" : " (no preview clip for this one)"}. Playlist has ${playlist.length} track${playlist.length === 1 ? "" : "s"}; its card in the thread updated itself. Do not list the songs in text.`;
+      }
+
+      case "make_game": {
+        const { topic } = parseToolArgs("make_game", rawArgs);
+        try {
+          const made = await this.gameCreate(topic, "agent");
+          return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
+        } catch (err) {
+          this.note("warn", "game.generate_failed", errorFields(err));
+          return "The game generator came up empty. Say so and offer to try a different topic.";
+        }
+      }
+
+      case "show_playlist": {
+        const playlist = this.state.playlist ?? [];
+        if (!playlist.length) return "The playlist is empty. Ask the group for songs.";
+        // A fresh card, not an update: "show me" means put it back in view.
+        const id = await timed("agent", "playlist.card", { tracks: playlist.length }, () => sendMusicCard(this.env, this.name, this.name, playlist.length), this.note).catch(() => undefined);
+        if (id) this.setMeta("music_card_id", id);
+        return `Playlist card posted (${playlist.length} tracks). Do not also list the songs in text.`;
+      }
+
       case "answer_intro": {
         const { answer } = parseToolArgs("answer_intro", rawArgs);
         const id = this.getMeta("pending_intro");
@@ -2319,6 +2810,7 @@ this.rememberCardId(id);
   /** Called over RPC by ResearchWorkflow when it finishes, either way. */
   async researchFinished(report: ResearchReport) {
     this.setMeta("research_started", "0");
+    this.setMeta("research_failed", report.ok ? "0" : "1");
     this.note(report.ok ? "info" : "warn", "research.finished", {
       ok: report.ok,
       candidates: report.candidates.length,
@@ -2360,6 +2852,9 @@ this.rememberCardId(id);
           })),
         })
       : `failed: ${report.detail}`;
+    // An old failure says nothing about the next run: left standing as "failed: <cause>",
+    // it reads as "research is broken" and the model stops calling it at all.
+    if (row.delivered && !report.ok) return { text: "none. The last run failed and the group was told. That is over: call research again for any new request that needs real places." };
     if (row.delivered) return { text: `earlier findings, already shared with the group: ${body}` };
     return {
       deliveredId: row.id,
@@ -2564,6 +3059,9 @@ this.rememberCardId(id);
         bookingNote: result.ok ? result.confirmation : result.detail,
       });
       await this.syncCard();
+      if (result.ok || handedOff) {
+        await this.addItineraryItem({ kind: "venue", title: name, status: result.ok ? "confirmed" : "handoff", note: result.ok ? result.confirmation : undefined, url: option?.bookingUrl });
+      }
       if (result.ok) await this.planTicketIfNew();
     }
 

@@ -47,6 +47,8 @@ export type PayResult = {
   status: "paid" | "dry_run" | "over_cap" | "needs_connection" | "not_approved" | "no_card_form" | "failed";
   total?: string;
   confirmation?: string;
+  /** The store's order status page, which later says when it ships. */
+  orderUrl?: string;
   detail?: string;
   /** Pay was pressed but the store never confirmed: it may or may not have charged. */
   unsure?: boolean;
@@ -187,7 +189,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         this.live.payProgress("submitted", { shop: params.shop, total: priced.line }),
       );
       paymentId = undefined; // spent: nothing to cancel
-      return { ...base, status: "paid", total: priced.line, confirmation: done.confirmation, shotId: await shoot() };
+      return { ...base, status: "paid", total: priced.line, confirmation: done.confirmation, orderUrl: done.url, shotId: await shoot() };
     } catch (err) {
       log("warn", "pay", "failed", errorFields(err));
       // The store may have taken the order even though the page never said so.

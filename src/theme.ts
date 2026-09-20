@@ -28,9 +28,13 @@ export const PALETTE = {
 export const TICKET_CSS = `
 .tk-page{
   --ground:${PALETTE.paper}; --ink:${PALETTE.ink}; --soft:rgba(36,31,23,.62); --rule:rgba(36,31,23,.34); --paper2:rgba(36,31,23,.055);
-  box-sizing:border-box; min-height:100vh; min-height:100dvh; margin:0; padding:30px 22px 72px;
+  box-sizing:border-box; min-height:100vh; min-height:100dvh; margin:0; 
+  /* Fluid: the same page serves Safari (~520px column) and the iMessage bubble
+     (~340px), so spacing and type scale with viewport width instead of assuming
+     the wide case. At >=520px every clamp hits its ceiling = the old values. */
+  padding:clamp(16px,5vw,30px) clamp(14px,4vw,22px) clamp(32px,12vw,72px);
   background:var(--ground); color:var(--ink);
-  font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-size:15px; line-height:1.5;
+  font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-size:clamp(13px,4vw,15px); line-height:1.5;
   -webkit-text-size-adjust:100%;
 }
 .tk-page.is-done{ --ground:${PALETTE.green}; --ink:${PALETTE.greenInk}; --soft:rgba(240,236,226,.68); --rule:rgba(240,236,226,.36); --paper2:rgba(240,236,226,.08); }
@@ -38,7 +42,7 @@ export const TICKET_CSS = `
 .tk-wrap{ max-width:520px; margin:0 auto; }
 
 .tk-meta{ font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--soft); }
-.tk-title{ font-family:"Archivo",system-ui,sans-serif; font-weight:800; font-size:38px; line-height:1; letter-spacing:-.02em; margin:10px 0 0; text-wrap:balance; overflow-wrap:anywhere; }
+.tk-title{ font-family:"Archivo",system-ui,sans-serif; font-weight:800; font-size:clamp(23px,7.5vw,38px); line-height:1; letter-spacing:-.02em; margin:10px 0 0; text-wrap:balance; overflow-wrap:anywhere; }
 .tk-lede{ margin:14px 0 0; max-width:34em; }
 .tk-soft{ color:var(--soft); }
 .tk-perf{ border:0; border-top:2px dotted var(--rule); margin:24px 0; }
@@ -47,7 +51,7 @@ export const TICKET_CSS = `
 .tk-head{ display:flex; align-items:stretch; gap:18px; }
 .tk-head > div:first-child{ flex:1; min-width:0; }
 .tk-stub{ display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:74px; padding-left:18px; border-left:2px dotted var(--rule); text-align:center; }
-.tk-stub b{ font-family:"Archivo",system-ui,sans-serif; font-weight:800; font-size:34px; line-height:1; font-variant-numeric:tabular-nums; }
+.tk-stub b{ font-family:"Archivo",system-ui,sans-serif; font-weight:800; font-size:clamp(22px,7vw,34px); line-height:1; font-variant-numeric:tabular-nums; }
 .tk-stub span{ margin-top:6px; }
 
 /* Rows are lines of type, as on the card image: no borders, no fills. */
@@ -94,4 +98,19 @@ button.tk-row:disabled{ cursor:default; }
 .tk-wait{ animation:tkWait 1.6s ease-in-out infinite; }
 @keyframes tkWait{ 0%,100%{ opacity:1 } 50%{ opacity:.35 } }
 @media (prefers-reduced-motion: reduce){ .tk-wait{ animation:none; } }
+
+/* In-bubble fit: the same URL is loaded by the Messages extension, whose
+   compact drawer strip shows ~300px of height. Everything shrinks in step so
+   the title, status and first option rows land inside the strip; Safari and
+   the expanded sheet are untouched above this height. */
+@media (max-height: 420px){
+  .tk-page{ padding:14px 16px 28px; }
+  .tk-title{ font-size:25px; }
+  .tk-perf{ margin:12px 0; }
+  .tk-rows .tk-row{ padding:6px 0; font-size:15px; }
+  .tk-row .tk-sub{ font-size:12px; }
+  .tk-stub{ min-width:58px; padding-left:12px; }
+  .tk-stub b{ font-size:25px; }
+  .tk-action{ margin-top:10px; padding:12px 14px; }
+}
 `;
