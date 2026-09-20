@@ -280,6 +280,7 @@ struct TriviaGameView: View {
                             if g.isProcedural { proceduralReveal(g) }
                             else if g.kind == "blackjack" { bjReveal(g) } else { reveal(g) }
                         default:
+                            winnerHero(g)
                             if g.isProcedural { proceduralDone(g) } else { scoreboard(g, final: true) }
                         }
                     }
@@ -298,7 +299,9 @@ struct TriviaGameView: View {
 
     @ViewBuilder
     private func lobby(_ g: GameView_) -> some View {
-        Text("\(g.totalRounds) questions. Everyone answers on their own phone.")
+        Text(g.kind == "blackjack"
+             ? "\(g.totalRounds) hands. Hit or stand against the dealer — most chips at the end wins."
+             : "\(g.totalRounds) questions. Everyone answers on their own phone — most right answers wins.")
             .font(.subheadline).foregroundStyle(.secondary)
         if !g.players.isEmpty {
             ForEach(g.players, id: \.name) { p in
@@ -376,12 +379,12 @@ struct TriviaGameView: View {
     @ViewBuilder
     private func proceduralLobby(_ g: GameView_) -> some View {
         if g.surface == "tap_dodge" {
-            Text("A short, original one-thumb run. Tap to stay in the gap.")
+            Text("A short, original one-thumb run. Tap to stay in the gap — best score takes the crown.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Button("Start the run") { store.act("advance", body: [:]) }
                 .buttonStyle(PillButtonStyle())
         } else {
-            Text("\(g.totalRounds) quick rounds. Everyone picks on their own phone.")
+            Text("\(g.totalRounds) quick rounds. Everyone picks on their own phone — right pick scores, most points wins.")
                 .font(.subheadline).foregroundStyle(.secondary)
             if !g.players.isEmpty {
                 ForEach(g.players, id: \.name) { p in
@@ -532,6 +535,35 @@ struct TriviaGameView: View {
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
+    /// The finish line: crown, champion, score — the sheet's own confetti beat.
+    @ViewBuilder
+    private func winnerHero(_ g: GameView_) -> some View {
+        if let top = g.players.max(by: { $0.score < $1.score }) {
+            let champs = g.players.filter { $0.score == top.score }
+            let unit = g.kind == "blackjack" ? "chips" : "points"
+            VStack(spacing: 6) {
+                Text("👑").font(.system(size: 44))
+                Text(champs.count == 1 ? "\(top.name) takes it" : champs.map(\.name).joined(separator: " & ") + " tie it")
+                    .font(.system(.title2, design: .rounded).weight(.heavy))
+                    .multilineTextAlignment(.center)
+                Text("\(top.score) \(unit)")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Whim.coral.opacity(0.10))
+                    Text("✳︎").font(.system(size: 90, weight: .heavy))
+                        .foregroundStyle(Whim.coral.opacity(0.12))
+                        .rotationEffect(.degrees(18))
+                        .offset(x: 110, y: 18)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            )
+        }
+    }
+
     @ViewBuilder
     private func proceduralDone(_ g: GameView_) -> some View {
         if g.surface == "tap_dodge", let result = g.tapDodge?.result {
@@ -617,7 +649,43 @@ struct TriviaGameView: View {
 
     // MARK: blackjack
 
+    /// The kerenel pixel deck bundled from public/: ♥ 01–13, ♠ 15–27, ♦ 29–41,
+    /// ♣ 43–55, red back 28. Nil for anything unmapped, so the text tile stays
+    /// the fallback.
+    private func deckImage(_ card: String) -> UIImage? {
+        let number: Int
+        if card == "??" {
+            number = 28
+        } else {
+            let order = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+            let bases: [String: Int] = ["♥": 0, "♠": 14, "♦": 28, "♣": 42]
+            guard let base = bases[String(card.suffix(1))],
+                  let idx = order.firstIndex(of: String(card.dropLast())) else { return nil }
+            number = base + idx + 1
+        }
+        guard let url = Bundle.main.url(forResource: String(format: "%02d_kerenel_Cards", number),
+                                        withExtension: "png",
+                                        subdirectory: "kerenel_Cards_seperated") else { return nil }
+        return UIImage(contentsOfFile: url.path)
+    }
+
+    @ViewBuilder
     private func playingCard(_ card: String, big: Bool = false) -> some View {
+        if let deck = deckImage(card) {
+            Image(uiImage: deck)
+                .resizable()
+                .interpolation(.none)
+                .scaledToFit()
+                .frame(width: big ? 46 : 38, height: big ? 64 : 54)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.quaternary, lineWidth: 1))
+                .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+        } else {
+            playingCardTile(card, big: big)
+        }
+    }
+
+    private func playingCardTile(_ card: String, big: Bool = false) -> some View {
         let hidden = card == "??"
         let suit = hidden ? "" : String(card.suffix(1))
         let red = suit == "♥" || suit == "♦"

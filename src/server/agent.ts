@@ -1955,10 +1955,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
   async gameAct(id: string, voter: string, act: GameAction) {
     let g = this.loadGame(id);
     if (!g) return null;
+    const wasDone = g.phase === "done";
     if (isProceduralGame(g)) {
       if (!isProceduralAction(act)) throw new Error("That action is unavailable for this game");
       const next = actProceduralGame(g, voter, act);
       this.saveGame(next);
+      if (!wasDone && next.phase === "done") await this.announceGameWinner(next.spec.title, next.players, next.scores);
       return viewProceduralGame(next, voter);
     }
     if (act.type === "join") g = joinGame(g, voter, act.name);
@@ -1969,7 +1971,20 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if ((act.type === "answer" || act.type === "hit" || act.type === "stand") && roundComplete(g)) g = gameAdvance(g);
     if (act.type === "advance") g = gameAdvance(g);
     this.saveGame(g);
+    if (!wasDone && g.phase === "done") await this.announceGameWinner(g.spec.title, g.players, g.scores);
     return gameView(g, voter);
+  }
+
+  /** The finish line lands in the chat: crown, confetti, final score. */
+  private async announceGameWinner(title: string, players: Record<string, string>, scores: Record<string, number>) {
+    const ids = Object.keys(players);
+    if (!ids.length) return;
+    const best = Math.max(...ids.map((id) => scores[id] ?? 0));
+    const winners = ids.filter((id) => (scores[id] ?? 0) === best).map((id) => players[id]);
+    const text = winners.length === 1
+      ? `🏆 ${winners[0]} takes ${title} — ${best} point${best === 1 ? "" : "s"}!`
+      : `🏆 ${winners.join(" and ")} tie ${title} at ${best}!`;
+    await this.say(text, { screenEffect: "confetti" }).catch(() => undefined);
   }
 
   // ------------------------------------------------------------- agent turn

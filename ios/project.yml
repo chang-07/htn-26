@@ -48,6 +48,9 @@ targets:
           - "MessagesViewController.swift"
           - "Fonts"
           - "Assets.xcassets"
+      - path: ../public/images/kerenel_Cards_seperated
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lukalavric.plan.previews
@@ -58,7 +61,12 @@ targets:
   PlanMessages:
     type: app-extension.messages
     platform: iOS
-    sources: [MessagesExtension]
+    sources:
+      - MessagesExtension
+      # The kerenel pixel deck: shared with the website from public/.
+      - path: ../public/images/kerenel_Cards_seperated
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lukalavric.plan.MessagesExtension

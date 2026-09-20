@@ -62,7 +62,9 @@ struct TicketView: View {
 
     private func header(_ plan: PlanState, votes: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            WhimHeader(context: "Plan", chipText: statusLabel, chipTint: statusTint)
+            // No context label: the Messages chrome overlaps the sheet's top
+            // left, so the word there just gets covered by the app logo.
+            WhimHeader(context: "", chipText: statusLabel, chipTint: statusTint)
             Text(plan.title.isEmpty ? "No plan yet" : plan.title)
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundStyle(.primary)
