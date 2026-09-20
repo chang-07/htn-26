@@ -72,6 +72,9 @@ export async function searchSources(env: SourceEnv, query: string, limit = 8): P
 export const JEV_BATCH_SIZE = 16;
 const JEV_CONCURRENCY = 2;
 
+/** Without the key research still runs: the LLM picks sources and options go unscored. */
+export const hasJev = (env: SourceEnv) => !!env.AI_GATEWAY_API_KEY?.trim();
+
 export function requireJev(env: SourceEnv) {
   if (!env.AI_GATEWAY_API_KEY?.trim()) throw new Error("AI_GATEWAY_API_KEY is required for Jev scoring; research cannot use unscored results");
   if (env.JEV_MODEL && env.JEV_MODEL !== "typesafe-ai/jev") throw new Error("Research scoring requires typesafe-ai/jev");
