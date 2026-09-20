@@ -64,12 +64,12 @@ html, body { margin:0; background:var(--ground); }
 /* The rail: sessions torn apart by perforations, runs as rows beneath. */
 .rv-session { display:flex; align-items:center; gap:10px; width:100%; margin:0; padding:12px 18px 10px; background:none; border:0; border-radius:0; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
 .rv-session:hover { background:var(--paper2); }
-.rv-run { display:block; width:calc(100% - 16px); margin:1px 8px; border-radius:6px; padding:7px 10px 8px 26px; background:none; border:0; border-radius:0; border-left:3px solid transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.rv-run { display:block; width:calc(100% - 16px); margin:1px 8px; border-radius:6px; padding:7px 10px 8px 26px; background:none; border:0; border-radius:0; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
 .rv-run:hover { background:var(--paper2); }
 .rv-run.is-selected { background:var(--paper3); }
 
 /* The tape: one row per step. The service mark is the margin. */
-.rv-row { display:grid; grid-template-columns:58px 14px minmax(0,1fr); column-gap:12px; align-items:baseline; width:100%; border-radius:6px; margin:0; padding:9px 0 9px 4px; background:none; border:0; border-radius:0; border-left:3px solid transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.rv-row { display:grid; grid-template-columns:58px 14px minmax(0,1fr); column-gap:12px; align-items:baseline; width:100%; border-radius:6px; margin:0; padding:9px 0 9px 4px; background:none; border:0; border-radius:0; color:inherit; font:inherit; text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent; }
 .rv-row:hover { background:var(--paper2); }
 .rv-row.is-selected { background:var(--paper3); }
 .rv-row.is-static, .rv-row.is-static:hover { cursor:default; background:none; }
@@ -88,7 +88,7 @@ html, body { margin:0; background:var(--ground); }
 
 /* What a step produced, printed under its row at a reading width. */
 .rv-media { grid-column:3; margin:6px 0 4px; max-width:560px; }
-.rv-quote { margin:0; padding:8px 12px; max-width:64ch; border-left:2px solid var(--hair); font-family:var(--sans); font-size:13.5px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.rv-quote { margin:0; padding:8px 12px; max-width:64ch; font-family:var(--sans); font-size:13.5px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
 .rv-quote.is-thinking { color:var(--soft); }
 .rv-frame { display:block; width:100%; overflow:hidden; border-radius:6px; border:1px solid var(--hair); background:var(--paper2); }
 .rv-frame img, .rv-frame iframe { display:block; width:100%; border:0; }
@@ -121,8 +121,7 @@ html, body { margin:0; background:var(--ground); }
 .rv-bar:hover { box-shadow:inset 0 0 0 1px var(--rule); }
 
 /* What was said, either way, on the overview. */
-.rv-say { display:block; width:100%; margin:0 0 6px; padding:9px 12px; background:var(--paper2); border:0; border-left:2px solid var(--s-chat); border-radius:0; color:inherit; font-family:var(--sans); font-size:13.5px; line-height:1.5; text-align:left; white-space:pre-wrap; overflow-wrap:anywhere; cursor:pointer; }
-.rv-say.is-out { border-left-color:var(--ink); }
+.rv-say { display:block; width:100%; margin:0 0 6px; padding:9px 12px; background:var(--paper2); border:0; border-radius:0; color:inherit; font-family:var(--sans); font-size:13.5px; line-height:1.5; text-align:left; white-space:pre-wrap; overflow-wrap:anywhere; cursor:pointer; }
 .rv-say:hover { background:var(--paper3); }
 
 .rv-clamp2 { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }

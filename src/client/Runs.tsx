@@ -1,3 +1,4 @@
+import { groupIntoSessions, sessionSummary, sessionEvents, type RunSession } from "../shared/run-sessions";
 import { RunOverview } from "./RunOverview";
 import { runStatus, type RunFilter } from "../shared/run-status";
 import "./runs-overview.css";
@@ -8,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { RunEventRow, RunSummary } from "../server/runs";
 import { RunTape, StepDetail, toNodes, type TapeEvent } from "./RunTape";
-import { FONT_LINK, SERVICES, THEME_CSS, clock, dur, levelColor, servicesForTools } from "./ui";
+import { FONT_LINK, THEME_CSS, clock, dur } from "./ui";
 
 /**
  * Live view of what the agent is doing, across every chat.
@@ -63,12 +64,12 @@ export function Runs() {
     }
     return "light";
   });
-  const [showBackground, setShowBackground] = useState(false);
   // ?step=<seq> opens that step's panel, so one step of a run can be linked to.
-  const [picked, setPicked] = useState<number | null>(() => {
-    const step = Number(new URLSearchParams(window.location.search).get("step") ?? NaN);
-    return Number.isInteger(step) ? step : null;
-  });
+  const [picked, setPicked] = useState<number | null>(null);
+  const initialStep = useRef(new URLSearchParams(window.location.search).get("step"));
+  const eventIds = useRef(new Map<string, number>());
+  const [detailProblem, setDetailProblem] = useState(false);
+
   // On a phone the rail and the tape take turns; this is which one is up.
   const [railOpen, setRailOpen] = useState(false);
   const wide = useMedia("(min-width: 1180px)");
@@ -104,6 +105,7 @@ export function Runs() {
   const select = useCallback((runId: string, push = true) => {
     setSelected(runId);
     setPicked(null);
+    initialStep.current = null;
     setRailOpen(false);
     window.history[push ? "pushState" : "replaceState"]({}, "", `/runs/${runId}`);
   }, []);
@@ -201,24 +203,6 @@ export function Runs() {
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [chat, tokenParam]);
 
-  // A run picked from the list has its events in D1, not in memory.
-  useEffect(() => {
-    if (!selected) return;
-    const controller = new AbortController();
-    const refresh = () => fetch(`/api/runs/${selected}?${tokenParam.slice(1)}`, { signal: controller.signal })
-      .then((r) => (r.ok ? (r.json() as Promise<{ run: RunSummary; events: TapeEvent[] }>) : null))
-      .then((d) => {
-        if (!d) return;
-        setEvents((prev) => ({ ...prev, [selected]: [...new Map([...(prev[selected] ?? []), ...d.events].map((e) => [e.seq, e])).values()].sort((a, b) => a.seq - b.seq) }));
-        setLinked((prev) => mergeRunState(prev?.runId === d.run.runId ? prev : undefined, d.run));
-        upsert(d.run);
-      })
-      .catch(() => {});
-    void refresh();
-    const timer = window.setInterval(refresh, 15_000);
-    return () => { controller.abort(); window.clearInterval(timer); };
-  }, [selected, tokenParam, upsert]);
-
   // Landing on bare /runs with an empty pane is a dead end; open the newest.
   useEffect(() => {
     if (!selected && runs.length) select(runs[0].runId, false);
@@ -226,37 +210,58 @@ export function Runs() {
 
   const chats = useMemo(() => [...new Set(runs.map((r) => r.chat))], [runs]);
   const shown = chat ? runs.filter((r) => r.chat === chat) : runs;
-  const filtered = shown.filter(run => statusFilter === "all" || runStatus(run).key === statusFilter);
-  const sessions = useMemo(
-    () =>
-      groupIntoSessions(filtered)
-        .map((sess) => ({ ...sess, visible: showBackground || statusFilter !== "all" ? sess.runs : sess.runs.filter((r) => !isBackground(r)) }))
-        // A session of nothing but background work — an e2e script, a dev tool
-        // call — has no turn to look at, so it stays out of the way.
-        .filter((sess) => sess.visible.length),
-    [shown, showBackground, statusFilter],
-  );
+  const allSessions = useMemo(() => groupIntoSessions(shown), [shown]);
+  const sessions = allSessions.filter(session => statusFilter === "all" || runStatus(sessionSummary(session)).key === statusFilter);
+  const selectedRun = runs.find(run => run.runId === selected) ?? (linked?.runId === selected ? linked : undefined);
+  const selectedSession = groupIntoSessions(selectedRun && !runs.some(run => run.runId === selectedRun.runId) ? [...runs, selectedRun] : runs)
+    .find(session => session.runs.some(run => run.runId === selected));
+  const detail = selectedSession ? sessionSummary(selectedSession) : undefined;
+  const memberIds = JSON.stringify(selectedSession?.runs.map(run => run.runId).sort() ?? (selected ? [selected] : []));
 
-  // A session opens when it holds the selected run, or when anything in it is
-  // still going — the two cases where its turns are worth seeing.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const isOpen = (sess: Session) =>
-    collapsed[sess.id] === undefined
-      ? statusFilter !== "all" || sess.runs.some((r) => r.runId === selected || r.ended === null)
-      : !collapsed[sess.id];
-
-  const detail = selected
-    ? (runs.find((r) => r.runId === selected) ?? (linked?.runId === selected ? linked : undefined))
-    : undefined;
-
-  // Selecting a hidden run — from a link, or from following a live one — has to
-  // reveal it rather than leave the rail looking like it does not exist.
+  // Load every turn in the selected conversation. Live events still merge by
+  // their original run ID and sequence number, so reconnects cannot duplicate them.
   useEffect(() => {
-    if (!showBackground && detail && isBackground(detail)) setShowBackground(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the selection changes
-  }, [selected]);
+    const ids = JSON.parse(memberIds) as string[];
+    if (!ids.length) return;
+    const controller = new AbortController();
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      let failed = false;
+      for (let i = 0; i < ids.length && !controller.signal.aborted; i += 4) {
+        await Promise.all(ids.slice(i, i + 4).map(async id => {
+          try {
+            const response = await fetch(`/api/runs/${encodeURIComponent(id)}?${tokenParam.slice(1)}`, { signal: controller.signal });
+            if (!response.ok) throw new Error('Could not load turn');
+            const data = await response.json() as { run: RunSummary; events: TapeEvent[] };
+            if (controller.signal.aborted) return;
+            setEvents(prev => ({ ...prev, [id]: [...new Map([...(prev[id] ?? []), ...data.events].map(event => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq) }));
+            if (id === selected) setLinked(prev => mergeRunState(prev?.runId === id ? prev : undefined, data.run));
+            upsert(data.run);
+          } catch { failed = true; }
+        }));
+      }
+      if (!controller.signal.aborted) setDetailProblem(failed);
+      refreshing = false;
+    };
+    setDetailProblem(false);
+    void refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [memberIds, selected, tokenParam, upsert]);
 
-  const nodes = useMemo(() => toNodes(detail ? (events[detail.runId] ?? []) : []), [detail, events]);
+  const combinedEvents = selectedSession ? sessionEvents(selectedSession, events).map(event => {
+    const key = `${event.sourceRunId}:${event.sourceSeq}`;
+    if (!eventIds.current.has(key)) eventIds.current.set(key, eventIds.current.size + 1);
+    return { ...event, seq: eventIds.current.get(key)! };
+  }) : [];
+  const nodes = toNodes(combinedEvents);
+  useEffect(() => {
+    if (initialStep.current === null) return;
+    const event = combinedEvents.find(event => event.sourceRunId === selected && event.sourceSeq === Number(initialStep.current));
+    if (event) { setPicked(event.seq); initialStep.current = null; }
+  }, [combinedEvents, selected]);
   const pickedNode = picked === null ? null : (nodes.find((n) => n.seq === picked) ?? null);
   const t0 = nodes[0]?.ts ?? detail?.started ?? 0;
 
@@ -300,9 +305,9 @@ export function Runs() {
                 {`Failed to load runs: ${problem}`}
               </p>
             ) : null}
-            <p style={{ fontSize: 11, color: "var(--soft)", margin: "14px 0 0" }}>Recent activity · counts reflect loaded runs</p>
+            <p style={{ fontSize: 11, color: "var(--soft)", margin: "14px 0 0" }}>Conversations · grouped across turns</p>
             <div className="rv-filter-grid" aria-label="Filter runs by status">
-              {([['all', 'All runs'], ['active', 'In progress'], ['attention', 'Needs attention'], ['finished', 'Finished']] as const).map(([key, label]) => <button key={key} aria-pressed={statusFilter === key} onClick={() => { setStatusFilter(key); setFollow(false); }}><span>{label}</span><b>{shown.filter(run => key === 'all' || runStatus(run).key === key).length}</b></button>)}
+              {([['all', 'All conversations'], ['active', 'In progress'], ['attention', 'Needs attention'], ['finished', 'Finished']] as const).map(([key, label]) => <button key={key} aria-pressed={statusFilter === key} onClick={() => { setStatusFilter(key); setFollow(false); }}><span>{label}</span><b>{allSessions.filter(session => key === 'all' || runStatus(sessionSummary(session)).key === key).length}</b></button>)}
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
               <span className="rv-select">
@@ -318,14 +323,6 @@ export function Runs() {
               <button className={`rv-btn${follow ? " is-on" : ""}`} onClick={() => { if (!follow) setStatusFilter("all"); setFollow((f) => !f); }} aria-pressed={follow} title="Open each new run as it starts">
                 {follow ? "Auto-follow on" : "Auto-follow off"}
               </button>
-              <button
-                className={`rv-btn${showBackground ? " is-on" : ""}`}
-                onClick={() => setShowBackground((b) => !b)}
-                aria-pressed={showBackground}
-                title="Work that happened outside a model turn: workflow callbacks, browser steps, form submissions, dev tool calls."
-              >
-                Background activity
-              </button>
               <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Print every step's fields on the tape">
                 Technical fields
               </button>
@@ -334,22 +331,10 @@ export function Runs() {
               </button>
             </div>
           </header>
-          {sessions.map((sess) => (
-            <div key={sess.id} style={{ borderTop: "1px solid var(--hair)" }}>
-              <SessionHeader
-                session={sess}
-                open={isOpen(sess)}
-                onToggle={() => setCollapsed((c) => ({ ...c, [sess.id]: isOpen(sess) }))}
-              />
-              {isOpen(sess) &&
-                sess.visible.map((r) => (
-                  <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => { setFollow(false); select(r.runId); }} />
-                ))}
-            </div>
-          ))}
+          {sessions.map(session => <SessionRow key={session.id} session={session} selected={session.id === selectedSession?.id} onClick={() => { setFollow(false); select(session.runs[0].runId); }} />)}
           {!sessions.length && !problem && (
             <p style={{ color: "var(--soft)", padding: "16px 18px", fontSize: 13.5, borderTop: "1px solid var(--hair)", margin: 0, maxWidth: "36ch" }}>
-              {statusFilter === "all" ? "No runs to show. Try including background activity." : "No runs match this status."}
+              {statusFilter === "all" ? "No conversations to show yet." : "No conversations match this status."}
               {isLocal ? <> Or, in a terminal: <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>POST /api/dev/message</code>.</> : null}
             </p>
           )}
@@ -362,6 +347,8 @@ export function Runs() {
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
+                {detailProblem && <p role="status" style={{ color: "var(--error)", fontSize: 12 }}>Some turns couldn’t load. Showing available activity; retrying automatically.</p>}
+                <p className="rv-conversation-note">{selectedSession?.runs.length} recorded runs in this conversation · turns and background activity share one trace.</p>
                 <RunOverview run={detail} events={nodes} onPick={setPicked} />
                 <details className="rv-trace" key={`trace-${detail.runId}`} open>
                   <summary>Activity trace <span>{nodes.length} events</span></summary>
@@ -388,99 +375,17 @@ export function Runs() {
   );
 }
 
-/** The outcome as one word, for beside a title that no longer says it. */
-const OUTCOME_WORD: Record<string, string> = { timed_out: "timed out", replied: "replied", silent: "no reply", llm_failed: "model error", max_steps: "max steps", background: "background" };
-
-type Session = { id: string; chat: string; runs: RunSummary[]; from: number; to: number };
-type ShownSession = Session & { visible: RunSummary[] };
-
-/**
- * A run with no model turn behind it: a research callback landing between
- * turns, a booking workflow's browser steps, a profile form submission, a dev
- * tool call. Real work — the booking is genuinely happening — but it is part of
- * a session's story rather than a turn of its own, and it costs no tokens. On a
- * busy chat these outnumber the turns, so the rail hides them by default.
- */
-const isBackground = (r: RunSummary) => r.outcome === "background";
-
-/**
- * A turn on its own is rarely the thing you want to look at — one conversation
- * produces a dozen of them. Runs in the same chat are gathered into a session,
- * split wherever the chat went quiet for longer than SESSION_GAP, so the rail
- * lists conversations and the turns sit underneath as sub-runs.
- */
-const SESSION_GAP = 20 * 60 * 1000;
-
-function groupIntoSessions(runs: RunSummary[]): Session[] {
-  const byChat = new Map<string, RunSummary[]>();
-  for (const r of runs) {
-    const list = byChat.get(r.chat) ?? [];
-    list.push(r);
-    byChat.set(r.chat, list);
-  }
-  const out: Session[] = [];
-  for (const [chat, list] of byChat) {
-    // Newest first everywhere else, so walk oldest-first to find the breaks.
-    const asc = [...list].sort((a, b) => a.started - b.started);
-    let current: RunSummary[] = [];
-    const flush = () => {
-      if (!current.length) return;
-      out.push({
-        id: `${chat}:${current[0].started}`,
-        chat,
-        runs: [...current].reverse(),
-        from: current[0].started,
-        to: current[current.length - 1].started,
-      });
-      current = [];
-    };
-    for (const r of asc) {
-      if (current.length && r.started - current[current.length - 1].started > SESSION_GAP) flush();
-      current.push(r);
-    }
-    flush();
-  }
-  return out.sort((a, b) => b.to - a.to);
+function SessionRow({ session, selected, onClick }: { session: RunSession; selected: boolean; onClick: () => void }) {
+  const summary = sessionSummary(session);
+  const label = runLabel(summary);
+  const status = runStatus(summary);
+  const turns = session.runs.filter(run => run.outcome !== "background").length;
+  return <button className={`rv-run rv-conversation${selected ? " is-selected" : ""}`} onClick={onClick} aria-current={selected ? "true" : undefined}>
+    <span className="rv-conversation-title">{label.title}</span>
+    <span className="rv-conversation-meta"><span className={`rv-status is-${status.key}`}>{status.label}</span><span>{turns} turn{turns === 1 ? "" : "s"}</span><time>{clock(session.to)}</time></span>
+    <span className="rv-conversation-chat" title={session.chat}>Chat {session.chat.slice(0, 8)}</span>
+  </button>;
 }
-
-function SessionHeader({ session, open, onToggle }: { session: ShownSession; open: boolean; onToggle: () => void }) {
-  const live = session.runs.filter((r) => r.ended === null).length;
-  const bad = session.runs.filter((r) => r.level === "error").length;
-  const tokens = session.runs.reduce((n, r) => n + (r.tokens ?? 0), 0);
-  const turns = session.runs.filter((r) => !isBackground(r)).length;
-  const background = session.runs.length - turns;
-  const facts = [
-    `${turns} turn${turns === 1 ? "" : "s"}`,
-    background ? `${background} background` : null,
-    tokens ? `${tokens.toLocaleString()} tok` : null,
-    bad ? `${bad} failed` : null,
-  ].filter(Boolean);
-  return (
-    <button className="rv-session" onClick={onToggle} aria-expanded={open}>
-      <span aria-hidden style={{ width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: open ? "6px solid var(--soft)" : 0, borderBottom: open ? 0 : "6px solid var(--soft)", transform: open ? "none" : "rotate(-90deg)", flex: "none" }} />
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span style={{ fontFamily: "var(--sans)", fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-            <span title={session.chat} style={{ fontFamily: "var(--mono)", fontSize: 12.5, fontWeight: 500 }}>{session.chat.slice(0, 8)}</span>
-          </span>
-          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--faint)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{clock(session.to)}</span>
-        </span>
-        <span style={{ display: "flex", gap: 10, marginTop: 3, fontFamily: "var(--mono)", fontSize: 11, color: bad ? "var(--error)" : "var(--soft)", flexWrap: "wrap" }}>
-          {facts.map((f) => <span key={f as string}>{f}</span>)}
-          {live > 0 && (
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ink)", marginLeft: "auto" }}>
-              <i className="rv-live" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--ink)" }} />
-              {live > 1 ? `${live} running` : "running"}
-            </span>
-          )}
-        </span>
-      </span>
-    </button>
-  );
-}
-
-/** What each outcome code means, in a sentence a judge can read from the back of the room. */
-
 
 /** Keep the selected run’s identity and result visible above its activity. */
 function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number; ms: number | null; event: string; fields: Record<string, unknown> }[]; onBack?: () => void }) {
@@ -498,7 +403,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="rv-meta" style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             {onBack && (
-              <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
+              <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All conversations</button>
             )}
             <span className={`rv-status is-${runStatus(run).key}`}>{runStatus(run).label}</span>
             <span title={run.chat} style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{run.chat.slice(0, 8)}</span>
@@ -514,50 +419,13 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
           {run.outcome === "timed_out" && <div role="alert" style={{ color: "var(--error)", margin: "12px 0", fontSize: 13 }}>
             <strong>Run timed out.</strong> {RUN_TIMEOUT_MESSAGE}
             {(run.tools.includes("book_option") || nodes.some((n) => n.event.startsWith("pay."))) && " Check the actual booking or payment status before retrying."}
-            {nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId != null && <p style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
-              Sentry event: {String(nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId)}
-            </p>}
+
           </div>}
 
         </div>
 
       </div>
     </header>
-  );
-}
-
-function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean; onClick: () => void }) {
-  const label = runLabel(run);
-  const running = run.ended === null;
-  const quiet = run.outcome === "silent" || run.outcome === "background";
-  const facts = [
-    running ? "running" : run.outcome && run.outcome !== "replied" ? (OUTCOME_WORD[run.outcome] ?? run.outcome) : null,
-    run.ms !== null ? dur(run.ms) : null,
-    run.tokens ? `${run.tokens.toLocaleString()} tok` : null,
-  ].filter(Boolean) as string[];
-  return (
-    <button className={`rv-run${selected ? " is-selected" : ""}`} onClick={onClick} aria-current={selected ? "true" : undefined}>
-      <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
-        <i
-          className={running ? "rv-live" : undefined}
-          style={{ width: 6, height: 6, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level), flexShrink: 0 }}
-        />
-        <span className="rv-clamp2" title={label.title} style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", fontFamily: "var(--sans)", fontWeight: selected ? 600 : 500, color: quiet && !selected ? "var(--soft)" : undefined }}>
-          {label.title}
-        </span>
-        <span style={{ color: "var(--faint)", fontFamily: "var(--mono)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{clock(run.started)}</span>
-      </span>
-      {label.detail && <span className="rv-clamp2" title={label.detail} style={{ margin: "5px 0 0 14px", fontSize: 11, color: "var(--soft)", textAlign: "left", overflowWrap: "anywhere" }}>{label.detail}</span>}
-      <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", flexWrap: "wrap" }}>
-        <span style={{ display: "flex", gap: 3 }}>
-          {servicesForTools(run.tools).map((s) => (
-            <i key={s} title={SERVICES[s].label} style={{ width: 6, height: 6, borderRadius: "50%", background: `var(${SERVICES[s].v})` }} />
-          ))}
-        </span>
-        <span className={`rv-status is-${runStatus(run).key}`}>{runStatus(run).label}</span>
-        {facts.filter(f => f !== "running" && f !== OUTCOME_WORD[run.outcome ?? ""]).map((f) => <span key={f}>{f}</span>)}
-      </span>
-    </button>
   );
 }
 

@@ -21,9 +21,6 @@
 .rv .rv-current-work>strong { display: block; font-size: 11px; color: var(--soft); margin-bottom: 6px; }
 .rv .rv-current-work button { display: flex; justify-content: space-between; gap: 12px; width: 100%; border: 0; padding: 8px 0; color: var(--ink); background: transparent; text-align: left; font: inherit; cursor: pointer; }
 .rv .rv-current-work button span { flex-shrink: 0; color: var(--soft); }
-.rv .rv-error-link { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 14px; border: 1px solid color-mix(in srgb,var(--error) 35%,var(--hair)); background: color-mix(in srgb,var(--error) 5%,var(--ground)); color: var(--error); border-radius: 8px; padding: 12px; margin-top: 16px; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
-.rv .rv-error-link strong,.rv .rv-error-link>span>span { display: block; overflow-wrap: anywhere; }
-.rv .rv-error-link strong { margin-bottom: 4px; }
 .rv .rv-reply { margin-top: 16px; border-top: 1px solid var(--hair); padding-top: 14px; font-size: 12px; }
 .rv .rv-reply summary,.rv .rv-advanced>summary { cursor: pointer; font-weight: 600; }
 .rv .rv-reply p { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -33,5 +30,35 @@
 .rv .rv-advanced { border-top: 1px solid var(--hair); margin: 24px 0; padding-top: 18px; }
 .rv .rv-advanced>summary { font-size: 13px; }
 .rv .rv-advanced>summary span { display: block; font-size: 11px; font-weight: 400; color: var(--soft); margin: 6px 0 0 16px; }
+.rv .rv-conversation { border-bottom: 1px solid var(--hair); padding: 16px 18px; }
+.rv .rv-conversation-title { display: block; font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.rv .rv-conversation-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--soft); }
+.rv .rv-conversation-meta time { margin-left: auto; }
+.rv .rv-conversation-chat { display: block; margin-top: 8px; font-size: 10px; color: var(--soft); }
+.rv .rv-conversation-note { font-size: 12px; color: var(--soft); line-height: 1.5; margin: 14px 0 0; }
+.rv .rv-sentry { border: 1px solid var(--hair); border-radius: 9px; margin-top: 16px; overflow: hidden; }
+.rv .rv-sentry.has-errors { border-color: color-mix(in srgb,var(--error) 28%,var(--hair)); }
+.rv .rv-sentry>header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 11px 13px; background: var(--paper2); font-size: 12px; }
+.rv .rv-sentry>header>span { font-size: 11px; color: var(--soft); }
+.rv .rv-sentry.has-errors>header>strong { color: var(--error); }
+.rv .rv-sentry-event { padding: 13px; }
+.rv .rv-sentry-event-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
+.rv .rv-sentry-event-heading strong { overflow-wrap: anywhere; }
+.rv .rv-sentry-event-heading time { color: var(--soft); font-size: 11px; flex-shrink: 0; }
+.rv .rv-sentry .rv-sentry-message { font-size: 12px; color: var(--ink); margin-top: 6px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.rv .rv-sentry-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.rv .rv-sentry-actions>span { color: var(--soft); font-size: 10px; }
+.rv .rv-sentry-identifiers { margin-top: 12px; font-size: 11px; color: var(--soft); }
+.rv .rv-sentry summary { cursor: pointer; }
+.rv .rv-sentry-identifiers>div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 10px; }
+.rv .rv-sentry-identifiers code { color: var(--ink); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; user-select: all; }
+.rv .rv-sentry-identifiers>p { margin-top: 10px; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.rv .rv-sentry-more { border-top: 1px solid var(--hair); }
+.rv .rv-sentry-more>summary { padding: 11px 13px; font-size: 12px; font-weight: 500; }
+.rv .rv-sentry-more>div { max-height: 360px; overflow-y: auto; }
+.rv .rv-sentry-more .rv-sentry-event { border-top: 1px solid var(--hair); }
+.rv .rv-sentry .rv-sentry-empty { padding: 11px 13px; font-size: 12px; }
+.rv .rv-sentry-feedback:empty { display: none; }
+.rv .rv-sentry-feedback { display: block; padding: 0 13px 11px; font-size: 11px; color: var(--soft); }
 .rv button:focus-visible,.rv summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 @media(max-width:600px) { .rv .rv-overview { padding: 15px; } .rv .rv-overview-metrics { gap: 8px; } .rv .rv-overview-metrics strong { font-size: 16px; } }
