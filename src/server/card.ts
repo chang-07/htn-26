@@ -101,10 +101,10 @@ export async function renderTicket(t: Ticket): Promise<Response> {
         ${t.metaRight ? meta(t.metaRight) : ""}
       </div>
       ${faces ? `<div style="display:flex;margin-top:26px;">${faces}</div>` : ""}
-      <div style="display:flex;margin-top:${faces ? 20 : 14}px;font-family:'Archivo';font-weight:800;font-size:${titleSize}px;line-height:1;letter-spacing:-2px;">
+      <div style="display:flex;flex:1;"></div>
+      <div style="display:flex;font-family:'Archivo';font-weight:800;font-size:${titleSize}px;line-height:1;letter-spacing:-2px;">
         ${esc(clip(t.title, t.photoUrl ? 26 : 38))}
       </div>
-      <div style="display:flex;flex:1;"></div>
       <div style="display:flex;flex-direction:column;">${rows}</div>
     </div>
     <div style="display:flex;flex-direction:column;width:7px;height:${H}px;margin-top:-12px;opacity:0.32;">${dot.repeat(27)}</div>
