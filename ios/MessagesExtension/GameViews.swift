@@ -151,7 +151,7 @@ struct TriviaGameView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .animation(.snappy(duration: 0.35), value: store.game)
         .onAppear { store.start() }
@@ -167,7 +167,7 @@ struct TriviaGameView: View {
 
     private func gameTint(_ g: GameView_) -> Color {
         switch g.visual?.accent {
-        case "coral": return .orange
+        case "coral": return Whim.coral
         case "violet": return .purple
         case "mint": return Whim.green
         default: return .accentColor
@@ -568,7 +568,7 @@ struct TriviaGameView: View {
         .frame(width: big ? 46 : 38, height: big ? 64 : 54)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hidden ? AnyShapeStyle(Whim.tileGradient) : AnyShapeStyle(Color(uiColor: .systemBackground)))
+                .fill(hidden ? AnyShapeStyle(Whim.tileGradient) : AnyShapeStyle(Whim.panel))
         )
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.quaternary, lineWidth: 1))
         .shadow(color: .black.opacity(0.06), radius: 2, y: 1)

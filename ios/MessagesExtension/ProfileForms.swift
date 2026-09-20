@@ -72,7 +72,7 @@ struct ProfileFormView: View {
                 form
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .task { await load() }
     }
 
@@ -206,7 +206,7 @@ struct ShipFormView: View {
                 form
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .task { await load() }
     }
 

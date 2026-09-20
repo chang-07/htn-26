@@ -31,6 +31,23 @@ test("a typed high-confidence Jev choice becomes an accepted surface", async () 
   assert.deepEqual(route, { status: "accepted", surface: "tap_dodge", confidence: 0.93, decisionVersion: 1 });
 });
 
+test("a named arcade reference is classified as an original-mechanic request", async () => {
+  const route = await classifyGamePrompt(
+    { AI_GATEWAY_API_KEY: "test-key" },
+    "Make a Flappy Bird-style game with paper airplanes",
+    async (_env, state) => {
+      assert.deepEqual(state, {
+        prompt: "Make a Flappy Bird-style game with paper airplanes",
+        intent: "Create an original game. A named game can only describe a broad mechanic, never a clone.",
+        surfaces: ["choice_rounds", "tap_dodge"],
+      });
+      return choiceAnswer("tap_dodge", 0.94);
+    },
+  );
+
+  assert.deepEqual(route, { status: "accepted", surface: "tap_dodge", confidence: 0.94, decisionVersion: 1 });
+});
+
 test("copy-risk and malformed answers never become a playable route", async () => {
   const copied = await classifyGamePrompt(
     { AI_GATEWAY_API_KEY: "test-key" },

@@ -26,7 +26,7 @@ struct CartListView: View {
                 expanded
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .animation(.snappy(duration: 0.35), value: store.plan)
         .onAppear { store.start() }
@@ -152,7 +152,7 @@ struct PlaylistView: View {
                 expanded
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .onAppear { store.start() }
         .onDisappear { store.stop(); player?.pause() }

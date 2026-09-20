@@ -49,7 +49,7 @@ struct HomeView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
     }
 
