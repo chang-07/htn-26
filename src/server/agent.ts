@@ -20,7 +20,7 @@ import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive
 import type { FlightStatus, OrderStatus } from "./sources/types";
 import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
 import type { ShipTo } from "./checkout";
@@ -96,8 +96,8 @@ on a time, book it, and order anything they need.
 - Brainstorm in plain text. Once there are 2-4 concrete options, call
   propose_plan; it posts the card and opens voting. Call it again to redraw the
   same card when options change rather than describing changes in text.
-- People vote by reacting to the card with a tapback; the card shows the live
-  tally. Never ask anyone to reply with a number, and do not comment on
+- People vote by tapping an option on the plan card (a tapback on the card
+  counts too); the card shows the live tally. Never ask anyone to reply with a number, and do not comment on
   individual votes.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
@@ -586,10 +586,6 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return JSON.parse(this.getMeta("plan_photo_ids") ?? "[]");
   }
 
-  private rememberPlanPhoto(id: string) {
-    this.setMeta("plan_photo_ids", JSON.stringify([...this.planPhotoIds().filter((x) => x !== id), id].slice(-10)));
-  }
-
   /** Keeps the playlist card's track count current: first change posts it, later ones redraw it. */
   private async syncMusicCard() {
     const count = (this.state.playlist ?? []).length;
@@ -657,6 +653,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * booking lands — not on every propose_plan, which models call freely.
    */
   private async planTicketIfNew() {
+    // An open ballot is the plan card alone: it is the poll, tapped to vote. A
+    // static "react to vote" ticket beside it was a second, worse ballot.
+    if (this.state.status === "voting") return void this.setMeta("plan_photo_ids", "[]");
     const key = this.state.status === "booked" ? `booked:${this.state.chosenOptionId}` : this.state.options.map((o) => o.title).join("|");
     // The same ballot is not posted twice in a row — but a ballot posted a while
     // ago is far up the thread by now, and re-proposing it means "show me again".
@@ -667,8 +666,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (this.getMeta("plan_ticket_key") !== key) this.setMeta("plan_photo_ids", "[]");
     this.setMeta("plan_ticket_key", key);
     this.setMeta("plan_ticket_at", String(Date.now()));
-    const id = await this.postTicket("plan", planTicket(this.state));
-    if (id && this.state.status === "voting") this.rememberPlanPhoto(id);
+    await this.postTicket("plan", planTicket(this.state));
   }
 
   /**
@@ -2071,7 +2069,6 @@ ${transcript}`,
           bookingNote: undefined,
         });
 
-        // A new set of options is a moment worth a photo; votes are not.
         await this.planTicketIfNew();
         // Edit the card in place while it is still on screen; once it has
         // scrolled away, a quiet edit is invisible, so post a new one.
@@ -2088,9 +2085,6 @@ ${transcript}`,
           );
 this.rememberCardId(id);
           this.setMeta("plan_card_at", String(Date.now()));
-          // Recipients without the extension see a static card with no
-          // affordance, so spell out the tapback convention once.
-          await this.say(`react to vote:\n${tapbackLegend(this.state)}`);
         }
 
         // The nudge is tied to this ballot. Without that, the timer from an
