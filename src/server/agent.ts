@@ -28,7 +28,7 @@ import { isComplete, parseAddress, type Address, type Delivery } from "../delive
 import type { ShipTo } from "./checkout";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
-import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
+import { KNOWN_SHOPS, NotShoppable, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
@@ -183,6 +183,9 @@ on a time, book it, and order anything they need.
   changes after a cart is built, say so and offer to resize it.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
+  shop_search only speaks Shopify UCP. Never call it with Amazon, Walmart,
+  eBay or another marketplace/non-Shopify retailer; use a relevant known store
+  or explain that the item cannot be ordered through Whim.
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
   Pick the store by what it sells, not the first on the list. When a store has
   nothing that fits, search one or two others that could before saying so.
@@ -2652,7 +2655,17 @@ this.rememberCardId(id);
 
       case "shop_search": {
         const { shop, query } = parseToolArgs("shop_search", rawArgs);
-        const found = await searchCatalog(this.env, shop, query);
+        let found;
+        try {
+          found = await searchCatalog(this.env, shop, query);
+        } catch (err) {
+          // A retailer without Shopify's UCP endpoint is an expected capability
+          // miss, not an infrastructure failure. Return it to the model as the
+          // outcome of the search so it can try a supported store or explain
+          // the limitation without painting the run red in diagnostics.
+          if (err instanceof NotShoppable) return err.message;
+          throw err;
+        }
         // Remembered because the cart will not tell us: it names lines by variant.
         for (const p of found) {
           for (const v of p.variants) {

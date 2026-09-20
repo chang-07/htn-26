@@ -1,12 +1,13 @@
 import { ImageResponse, loadGoogleFont } from "workers-og";
 import { ITEM_EMOJI, SLOT_EMOJI, cartsTotal, type CartSummary, type ItineraryItem, type PlanState } from "../types";
 import { fmtMoney, type Invoice } from "../invoice";
+import { PALETTE } from "../theme";
 
 /**
  * Every card the agent posts is the same object: the ticket stub from
  * docs/card-design.md and docs/card-system-mockups.html. Three rules hold the
  * family together — the ground colour is the state (cream = still needs
- * someone, green = settled), the stub counts one thing, and the body is rows.
+ * someone, teal = settled), the stub counts one thing, and the body is rows.
  *
  * Card types are builders that return a Ticket; only renderTicket draws.
  */
@@ -57,10 +58,11 @@ const loadFonts = () =>
 
 export async function renderTicket(t: Ticket): Promise<Response> {
   const done = t.tone === "done";
-  // Whim palette: white card, near-black ink, brand green; done flips green.
-  const ink = done ? "#f4fbf8" : "#1a1c1a";
-  const ground = done ? "#179b6b" : "#ffffff";
-  const accent = done ? "#f4fbf8" : "#179b6b";
+  // The PNG, live widget and forms share one ticket palette. Open is paper;
+  // completion flips the same object to teal instead of introducing a new UI.
+  const ink = done ? PALETTE.tealInk : PALETTE.ink;
+  const ground = done ? PALETTE.teal : PALETTE.paper;
+  const accent = done ? PALETTE.tealInk : PALETTE.pink;
   // Characters that fit one row of the body at 38px mono.
   const room = t.photoUrl ? 24 : 38;
 
@@ -96,13 +98,13 @@ export async function renderTicket(t: Ticket): Promise<Response> {
           const spin = (i - (all.length - 1) / 2) * 10;
           return `
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:170px;height:230px;margin:0 -14px;
-      border-radius:22px;background:#ffffff;border:3px solid ${t.art!.tint};box-shadow:0 10px 24px rgba(0,0,0,0.14);
+      border-radius:22px;background:${PALETTE.paper};border:3px solid ${t.art!.tint};box-shadow:0 10px 24px rgba(40,40,39,0.14);
       transform:rotate(${spin}deg) translateY(${Math.abs(spin) * 1.6}px);color:${t.art!.tint};">
       ${
         tile.disc
           ? `<div style="display:flex;align-items:center;justify-content:center;width:118px;height:118px;border-radius:59px;background:${ink};">
         <div style="display:flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:23px;background:${t.art!.tint};">
-          <div style="display:flex;width:12px;height:12px;border-radius:6px;background:#ffffff;"></div>
+          <div style="display:flex;width:12px;height:12px;border-radius:6px;background:${PALETTE.paper};"></div>
         </div>
       </div>`
           : `<div style="display:flex;font-family:'Archivo';font-weight:800;font-size:92px;line-height:1;">${esc(tile.big ?? "")}</div>`
@@ -123,7 +125,7 @@ export async function renderTicket(t: Ticket): Promise<Response> {
     ${t.photoUrl ? `<img src="${esc(t.photoUrl)}" width="${PHOTO}" height="${H}" style="object-fit:cover;" />` : ""}
     <div style="display:flex;flex-direction:column;flex:1;padding:50px 40px 54px 54px;">
       <div style="display:flex;align-items:center;">
-        <div style="display:flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:14px;background:${done ? "#f4fbf8" : "#179b6b"};color:${done ? "#179b6b" : "#ffffff"};font-family:'Archivo';font-weight:800;font-size:32px;margin-right:20px;">W</div>
+        <div style="display:flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:14px;background:${done ? PALETTE.tealInk : PALETTE.pink};color:${done ? PALETTE.teal : PALETTE.paper};font-family:'Archivo';font-weight:800;font-size:32px;margin-right:20px;">W</div>
         <div style="display:flex;flex:1;">${meta(t.metaLeft)}</div>
         ${t.metaRight ? meta(t.metaRight) : ""}
       </div>
@@ -151,10 +153,10 @@ export async function renderTicket(t: Ticket): Promise<Response> {
  */
 export async function renderAvatar(initial = "P"): Promise<Response> {
   const S = 1024;
-  const dot = `<div style="display:flex;width:14px;height:14px;border-radius:7px;margin-top:22px;background:#1f5f4f;"></div>`;
+  const dot = `<div style="display:flex;width:14px;height:14px;border-radius:7px;margin-top:22px;background:${PALETTE.teal};"></div>`;
   const html = `
-  <div style="display:flex;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:#1f5f4f;">
-    <div style="display:flex;align-items:center;width:600px;height:400px;border-radius:44px;background:#efe7d6;color:#241f17;overflow:hidden;">
+  <div style="display:flex;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:${PALETTE.teal};">
+    <div style="display:flex;align-items:center;width:600px;height:400px;border-radius:44px;background:${PALETTE.paper};color:${PALETTE.ink};overflow:hidden;">
       <div style="display:flex;flex:1;align-items:center;justify-content:center;font-family:'Archivo';font-weight:800;font-size:300px;line-height:1;letter-spacing:-8px;">${esc(initial.slice(0, 1).toUpperCase())}</div>
       <div style="display:flex;flex-direction:column;width:14px;height:400px;margin-top:-10px;opacity:0.55;">${dot.repeat(12)}</div>
       <div style="display:flex;width:130px;"></div>
@@ -178,7 +180,7 @@ export async function renderPlanIcon(emoji: string, venue: string): Promise<Resp
   // Shorter names get bigger type; the longest still fits the circle.
   const size = label.length <= 8 ? 96 : label.length <= 12 ? 78 : 62;
   const html = `
-  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:#1f5f4f;color:#f0ece2;">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:${S}px;height:${S}px;background:${PALETTE.teal};color:${PALETTE.tealInk};">
     <div style="display:flex;font-size:360px;line-height:1;margin-top:-30px;">${emoji}</div>
     <div style="display:flex;margin-top:54px;font-family:'Archivo';font-weight:800;font-size:${size}px;line-height:1;letter-spacing:-2px;text-align:center;">${esc(label)}</div>
     <div style="display:flex;margin-top:30px;font-family:'IBM Plex Mono';font-size:34px;letter-spacing:8px;opacity:0.6;">· BOOKED ·</div>
@@ -224,7 +226,7 @@ export function planTicket(plan: PlanState): Ticket {
   };
 }
 
-/** `people` is the headcount to split across; a paid cart flips the ticket to green. */
+/** `people` is the headcount to split across; a paid cart flips the ticket to teal. */
 export function cartTicket(cart: CartSummary, people = 0, paidBy: string | undefined = cart.paidBy): Ticket {
   const items = cart.lines.reduce((n, l) => n + l.quantity, 0);
   const total = Number(cart.total.replace(/[^0-9.]/g, ""));

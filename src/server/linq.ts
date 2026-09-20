@@ -215,7 +215,7 @@ export const shareContactCard = (env: Env, chatId: string) =>
 // a name or an icon is a group-chat thing — so each is its own quiet call
 // and none can fail the booking that earned it.
 
-/** iOS's animated background; `{ type: "color", variant: "custom", shades: ["#1f5f4f", "#efe7d6"] }` is the ticket's own colours. */
+/** iOS's animated background; a custom treatment should use the brand pink, teal, and cream. */
 const BOOKED_BACKGROUND = { type: "dynamic", style: "aurora" } as const;
 
 export type Dressing = { name: string; iconUrl: string };

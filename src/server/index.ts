@@ -27,6 +27,10 @@ import { flightStatus } from "./sources/flight-status";
 import { orderStatus } from "./sources/order-status";
 import type { FlightStatus } from "./sources/types";
 import { GAME_SURFACES, type GameSurface } from "./game-routing";
+import { ACCENT_PALETTE } from "../theme";
+
+/** Bump when the generated card design changes so R2 cannot serve an old palette forever. */
+const CARD_RENDER_VERSION = 3;
 
 import { PlanAgent as PlanAgentBase } from "./agent";
 export type PlanAgent = PlanAgentBase;
@@ -767,7 +771,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   if (ticketId) {
     // A stored ticket never changes, so its id is the whole cache key — and
     // the plan state is not needed to draw it, so it is not fetched.
-    const key = `${name}/t-${ticketId}.png`;
+    const key = `${name}/v${CARD_RENDER_VERSION}-t-${ticketId}.png`;
     const hit = await bucket?.get(key);
     if (hit) return new Response(hit.body, { headers: pngHeaders });
     const ticket = await agent.getTicket(ticketId);
@@ -788,7 +792,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     const v = await agent.gameFetch(url.searchParams.get("id")!, "");
     if (!v) return new Response("Not found", { status: 404 });
     const g = v as typeof v & { kind?: string; surface?: string; visual?: { accent?: string } };
-    const tint = { coral: "#ff7a59", violet: "#8b5cf6", mint: "#179b6b" }[g.visual?.accent ?? ""] ?? "#179b6b";
+    const tint = { coral: ACCENT_PALETTE.pink, violet: ACCENT_PALETTE.pink, mint: ACCENT_PALETTE.teal }[g.visual?.accent ?? ""] ?? ACCENT_PALETTE.teal;
     const tiles =
       g.kind === "blackjack"
         ? [{ big: "♠️", small: "Ace" }, { big: "♥️", small: "King" }, { big: "♣️", small: "Seven" }]
@@ -816,13 +820,13 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       title: "Group playlist",
       rows: tracks.slice(0, 3).map((t) => ({ lead: "♪", text: t.title, tail: t.artist.slice(0, 14) })),
       stub: { big: String(tracks.length), label: tracks.length === 1 ? "Track" : "Tracks" },
-      art: { tiles: [{ disc: true, small: "33" }, { disc: true, small: "45" }, { disc: true, small: "Mix" }], tint: "#179b6b" },
+      art: { tiles: [{ disc: true, small: "33" }, { disc: true, small: "45" }, { disc: true, small: "Mix" }], tint: ACCENT_PALETTE.teal },
     };
     return cachePng(await renderPng(ticket));
   }
 
   if (icon) {
-    const key = `${name}/icon-${plan.version}.png`;
+    const key = `${name}/v${CARD_RENDER_VERSION}-icon-${plan.version}.png`;
     const hit = await bucket?.get(key);
     if (hit) return new Response(hit.body, { headers: pngHeaders });
     const venue = plan.options.find((o) => o.id === plan.chosenOptionId)?.title ?? plan.title;
@@ -835,7 +839,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   const wanted = url.searchParams.get("shop");
   const carts = url.searchParams.get("kind") === "cart" ? cartsOf(plan) : [];
   const cart = carts.find((c) => wanted && shopKey(c.shop) === shopKey(wanted)) ?? carts[0];
-  const key = `${name}/${cart ? `cart-${shopKey(cart.shop)}-` : ""}${plan.version}.png`;
+  const key = `${name}/v${CARD_RENDER_VERSION}-${cart ? `cart-${shopKey(cart.shop)}-` : ""}${plan.version}.png`;
   const cached = await bucket?.get(key);
   if (cached) return new Response(cached.body, { headers: pngHeaders });
 

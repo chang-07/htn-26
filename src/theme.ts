@@ -8,7 +8,7 @@
  *
  * What it deliberately has none of: boxes around things, rounded corners,
  * shadows, gradients, pill badges. Structure comes from type and space. A
- * finished state (booked, paid, saved) flips the whole page to the green of the
+ * finished state (booked, paid, saved) flips the whole page to the brand teal of the
  * PAID ticket rather than adding a badge, and the viewer's night mode is the
  * ticket turned over: ink for the ground, paper for the type.
  *
@@ -17,17 +17,31 @@
 export const TICKET_FONTS =
   "https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
-/** The three grounds and their inks, named once so the PNG tickets and the pages agree. */
+/** The brand grounds and inks, named once so generated cards and pages agree. */
 export const PALETTE = {
-  paper: "#efe7d6",
-  ink: "#241f17",
-  green: "#1f5f4f",
-  greenInk: "#f0ece2",
+  paper: "#faf9f6",
+  ink: "#282827",
+  teal: "#84efc4",
+  tealInk: "#153c30",
+  pink: "#ff467c",
+  pinkSoft: "#ffd1df",
+  /** Illustration colour only (for example, cactus art), not a UI accent. */
+  cactus: "#1f5f4f",
+} as const;
+
+/** Widget accents are deliberately limited to the site's pink and teal. */
+export const ACCENT_PALETTE = {
+  teal: PALETTE.teal,
+  tealInk: PALETTE.tealInk,
+  tealSoft: "#e6f8ee",
+  pink: PALETTE.pink,
+  pinkSoft: PALETTE.pinkSoft,
+  cactus: PALETTE.cactus,
 } as const;
 
 export const TICKET_CSS = `
 .tk-page{
-  --ground:${PALETTE.paper}; --ink:${PALETTE.ink}; --soft:rgba(36,31,23,.62); --rule:rgba(36,31,23,.34); --paper2:rgba(36,31,23,.055);
+  --ground:${PALETTE.paper}; --ink:${PALETTE.ink}; --soft:rgba(40,40,39,.62); --rule:rgba(40,40,39,.34); --paper2:rgba(40,40,39,.055);
   box-sizing:border-box; min-height:100vh; min-height:100dvh; margin:0; 
   /* Fluid: the same page serves Safari (~520px column) and the iMessage bubble
      (~340px), so spacing and type scale with viewport width instead of assuming
@@ -37,7 +51,7 @@ export const TICKET_CSS = `
   font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-size:clamp(13px,4vw,15px); line-height:1.5;
   -webkit-text-size-adjust:100%;
 }
-.tk-page.is-done{ --ground:${PALETTE.green}; --ink:${PALETTE.greenInk}; --soft:rgba(240,236,226,.68); --rule:rgba(240,236,226,.36); --paper2:rgba(240,236,226,.08); }
+.tk-page.is-done{ --ground:${PALETTE.teal}; --ink:${PALETTE.tealInk}; --soft:rgba(21,60,48,.68); --rule:rgba(21,60,48,.36); --paper2:rgba(21,60,48,.08); }
 .tk-page *{ box-sizing:border-box; }
 .tk-wrap{ max-width:520px; margin:0 auto; }
 

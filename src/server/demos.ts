@@ -1,11 +1,11 @@
-import { TICKET_CSS, TICKET_FONTS } from "../theme";
+import { PALETTE, TICKET_CSS, TICKET_FONTS } from "../theme";
 import { searchTrack } from "./tools/music";
 
 /**
  * /demo — the Linq showcase suite (music, flights, dating, tickets, payments,
  * health), each rebuilt as a page a card can open into. Same ticket language
  * as /w and /p: cream ground, ink, mono, perforations, and a finished state
- * that flips the whole page green. Every page is self-contained HTML; the
+ * that flips the whole page teal. Every page is self-contained HTML; the
  * only server data is the music page's preview list (iTunes, via the same
  * searchTrack the agent uses).
  */
@@ -30,7 +30,7 @@ function page(title: string, body: string, css = "", js = ""): Response {
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light"><title>${title}</title>
 <link rel="stylesheet" href="${TICKET_FONTS}">
-<style>html,body{margin:0;background:#efe7d6;}html.done,body.done{background:#1f5f4f;}${TICKET_CSS}${DEMO_CSS}${css}</style></head>
+<style>html,body{margin:0;background:${PALETTE.paper};}html.done,body.done{background:${PALETTE.teal};}${TICKET_CSS}${DEMO_CSS}${css}</style></head>
 <body><div class="tk-page" id="page"><div class="tk-wrap">${body}</div></div>
 <script>function flip(){document.getElementById("page").classList.add("is-done");document.documentElement.classList.add("done");document.body.classList.add("done");}
 ${js}</script></body></html>`,

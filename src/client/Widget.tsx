@@ -27,8 +27,8 @@ export function useTicketTheme(done: boolean) {
   }, []);
   useEffect(() => {
     // The ground runs edge to edge, including the overscroll area on a phone.
-    document.body.style.background = done ? PALETTE.green : PALETTE.paper;
-    document.documentElement.style.background = done ? PALETTE.green : PALETTE.paper;
+    document.body.style.background = done ? PALETTE.teal : PALETTE.paper;
+    document.documentElement.style.background = done ? PALETTE.teal : PALETTE.paper;
   }, [done]);
 }
 

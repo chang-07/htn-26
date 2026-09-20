@@ -11,6 +11,27 @@ const tools: Record<string, string> = {
 };
 export const toolLabel = (name: string) => tools[name] ?? words(name);
 
+/**
+ * These tools only enqueue a durable workflow. Their `agent.tool` span ends
+ * when that hand-off succeeds, not when the user-facing work is complete.
+ * Calling the span "finished" made a healthy research run look as though it
+ * had ended before the later research events (and follow-up turn) arrived.
+ */
+const backgroundToolEnd: Record<string, { title: string; sub: string }> = {
+  research: {
+    title: 'Research started in background',
+    sub: 'The search is still running; its findings will trigger a follow-up turn.',
+  },
+  check_availability: {
+    title: 'Availability check started in background',
+    sub: 'The check is still running; its result will trigger a follow-up turn.',
+  },
+  book_option: {
+    title: 'Reservation attempt started in background',
+    sub: 'The booking workflow is still running; its result will trigger a follow-up turn.',
+  },
+};
+
 /** Describe the recorded operation, without treating an HTTP success as task success. */
 export function traceLabel(event: Pick<DiagnosticEvent, 'event' | 'fields' | 'level'>): { title: string; sub: string } | undefined {
   const f = event.fields;
@@ -33,6 +54,8 @@ export function traceLabel(event: Pick<DiagnosticEvent, 'event' | 'fields' | 'le
     };
     const pair = titles[operation];
     const action = operation === 'agent.tool' && typeof f.tool === 'string' ? toolLabel(f.tool) : undefined;
+    const background = !started && !failed && operation === 'agent.tool' && typeof f.tool === 'string' ? backgroundToolEnd[f.tool] : undefined;
+    if (background) return background;
     const title = failed ? `${action ?? words(operation || 'Operation')} failed` : action ? `${action} · ${started ? 'started' : 'finished'}` : pair?.[started ? 0 : 1] ?? `${words(operation || 'Operation')} · ${started ? 'started' : 'finished'}`;
     const explanation = failed ? text(f.error) || text(f.errorType) || 'Open this event to inspect the failure.'
       : operation === 'agent.model' ? 'The next decision event shows which action it selected.'
