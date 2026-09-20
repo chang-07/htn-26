@@ -343,6 +343,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (await this.handlePayText(msg)) return;
 
     const wake = this.wakeReason(msg);
+    // Someone asking again is what re-arms research after a failure.
+    if (wake) this.setMeta("research_failed", "0");
     this.note("info", wake ? "message.in" : "message.stored", {
       from: mask(msg.from),
       chars: msg.text.length,
@@ -1984,6 +1986,12 @@ ${transcript}`,
 
       case "research": {
         const args = parseToolArgs("research", rawArgs);
+        // A run that fails at once wakes the model, which would start another,
+        // fail again, and text the chat each time round. One failure, one text.
+        if (this.getMeta("research_failed") === "1") {
+          this.note("warn", "research.retry_blocked", {});
+          return "Research just failed and nobody has asked for anything since. Do not retry. Tell them once, in one line, that the search didn't work and ask what to change.";
+        }
         return this.startResearch(args);
       }
 
@@ -2744,6 +2752,7 @@ this.rememberCardId(id);
   /** Called over RPC by ResearchWorkflow when it finishes, either way. */
   async researchFinished(report: ResearchReport) {
     this.setMeta("research_started", "0");
+    this.setMeta("research_failed", report.ok ? "0" : "1");
     this.note(report.ok ? "info" : "warn", "research.finished", {
       ok: report.ok,
       candidates: report.candidates.length,
@@ -2785,6 +2794,9 @@ this.rememberCardId(id);
           })),
         })
       : `failed: ${report.detail}`;
+    // An old failure says nothing about the next run: left standing as "failed: <cause>",
+    // it reads as "research is broken" and the model stops calling it at all.
+    if (row.delivered && !report.ok) return { text: "none. The last run failed and the group was told. That is over: call research again for any new request that needs real places." };
     if (row.delivered) return { text: `earlier findings, already shared with the group: ${body}` };
     return {
       deliveredId: row.id,
