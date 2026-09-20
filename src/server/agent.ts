@@ -153,6 +153,8 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
   Pick the store by what it sells, not the first on the list. When a store has
   nothing that fits, search one or two others that could before saying so.
+  A list of different things (sunscreen and swim shorts) usually means a
+  different store for each: search each where it is sold, one cart per store.
 - When someone asks for a game ("let's play a game", "make a trivia game about
   X"), call make_game straight away. With no topic named, do not ask for one:
   pick it yourself from what this chat is about (the plan, the city, what
@@ -502,6 +504,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const votes = this.sql<{ voter: string; option_id: string }>`SELECT voter, option_id FROM votes`;
     const people = this.participants();
     const voted = new Set(votes.map((v) => v.voter));
+    // A tap on the card carries no phone number, so it cannot be matched to a
+    // name. Each one still is somebody's vote: it stands for one of the people
+    // not otherwise accounted for, or "everyone has voted" never comes true
+    // for a group that votes on the card.
+    const unvoted = people.filter((p) => !voted.has(p.handle));
+    const taps = votes.filter((v) => v.voter.startsWith("web:")).length;
 
     this.setState({
       ...next,
@@ -510,7 +518,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       ),
       awaiting:
         next.status === "voting"
-          ? people.filter((p) => !voted.has(p.handle)).map((p) => this.label(p.handle, people))
+          ? unvoted.slice(0, Math.max(0, unvoted.length - taps)).map((p) => this.label(p.handle, people))
           : [],
       going: this.splitNames(),
       version: this.state.version + 1,
@@ -3002,7 +3010,10 @@ this.rememberCardId(id);
     this.note("info", "nudge", { awaiting: this.state.awaiting.length });
     // Only name people whose names are known; "…5178" is not how friends talk.
     const waiting = this.state.awaiting;
-    const named = waiting.every((w) => !w.startsWith("…"));
+    // A tap on the card is nobody in particular, so with any of those in, who
+    // exactly is still out is a guess: give the count, not names.
+    const taps = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM votes WHERE voter LIKE 'web:%'`[0]?.n ?? 0;
+    const named = taps === 0 && waiting.every((w) => !w.startsWith("…"));
     await this.say(
       named
         ? `still need a vote from ${waiting.join(", ")}`

@@ -96,6 +96,18 @@ await check("a tapback on the plan card counts as a vote, in that slot", async (
   const v = votes.find((x) => x.voter === "+15550003333");
   expect(v?.option_id === state.options[2].id && v.source === "reaction", `vote on the card: ${JSON.stringify(v ?? "dropped")}`);
 });
+await check("a tap on the card counts toward everyone having voted", async () => {
+  const g = chat("tapvotes");
+  for (const from of ["+15550005551", "+15550005552"]) await post("/api/dev/message", { chat: g, from, text: "hey", group: true });
+  await tool(g, "propose_plan", PLAN);
+  const { state } = await dump(g);
+  expect(state.awaiting.length === 2, `awaiting ${state.awaiting.length} of 2 before any vote`);
+  await post("/api/dev/react", { chat: g, from: "+15550005551", reaction: "love" });
+  const res = await post(`/api/widget/${g}/vote`, { optionId: state.options[1].id, voter: "phone-abc" });
+  expect(res.ok, `widget vote answered ${res.status}`);
+  const after = (await dump(g)).state;
+  expect(after.awaiting.length === 0, `still awaiting ${JSON.stringify(after.awaiting)} after a tapback and a card tap`);
+});
 await check("a ballot posts no photo; a booking's confirmation photo takes no votes", async () => {
   const b = chat("reballot");
   await tool(b, "propose_plan", PLAN);
