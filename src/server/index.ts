@@ -808,7 +808,8 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
             : [{ big: "1" }, { big: "2", small: "?" }, { big: "3" }];
     const ticket: Ticket = {
       tone: v.phase === "done" ? "done" : "open",
-      metaLeft: "Game",
+      // No metaLeft: Messages draws the app avatar over that corner of the bubble.
+      metaLeft: "",
       metaRight: v.phase === "lobby" ? "Join in" : v.phase === "done" ? "Final" : `Round ${v.round} of ${v.totalRounds}`,
       title: v.title,
       rows: [{ text: v.topic }, { text: `${v.players.length} playing` }],
