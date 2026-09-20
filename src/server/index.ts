@@ -277,7 +277,7 @@ const isLocal = (url: URL) => url.hostname === "localhost" || url.hostname === "
 /**
  *   POST /api/dev/message  {"chat":"demo","from":"+15550001111","text":"..."}
  *                          + "group": true, and "mention": true or "replyTo": "last" | "photo", to test the wake gate
- *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", or "cart"+"shop"
+ *   POST /api/dev/react    {"chat":"demo","from":"+15550001111","reaction":"love"}   add "on":"photo" for the plan ticket photo, "rsvp", "list", or "cart"+"shop"
  *   POST /api/dev/location {"chat":"demo","from":"+15550001111","locality":"Toronto"}   accept a location request
  *   GET  /api/dev/card?kind=plan|cart|list|venue|rsvp|match|invoice|itinerary&state=open|done   card preview from sample data (plan also takes status, title, o, votes; list also takes state=partial)
  *   GET  /api/dev/card?kind=icon&emoji=🍜&venue=...   the group icon a booked plan sets
@@ -434,6 +434,7 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
       card: () => agent.currentCardId(),
       photo: () => agent.currentPlanPhotoId(),
       rsvp: () => agent.currentRsvpId(),
+      list: () => agent.currentListId(),
       cart: () => agent.currentCartMessageId(body.shop),
     };
     const on = String(body.on ?? "card");

@@ -224,6 +224,15 @@ await check("a thumbs up on a cart from someone with no wallet starts nothing", 
   expect(!text.includes("pay.started"), "a payment started for someone with no wallet");
   expect(count(text, "pay.asked") === 1, "a non-pay tapback was treated as an offer to pay");
 });
+await check("a thumbs up on the shopping list offers to pay the one unpaid cart", async () => {
+  const c = chat("paylist");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await tool(c, "show_shopping_list", {});
+  await post("/api/dev/react", { chat: c, on: "list", from: "+15550007777", reaction: "like" });
+  const text = await logs(c);
+  expect(count(text, "pay.asked") === 1, `pay.asked fired ${count(text, "pay.asked")} times for a thumbs up on the list`);
+  expect(!text.includes("not on the plan card"), "the tapback on the list was dropped");
+});
 await check("\"i'll pay\" with no cart in the chat is ordinary conversation", async () => {
   const c = chat("paytext");
   await post("/api/dev/message", { chat: c, group: true, from: "+15550007777", text: "i'll pay" });
