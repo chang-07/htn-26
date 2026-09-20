@@ -9,9 +9,7 @@
 .rv .rv-status { display: inline-flex; width: fit-content; align-items: center; border-radius: 5px; padding: 4px 7px; font-family: var(--sans); font-size: 11px; font-weight: 650; color: var(--good); background: color-mix(in srgb,var(--good) 10%,var(--ground)); }
 .rv .rv-status.is-active { color: var(--ink); background: var(--paper2); }
 .rv .rv-status.is-attention { color: var(--error); background: color-mix(in srgb,var(--error) 10%,var(--ground)); }
-.rv .rv-overview { border: 1px solid var(--hair); border-left: 4px solid var(--good); border-radius: 12px; padding: 20px; margin: 12px 0 24px; background: var(--ground); }
-.rv .rv-overview.is-active { border-left-color: var(--ink); }
-.rv .rv-overview.is-attention { border-left-color: var(--error); }
+.rv .rv-overview { border: 1px solid var(--hair); border-radius: 12px; padding: 20px; margin: 12px 0 24px; background: var(--ground); }
 .rv .rv-overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .rv .rv-overview-heading>span:last-child { font-size: 11px; color: var(--soft); }
 .rv .rv-overview h2 { font-size: 20px; letter-spacing: -.4px; margin: 18px 0 6px; }
@@ -29,9 +27,9 @@
 .rv .rv-reply { margin-top: 16px; border-top: 1px solid var(--hair); padding-top: 14px; font-size: 12px; }
 .rv .rv-reply summary,.rv .rv-advanced>summary { cursor: pointer; font-weight: 600; }
 .rv .rv-reply p { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.rv .rv-feed-heading { margin: 0 0 14px 6px; }
-.rv .rv-feed-heading h2 { font-size: 15px; margin: 0 0 5px; }
-.rv .rv-feed-heading p { font-size: 12px; color: var(--soft); margin: 0; }
+.rv .rv-trace>summary { cursor: pointer; font-size: 15px; font-weight: 600; padding: 6px; }
+.rv .rv-trace>summary span { font-size: 11px; font-weight: 400; color: var(--soft); margin-left: 8px; }
+.rv .rv-trace>p { font-size: 12px; color: var(--soft); margin: 6px 6px 14px; }
 .rv .rv-advanced { border-top: 1px solid var(--hair); margin: 24px 0; padding-top: 18px; }
 .rv .rv-advanced>summary { font-size: 13px; }
 .rv .rv-advanced>summary span { display: block; font-size: 11px; font-weight: 400; color: var(--soft); margin: 6px 0 0 16px; }

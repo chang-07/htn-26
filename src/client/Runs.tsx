@@ -363,8 +363,11 @@ export function Runs() {
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
                 <RunOverview run={detail} events={nodes} onPick={setPicked} />
-                <div className="rv-feed-heading"><h2>Activity, step by step</h2><p>Read from top to bottom. Select a step to inspect its details.</p></div>
-                <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
+                <details className="rv-trace" key={`trace-${detail.runId}`} open>
+                  <summary>Activity trace <span>{nodes.length} events</span></summary>
+                  <p>Read from top to bottom. Select a step to inspect its details.</p>
+                  <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
+                </details>
                 <details className="rv-advanced" key={detail.runId}><summary>Performance & technical details<span>Timing, model usage, traces, and all recorded errors</span></summary><RunDiagnostics events={nodes} onPick={setPicked} run={detail} /></details>
               </div>
             </>
