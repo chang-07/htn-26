@@ -721,6 +721,17 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
   const bucket = (env as { CARDS?: R2Bucket }).CARDS;
 
+  // The first render on a cold isolate can lose the Google-Fonts fetch race
+  // and throw; loadFonts resets itself on failure, so one retry recovers.
+  const renderPng = async (t: Ticket): Promise<ArrayBuffer> => {
+    try {
+      return await (await renderTicket(t)).arrayBuffer();
+    } catch {
+      await new Promise((r) => setTimeout(r, 150));
+      return await (await renderTicket(t)).arrayBuffer();
+    }
+  };
+
   const ticketId = url.searchParams.get("t");
   if (ticketId) {
     // A stored ticket never changes, so its id is the whole cache key — and
@@ -730,7 +741,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     if (hit) return new Response(hit.body, { headers: pngHeaders });
     const ticket = await agent.getTicket(ticketId);
     if (!ticket) return new Response("Not found", { status: 404 });
-    const image = await (await renderTicket(ticket)).arrayBuffer();
+    const image = await renderPng(ticket);
     if (bucket) ctx.waitUntil(bucket.put(key, image));
     return new Response(image, { headers: pngHeaders });
   }
@@ -764,7 +775,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       stub: { big: v.phase === "done" ? "GG" : "▶", label: v.phase === "done" ? "Final" : "Play" },
       art: { tiles, tint },
     };
-    return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+    return new Response(await renderPng(ticket), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }
   if (kindParam === "music") {
     const tracks = plan.playlist ?? [];
@@ -776,7 +787,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       stub: { big: String(tracks.length), label: tracks.length === 1 ? "Track" : "Tracks" },
       art: { tiles: [{ disc: true, small: "33" }, { disc: true, small: "45" }, { disc: true, small: "Mix" }], tint: "#179b6b" },
     };
-    return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+    return new Response(await renderPng(ticket), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }
 
   if (icon) {

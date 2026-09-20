@@ -137,6 +137,40 @@ final class GameStore: ObservableObject {
     }
 }
 
+/// AsyncImage gives up after one failed fetch, and the card endpoint can 500
+/// once on a cold isolate — so this loader retries with a short backoff.
+struct CardImage<Placeholder: View>: View {
+    let url: URL?
+    @ViewBuilder let placeholder: () -> Placeholder
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            guard let url else { return }
+            for attempt in 1...3 {
+                if Task.isCancelled { return }
+                var req = URLRequest(url: url)
+                req.cachePolicy = .reloadIgnoringLocalCacheData
+                if let (data, resp) = try? await URLSession.shared.data(for: req),
+                   (resp as? HTTPURLResponse)?.statusCode == 200,
+                   let ui = UIImage(data: data) {
+                    image = ui
+                    return
+                }
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 700_000_000)
+            }
+        }
+    }
+}
+
 struct TriviaGameView: View {
     @ObservedObject var store: GameStore
     @ObservedObject var presentation: PresentationInfo
@@ -193,10 +227,7 @@ struct TriviaGameView: View {
     /// stands in while it loads (or if it never arrives), so it's never blank.
     private func compact(_ g: GameView_) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            AsyncImage(url: store.previewURL) { image in
-                image.resizable().scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            } placeholder: {
+            CardImage(url: store.previewURL) {
                 compactText(g)
             }
             if g.phase == "done", let top = g.players.max(by: { $0.score < $1.score }) {
