@@ -6,6 +6,7 @@ import "./Dashboard.css";
 import { EventPlanDetails } from "./PlanDetails";
 import { WidgetFlipCard } from "./WidgetFlipCard";
 import { EventFlipCard } from "./EventFlipCard";
+import { ACCENT_PALETTE } from "../theme";
 
 type Tab = "Plans" | "Widgets" | "Friends" | "Settings";
 type Modal = { type: "widget"; widget?: SavedWidget } | { type: "friend"; friend?: Friend } | null;
@@ -108,7 +109,7 @@ export function Dashboard({ initialData, initialRevision, initialNotice = "", ac
       {tab === "Plans" && <>
         {eventsError && <p className="dash-error" role="alert">{eventsError}</p>}
         {eventsLoading && <p role="status">Loading your plans…</p>}
-        <div className="dash-plan-list">{events.filter(event => matches(event.title + " " + (event.location || ""))).map(event => <EventFlipCard key={event.id} title={event.title} subtitle={[event.location, event.startsAt ? new Date(event.startsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: event.timeZone }) : "From your iMessage group"].filter(Boolean).join(" · ")} label={event.status.charAt(0).toUpperCase() + event.status.slice(1)} image={event.coverUrl} accent="#a7efd2"><EventPlanDetails event={event} /></EventFlipCard>)}
+        <div className="dash-plan-list">{events.filter(event => matches(event.title + " " + (event.location || ""))).map(event => <EventFlipCard key={event.id} title={event.title} subtitle={[event.location, event.startsAt ? new Date(event.startsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: event.timeZone }) : "From your iMessage group"].filter(Boolean).join(" · ")} label={event.status.charAt(0).toUpperCase() + event.status.slice(1)} image={event.coverUrl} accent={ACCENT_PALETTE.tealSoft}><EventPlanDetails event={event} /></EventFlipCard>)}
         {!eventsLoading && !eventsError && !events.some(event => matches(event.title + " " + (event.location || ""))) && <div className="dash-empty"><h2>{search ? "No matching plans" : "Your next plan goes here."}</h2><p>{search ? "Try another search." : "Ask Whim to plan something in your iMessage group. It’ll appear here automatically."}</p></div>}
         </div>
       </>}

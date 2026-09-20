@@ -4,21 +4,22 @@
   .event-flip .flip-card__rotor { position: relative; inset: auto; }
   .event-flip .flip-card__face[aria-hidden="false"] { position: relative; inset: auto; }
   .event-flip .flip-card__face--front[aria-hidden="false"] { min-height: 480px; }
-  .event-flip .flip-card__face { border: 1px solid #e4e2dc; }
-  .event-flip-front { display: flex; flex-direction: column; padding: 0; width: 100%; min-height: 480px; border: 0; background: #fff; color: #282827; text-align: left; border-radius: 18px; overflow: hidden; }
+  .event-flip .flip-card__face { border: 1px solid var(--widget-rule, rgba(36,31,23,.18)); }
+  .event-flip-front { display: flex; flex-direction: column; padding: 0; width: 100%; min-height: 480px; border: 0; background: var(--widget-paper, #faf9f6); color: var(--widget-ink, #282827); text-align: left; border-radius: 16px; overflow: hidden; }
   .event-flip-cover { position: relative; height: 310px; flex-shrink: 0; width: 100%; padding: 28px; display: flex; align-items: end; }
   .event-flip-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .event-flip-type { font-size: 48px; line-height: .98; letter-spacing: -2px; font-weight: 750; max-width: 280px; }
-  .event-flip-label { position: absolute; top: 20px; left: 20px; padding: 5px 9px; background: #fff; border-radius: 6px; font-size: 11px; }
+  .event-flip-label { position: absolute; top: 20px; left: 20px; padding: 5px 9px; background: var(--widget-paper, #faf9f6); border-radius: 5px; font-size: 11px; color: var(--widget-ink, #282827); }
   .event-flip-caption { flex: 1; padding: 22px; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
-  .event-flip-caption p { color: #77747a; font-size: 12px; margin-bottom: 5px; }
+  .event-flip-caption p { color: var(--widget-soft, rgba(36,31,23,.62)); font-size: 12px; margin-bottom: 5px; }
   .event-flip-caption h2 { font-size: 23px; line-height: 1.15; letter-spacing: -.6px; }
   .event-flip-hint { font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
   .event-flip-hint > span { font-size: 21px; }
   .event-flip-back { min-height: 480px; display: flex; flex-direction: column; }
-  .event-flip-back-head { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 20px; border-bottom: 1px solid #eee; }
+  .event-flip-back { background: var(--widget-paper, #faf9f6); color: var(--widget-ink, #282827); }
+  .event-flip-back-head { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 20px; border-bottom: 1px solid var(--widget-rule, rgba(36,31,23,.18)); }
   .event-flip-back-head h2 { font-size: 17px; line-height: 1.2; letter-spacing: -.3px; }
-  .event-flip-back-head button { border: 0; background: #ffdae8; border-radius: 7px; padding: 7px 10px; font-size: 12px; }
+  .event-flip-back-head button { border: 0; background: var(--widget-pink-soft, #ffd1df); color: #9b234b; border-radius: 6px; padding: 7px 10px; font-size: 12px; }
   .event-flip-body { padding: 18px; overflow: visible; flex: 1; touch-action: pan-y; user-select: text; }
   .event-flip-body .plan-overline { font-size: 11px; }
   .event-flip-body .plan-service-detail { padding-left: 15px; }

@@ -2,7 +2,7 @@ import { log, mask } from "./log";
 import { getAgentByName } from "agents";
 import type { PlanAgent } from "./agent";
 import { ONBOARDING, people, syncMatchPool, type Profile } from "./people";
-import { TICKET_CSS, TICKET_FONTS } from "../theme";
+import { PALETTE, TICKET_CSS, TICKET_FONTS } from "../theme";
 
 /**
  * The page behind a person's profile link: GET shows the form, POST saves it.
@@ -27,7 +27,7 @@ function page(body: string, done = false) {
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light"><title>Your profile</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="${TICKET_FONTS}">
-<style>html,body{margin:0;background:${done ? "#1f5f4f" : "#efe7d6"};}${TICKET_CSS}</style></head>
+<style>html,body{margin:0;background:${done ? PALETTE.teal : PALETTE.paper};}${TICKET_CSS}</style></head>
 <body><div class="tk-page${done ? " is-done" : ""}"><div class="tk-wrap">${body}</div></div></body></html>`,
     { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
   );
