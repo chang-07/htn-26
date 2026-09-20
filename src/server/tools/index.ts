@@ -259,7 +259,7 @@ const descriptions: Record<ToolName, string> = {
   book_option:
     "Make a real reservation for the winning option. Only after voting has clearly settled, and only once.",
   shop_search:
-    "Search a Shopify store's catalog for things to order (decor, snacks, gifts). Prices come back ready to quote.",
+    "Search a Shopify store's catalog for things to order (decor, snacks, gifts, clothes). Prices come back ready to quote.",
   shop_build_cart:
     "Set ONE store's cart to these contents and post its card with a checkout link for someone to pay. Each store has its own cart, so an event can shop at several: build them one store at a time. Calling it again for the same shop replaces that shop's contents and redraws its card, leaving every other store's cart alone. You never pay yourself.",
   remember_fact:
