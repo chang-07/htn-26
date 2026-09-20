@@ -69,6 +69,10 @@
     // "demo" = OpenAI credits. "dev" = whatever DEV_LLM_* points at (Workers AI,
     // Ollama, ...) so testing doesn't spend them.
     "LLM_PROFILE": "dev",
+    // "lanes" = every turn is triaged first and the model sees only the rules and
+    // tools it needs (src/server/triage.ts, lanes.ts). "single" = the one-piece
+    // prompt and all tools on every call, the pre-pipeline behaviour, for a rollback.
+    "AGENT_PIPELINE": "lanes",
     "OPENAI_MODEL": "gpt-5.6-luna",
     "BOOKING_DRY_RUN": "true",
     // Demo: with payments off, a thumbs up ends as a (mock) purchase instead of
