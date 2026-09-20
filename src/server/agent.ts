@@ -1,7 +1,9 @@
+import { eventFromPlan, eventInputSchema, eventItemSchema, type EventItem } from "../shared/events";
+import { website } from "./website";
 import { collectPlanMedia, generateCover, mediaKey, mediaCompanies, type MediaFile } from "./plan-media";
 import { findLocations, getWeather } from "./weather";
 import { telemetryScope, traceOperation, traceFields, safeFields } from "./telemetry";
-import { Agent, callable, getAgentByName } from "agents";
+import { Agent, callable, getAgentByName, type Connection } from "agents";
 import type OpenAI from "openai";
 import { ZodError } from "zod";
 import { EMPTY_PLAN, ITEM_EMOJI, REACTION_SLOTS, cartsOf, cartsTotal, shopKey, type CartSummary, type ItineraryItem, type PlanOption, type PlanState } from "../types";
@@ -20,7 +22,7 @@ import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive
 import type { FlightStatus, OrderStatus } from "./sources/types";
 import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
+import { linqClient, type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
 import type { ShipTo } from "./checkout";
@@ -41,6 +43,14 @@ const SYSTEM = `You are Whim, a planning agent living inside an iMessage group c
 group brainstorm a hangout and then actually make it happen: pick a place, agree
 on a time, book it, and order anything they need.
 
+- Keep the website event up to date with save_event whenever you learn or change
+  its activities, times, location, services or booking links. This covers ANY group
+  occasion, not just travel. Supply the complete list of custom items, keeping IDs
+  stable. Leave unknown fields out. Only mark booked after actual confirmation.
+  Include relevant flight/food/ride/game details without card data, passwords,
+  login codes, private contact details or full transcripts. Existing itinerary,
+  carts and ballot options are added automatically; do not duplicate them.
+  Use update_event_item to set their known times or locations.
 - Write like a friend texting: one or two short lines, no markdown, no lists.
 - Do the work first and speak last: make every tool call the request needs,
   then send ONE message covering all of it. A second message is only for
@@ -240,10 +250,14 @@ const invoiceKey = (inv: Extract<Invoice, { ok: true }>) => JSON.stringify(inv.e
 const WORKFLOW_OPTS = { agentBinding: "PlanAgent" } as const;
 
 export class PlanAgent extends Agent<Env, PlanState> {
+  validateStateChange(_next: PlanState, source: Connection | "server") {
+    if (source !== "server") throw new Error("Plan updates must come from the agent.");
+  }
   initialState: PlanState = EMPTY_PLAN;
 
   /** Set when something worth celebrating just happened; consumed by the next text sent. */
   private mediaInFlight = new Set<string>();
+  private websiteRosterInFlight?: Promise<{ handles: string[]; version: number }>;
   private coverInFlight = new Map<string, Promise<MediaFile>>();
   private celebrateNextSend = false;
   private turnRunning = false;
@@ -298,6 +312,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     )`;
     this.sql`CREATE TABLE IF NOT EXISTS watches (item_id TEXT PRIMARY KEY, snapshot TEXT, failures INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL, checked INTEGER)`;
     this.queuePlanMedia();
+    this.queueWebsiteSync();
   }
 
   /**
@@ -348,6 +363,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     if (msg.isGroup !== undefined) this.setMeta("is_group", msg.isGroup ? "1" : "0");
     this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${msg.from})`;
+    this.queueWebsiteSync();
     this.sql`INSERT INTO messages (linq_id, direction, author, body, ts)
              VALUES (${msg.linqId}, 'in', ${msg.from}, ${msg.text}, ${Date.now()})`;
 
@@ -375,32 +391,40 @@ export class PlanAgent extends Agent<Env, PlanState> {
     });
     if (!wake) return;
 
-    // Seen, and thinking: the model is seconds away, the bubble is not. Off the
-    // request path so Linq still gets its 200 at once.
-    this.ctx.waitUntil(this.acknowledge());
+    let scheduled = false;
+    try {
+      // Start before processing so a delayed acknowledgement cannot raise the
+      // bubble after a fast reply has already cleared it.
+      const typing = await this.typing();
+      this.ctx.waitUntil(this.acknowledge(typing));
 
-    // The profile link is private, so it only ever goes to a direct chat: on
-    // request, or once on its own when onboarding finishes.
-    if (msg.isGroup === false) {
-      if (/^\s*(my\s+)?profile\b/i.test(msg.text)) await this.sendProfileLink();
+      // The profile link is private, so it only ever goes to a direct chat: on
+      // request, or once on its own when onboarding finishes.
+      if (msg.isGroup === false) {
+        if (/^\s*(my\s+)?profile\b/i.test(msg.text)) await this.sendProfileLink();
 
-      // Payment setup is handled here, in code, and never by the model: it is
-      // the one flow where a misread intent or an invented step costs someone
-      // money or trust. The model only ever tells people the words to text.
-      if (await this.handlePaymentSetup(msg)) return;
-      // A promise made to the person ("say forget my links"), so it is kept in
-      // code rather than left to the model to interpret.
-      if (/\bforget (my )?(links|socials|insta(gram)?)\b/i.test(msg.text)) {
-        await peopleStore(this.env).save(msg.from, { links: [], online: undefined, onlineReadOf: undefined });
-        this.note("info", "links.forgotten", { who: mask(msg.from) });
-        await this.say("done. your links and what i read from them are gone");
-        return;
+        // Payment setup is handled here, in code, and never by the model: it is
+        // the one flow where a misread intent or an invented step costs someone
+        // money or trust. The model only ever tells people the words to text.
+        if (await this.handlePaymentSetup(msg)) return;
+        // A promise made to the person ("say forget my links"), so it is kept in
+        // code rather than left to the model to interpret.
+        if (/\bforget (my )?(links|socials|insta(gram)?)\b/i.test(msg.text)) {
+          await peopleStore(this.env).save(msg.from, { links: [], online: undefined, onlineReadOf: undefined });
+          this.note("info", "links.forgotten", { who: mask(msg.from) });
+          await this.say("done. your links and what i read from them are gone");
+          return;
+        }
+
       }
 
+      // A short delay batches a burst of texts into a single turn.
+      await this.schedule(2, "runTurn");
+      scheduled = true;
+    } finally {
+      // Direct handlers and failures never reach runTurn's cleanup.
+      if (!scheduled && !this.turnRunning) await this.clearTyping();
     }
-
-    // A short delay batches a burst of texts into a single turn.
-    await this.schedule(2, "runTurn");
   }
 
   /**
@@ -573,7 +597,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /** Recomputes the derived fields and pushes the new state to every client. */
-  private publish(patch: Partial<PlanState>) {
+  private publish(patch: Partial<PlanState>, itemOverrides?: Record<string, Partial<EventItem>>) {
     const next = { ...this.state, ...patch };
     const votes = this.sql<{ voter: string; option_id: string }>`SELECT voter, option_id FROM votes`;
     const people = this.participants();
@@ -585,7 +609,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const unvoted = people.filter((p) => !voted.has(p.handle));
     const taps = votes.filter((v) => v.voter.startsWith("web:")).length;
 
-    this.setState({
+    const published: PlanState = {
       ...next,
       counts: Object.fromEntries(
         next.options.map((o) => [o.id, votes.filter((v) => v.option_id === o.id).length]),
@@ -596,8 +620,59 @@ export class PlanAgent extends Agent<Env, PlanState> {
           : [],
       going: this.splitNames(),
       version: this.state.version + 1,
-    });
+    };
+    if (published.title.trim()) published.event = eventFromPlan(published, this.name, published.event?.id ?? crypto.randomUUID());
+    if (published.event) {
+      // Custom items already carry their latest fields. Only generated items
+      // need overlays, since they are rebuilt from itinerary/options/cart data.
+      const overrides = itemOverrides ?? JSON.parse(this.getMeta("event_item_overrides") || "{}");
+      const retained = Object.fromEntries(published.event.items
+        .filter(item => item.source !== "agent" && Object.hasOwn(overrides, item.id))
+        .map(item => [item.id, overrides[item.id]]));
+      published.event.items = published.event.items.map(item => ({ ...item, ...retained[item.id] }));
+      published.event = { ...published.event, ...eventInputSchema.parse(published.event) };
+      this.setMeta("event_item_overrides", JSON.stringify(retained));
+    }
+    this.setState(published);
     this.queuePlanMedia();
+    this.queueWebsiteSync();
+  }
+
+  private queueWebsiteSync() {
+    if (!this.state.title.trim()) return;
+    this.ctx.waitUntil(this.syncWebsiteEvent().catch(async () => {
+      await this.schedule(30, "retryWebsiteSync");
+    }));
+  }
+  async retryWebsiteSync() {
+    try { await this.syncWebsiteEvent(); }
+    catch { await this.schedule(60, "retryWebsiteSync"); }
+  }
+  /** Internal RPC, never browser-callable. Backfills plans created before accounts. */
+  async syncWebsiteEvent() {
+    // Local/demo agents have no Linq roster and cannot grant account access.
+    if (!this.state.title.trim() || !/^[a-f0-9-]{36}$/i.test(this.name)) return;
+    let event = this.state.event;
+    if (!event) {
+      event = eventFromPlan(this.state, this.name, crypto.randomUUID());
+      this.setState({ ...this.state, event });
+    }
+    const roster = await this.websiteRoster();
+    await website(this.env).syncEvent(JSON.stringify(event), roster.handles, roster.version);
+  }
+
+  private async websiteRoster(): Promise<{ handles: string[]; version: number }> {
+    // Never publish new event data using historical participants or a stale
+    // roster. A provider failure leaves the old index intact and retries sync.
+    if (this.websiteRosterInFlight) return this.websiteRosterInFlight;
+    this.websiteRosterInFlight = (async () => {
+      const chat = await linqClient(this.env).chats.retrieve(this.name, { timeout: 5000, maxRetries: 0 });
+      const handles = chat.handles.filter(handle => !handle.is_me && !handle.left_at && handle.status !== "left" && handle.status !== "removed").map(handle => handle.handle);
+      const version = Math.max(Date.now(), Number(this.getMeta("website_roster_version") || "0") + 1);
+      this.setMeta("website_roster_version", String(version));
+      return { handles, version };
+    })();
+    try { return await this.websiteRosterInFlight; } finally { this.websiteRosterInFlight = undefined; }
   }
 
   private queuePlanMedia() {
@@ -1698,14 +1773,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /** Read receipt, typing bubble and — once per chat — the name and photo. */
-  private async acknowledge() {
+  private async acknowledge(typing: string) {
     // Each is "ok", "dry" or the error, so the run viewer shows what Linq said.
-    // Three independent calls, made together: the bubble should not wait for
-    // the receipt, and neither should wait for the card.
+    // Typing starts before processing; receipt and contact sharing can run together.
     const firstTime = this.getMeta("contact_card_shared") !== "1";
-    const [read, typing, contactCard] = await Promise.all([
+    const [read, contactCard] = await Promise.all([
       markRead(this.env, this.name),
-      this.typing(),
       firstTime ? shareContactCard(this.env, this.name) : "already shared",
     ]);
     // A failure (no card set up yet) is tried again at the next wake.
@@ -1721,10 +1794,16 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return startTyping(this.env, this.name);
   }
 
+  private async clearTyping() {
+    if (!this.typingAt) return;
+    this.typingAt = 0;
+    await stopTyping(this.env, this.name);
+  }
+
   private async say(text: string, opts: SendOptions = {}) {
     this.setMeta("awaiting_answer_until", "0");
-    this.typingAt = 0; // a send clears the bubble
     const id = await timed("agent", "message.out", { chars: text.length, ...this.body(text) }, () => sendText(this.env, this.name, text, opts), this.note);
+    this.typingAt = 0; // only a successful send clears the bubble
     this.sql`INSERT INTO messages (linq_id, direction, body, ts) VALUES (${id}, 'out', ${text}, ${Date.now()})`;
   }
 
@@ -1805,14 +1884,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
       this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
-      // Two unrelated tidy-ups, done together. After the first reply, not
-      // before: the text introduces, the card offers the shortcut. And a turn
-      // that ended in silence must not leave the bubble hanging.
-      const bubbleUp = this.typingAt !== 0;
-      this.typingAt = 0;
+      // Clear typing immediately while sharing the profile card independently.
       await Promise.all([
+        this.clearTyping(),
         this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err))),
-        bubbleUp ? stopTyping(this.env, this.name) : undefined,
       ]);
     }
   }
@@ -1838,7 +1913,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     // Carts get their own "Shopping list" line below, and the itinerary its own
     // "Itinerary" line, whatever the plan's status.
-    const plan = this.state.status === "idle" ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined, itinerary: undefined });
+    const plan = this.state.status === "idle" && !this.state.event ? "none yet" : JSON.stringify({ ...this.state, carts: undefined, cart: undefined, itinerary: undefined });
     const research = this.researchContext();
 
     // The generic votes-in nudge just names the winner and asks whether to book
@@ -2014,6 +2089,7 @@ ${transcript}`,
             if (/\?(\s|$)/.test(parseToolArgs("send_message", call.function.arguments).text.replace(/https?:\/\/\S+/g, ""))) askedQuestion = true;
           }
         } catch (err) {
+          await this.clearTyping();
           // Already logged by timed(). Bad arguments are the model's to fix; an
           // infrastructure failure is not, and retrying it only burns tokens.
           output =
@@ -2199,6 +2275,30 @@ ${transcript}`,
         return this.startResearch(args);
       }
 
+      case "save_event": {
+        const args = parseToolArgs("save_event", rawArgs);
+        const previous = this.state.event;
+        const now = Date.now();
+        const event = { ...args.event, items: args.event.items.map(item => ({ ...item, source: "agent" as const })), schemaVersion: 1 as const,
+          id: previous?.id ?? crypto.randomUUID(), groupId: this.name, createdAt: previous?.createdAt ?? now,
+          updatedAt: now, revision: this.state.version + 1, people: this.splitNames() };
+        this.publish({ title: event.title, event });
+        return JSON.stringify({ id: event.id, saved: true, items: this.state.event?.items });
+      }
+      case "update_event_item": {
+        const args = parseToolArgs("update_event_item", rawArgs);
+        const item = this.state.event?.items.find(item => item.id === args.id);
+        if (!item) return "Unknown item. Use an item ID from the current event.";
+        const updated = eventItemSchema.parse({ ...item, ...args.fields });
+        if (item.source === "agent") {
+          this.publish({ event: { ...this.state.event!, items: this.state.event!.items.map(value => value.id === args.id ? updated : value) } });
+        } else {
+          const overrides = JSON.parse(this.getMeta("event_item_overrides") || "{}");
+          overrides[args.id] = { ...overrides[args.id], ...args.fields };
+          this.publish({}, overrides);
+        }
+        return JSON.stringify({ saved: true, item: this.state.event?.items.find(item => item.id === args.id) });
+      }
       case "propose_plan": {
         const args = parseToolArgs("propose_plan", rawArgs);
         const options: PlanOption[] = args.options.map((o) => ({

@@ -1,5 +1,6 @@
 /** Shapes shared by the Worker and the React vote page. */
 
+import type { EventDocument } from "./shared/events";
 import type { Expense } from "./invoice";
 
 /** "handoff": the agent took the booking as far as it may (payment, or a dry run) and a person finishes it. */
@@ -62,6 +63,7 @@ export type PlanMedia = {
 };
 
 export type PlanState = {
+  event?: EventDocument;
   media?: PlanMedia;
   title: string;
   /** One emoji for the outing, picked by the model with the ballot. Badges the chat once it is booked. */

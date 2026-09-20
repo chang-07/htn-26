@@ -1,3 +1,4 @@
+import { eventInputSchema } from "../../shared/events";
 import { z } from "zod";
 import { locationArgs, weatherArgs } from "../weather";
 
@@ -7,6 +8,8 @@ import { locationArgs, weatherArgs } from "../weather";
  * Execution lives on the agent (agent.ts), which owns the state these touch.
  */
 export const toolSchemas = {
+  save_event: z.object({ event: eventInputSchema }),
+  update_event_item: z.object({ id: z.string().max(100), fields: z.object({ startsAt: z.string().datetime({ offset: true }).optional(), endsAt: z.string().datetime({ offset: true }).optional(), timeLabel: z.string().max(100).optional(), location: z.string().max(300).optional(), description: z.string().max(2000).optional() }) }),
   find_locations: locationArgs,
   get_weather: weatherArgs,
   send_message: z.object({
@@ -239,6 +242,8 @@ export const toolSchemas = {
 export type ToolName = keyof typeof toolSchemas;
 
 const descriptions: Record<ToolName, string> = {
+  save_event: "Save the current group event to their website dashboard. Full replacement of custom items; keep stable IDs and all still-relevant items. Existing itinerary/carts/options are merged automatically. Any kind of item is allowed with structured details and real booking/checkout links. Never store secrets or invent confirmations.",
+  update_event_item: "Set known times or location on an existing event item, including automatically added itinerary/options/cart items. Does not alter booking status. Use the item's exact ID from the current event.",
   find_locations: "Resolve a named city or postal code to locations and timezones. Include the known province/country. Ask the user when multiple results fit. This does not access anyone’s live location.",
   get_weather: "Get a daily forecast for a locationId returned by find_locations and the outing’s local YYYY-MM-DD date. Use for outdoor/weather-sensitive plans or explicit weather questions, not every dinner. Never guess a location id or substitute another date.",
   send_message: "Send a plain text message to the group chat.",

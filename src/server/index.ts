@@ -1,3 +1,5 @@
+export { Website } from "./website";
+import { handleWebsite } from "./website-api";
 import { Sentry, sentryOptions } from "./sentry";
 import { UCP_CAPABILITIES, UCP_VERSION } from "./tools/shopify";
 import { getAgentByName, routeAgentRequest } from "agents";
@@ -46,6 +48,7 @@ import { handleDemo } from "./demos";
 export default Sentry.withSentry(sentryOptions, {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/account/") || url.pathname.startsWith("/api/events")) return handleWebsite(request, env);
 
     if (url.pathname === "/api/webhooks/linq" && request.method === "POST") {
       return handleLinqWebhook(request, env);
@@ -70,7 +73,7 @@ export default Sentry.withSentry(sentryOptions, {
     // Run history. Unlike /api/dev/*, this is reachable from the deployed
     // Worker: the runs worth looking at are the ones driven by real texts.
     // Reset one chat for the next demo, from a laptop, without a text in the
-    // thread: POST /api/runs/reset/<chat id>?token=…  Same lock as run history.
+    // thread: POST /api/runs/reset/<chat id>?token=…  Requires RUNS_TOKEN when configured.
     if (url.pathname.startsWith("/api/runs/reset/") && request.method === "POST") {
       const denied = requireRunsAuth(request, url, env);
       if (denied) return denied;
@@ -196,9 +199,8 @@ export default Sentry.withSentry(sentryOptions, {
     // WebSocket + RPC traffic from useAgent() on the vote page.
     return (
       (await routeAgentRequest(request, env, {
-        // The run viewer's live feed is the same data as /api/runs, so it takes
-        // the same token. Chat agents (the vote page) stay open by design: their
-        // unguessable chat id is the capability.
+        // Telemetry reads and WebSocket connections are public. The auth
+        // helper still protects any non-read RunHub requests.
         onBeforeConnect: (req, route) =>
           route.className === "RunHub" ? (requireRunsAuth(req, new URL(req.url), env) ?? undefined) : undefined,
       })) ?? new Response("Not found", { status: 404 })

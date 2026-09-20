@@ -550,11 +550,9 @@ await check("a flight delay and a gate change are said; a 10 minute creep is not
 });
 
 console.log("\nrun history");
-await check("run history is locked for anyone arriving by a public hostname", async () => {
+await check("run history is public without a viewer token", async () => {
   if (!env.RUNS_TOKEN) return "skipped: no RUNS_TOKEN in .env";
-  // Localhost is deliberately open (the dev routes are too). What must hold is
-  // that the SAME server, reached through the tunnel or in production, asks for
-  // the token — so the request is made under a public Host header.
+  // Exercise a public Host header, where write actions can still require a token.
   const asPublic = (path) =>
     new Promise((resolve, reject) => {
       const u = new URL(BASE + path);
@@ -563,7 +561,7 @@ await check("run history is locked for anyone arriving by a public hostname", as
         resolve(res.statusCode);
       }).on("error", reject);
     });
-  expect((await asPublic("/api/runs")) === 401, "readable without a token from a public hostname");
+  expect((await asPublic("/api/runs")) === 200, "viewer requires a token from a public hostname");
   expect((await asPublic(`/api/runs?token=${env.RUNS_TOKEN}`)) === 200, "rejected the right token");
 });
 await check("out-of-turn events become a run of their own", async () => {

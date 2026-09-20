@@ -15,6 +15,11 @@ export function Landing() {
   const [torn, setTorn] = useState(false);
   const [motion, setMotion] = useState(false);
   useEffect(() => {
+    if (!torn) return;
+    const timer = window.setTimeout(() => setTorn(false), 250);
+    return () => window.clearTimeout(timer);
+  }, [torn]);
+  useEffect(() => {
     document.title = "Whim — AI for your group chat";
     document.documentElement.style.colorScheme = "light";
     document.documentElement.style.background = "#faf9f6";
@@ -26,7 +31,7 @@ export function Landing() {
   return <div className="whim-page">
     <nav className="nav shell" aria-label="Main navigation">
       <a href="#" className="wordmark" aria-label="Whim home">whim<span>✳</span></a>
-      <div className="nav-actions"><a className="dashboard-link" href="/dashboard">Dashboard</a><a className="button small" href="/dashboard">Try widgets</a></div>
+      <div className="nav-actions"><a className="dashboard-link" href="/runs">Telemetry</a><a className="dashboard-link" href="/dashboard">Dashboard</a><a className="button small" href="/dashboard">Try widgets</a></div>
     </nav>
     <main>
       <section className="hero shell">
@@ -63,7 +68,7 @@ export function Landing() {
           {mode===0 ? <div className="itinerary"><h3>48 hours in Montréal<span>✳</span></h3><p>A weekend itinerary for your group.</p><div className="itinerary-row"><b>FRI</b><div><strong>Check in and explore Mile End</strong><small>Bagels, a walk, and dinner</small></div><span>🥯</span></div><div className="itinerary-row"><b>SAT</b><div><strong>Visit the market and Mount Royal</strong><small>Jean-Talon Market and Mount Royal sunset</small></div><span>☀</span></div><div className="itinerary-row"><b>SUN</b><div><strong>Coffee before heading home</strong><small>Breakfast near the station</small></div><span>☕</span></div></div> : <div className="game-card"><h3>{mode===1?"Who’s most likely to…":"What’s your take?"}</h3><p>{mode===1?"turn a quick coffee into an all-day adventure?":"Does pineapple belong on pizza?"}</p><div className="game-options">{(mode===1?["Jules","Sam","You","All of us"]:["Yes 🍍","Absolutely not","No preference"]).map(name=><button key={name} className={vote===name?"voted":""} onClick={()=>setVote(name)}>{name}<span>{vote===name?"✓":""}</span></button>)}</div><div className="card-bottom" aria-live="polite">{vote?`You picked ${vote}.`:"Choose an answer."}{vote&&<button onClick={()=>setVote(null)}>Reset</button>}</div></div>}
         </MessagesDemo></div></div>
       </section>
-      <section className="ticket-section shell"><div className="ticket-copy"><h2>Who’s coming?</h2><p>Find a show, get the tickets, and share<br />the details with your group.</p>{torn && <button className="reset-ticket" onClick={()=>setTorn(false)}>Reset ticket</button>}</div><div className="ticket-display"><span className="ticket-spark" aria-hidden="true">✳</span><TearTicket image="/images/20240628_Ushuaia_Calvin_Harris_0049_6000x4000px_-scaled.jpg" imageAlt="Concert crowd and pyrotechnics beneath the Ushuaïa stage sign" width={500} height={290} stubSize={130} background="#ffb486" color="#322018" stubBackground="#ff83ab" rotate={-5} torn={torn} onTear={()=>setTorn(true)} tilt={motion} ariaLabel="Tear the demo Calvin Harris concert ticket stub" stub={<div className="ticket-stub"><b>FRI<br />25</b><span>General admission</span></div>}><div className="ticket-body"><h3>Calvin Harris</h3><p>Ushuaïa Ibiza · September 25</p></div></TearTicket></div></section>
+      <section className="ticket-section shell"><div className="ticket-copy"><h2>Who’s coming?</h2><p>Find a show, get the tickets, and share<br />the details with your group.</p></div><div className="ticket-display"><span className="ticket-spark" aria-hidden="true">✳</span><TearTicket image="/images/20240628_Ushuaia_Calvin_Harris_0049_6000x4000px_-scaled.jpg" imageAlt="Concert crowd and pyrotechnics beneath the Ushuaïa stage sign" width={500} height={290} stubSize={130} background="#ffb486" color="#322018" stubBackground="#ff83ab" rotate={-5} torn={torn} onTear={()=>setTorn(true)} tilt={motion} recenter={false} recoil={false} ariaLabel="Tear the demo Calvin Harris concert ticket stub" stub={<div className="ticket-stub"><b>FRI<br />25</b><span>General admission</span></div>}><div className="ticket-body"><h3>Calvin Harris</h3><p>Ushuaïa Ibiza · September 25</p></div></TearTicket></div></section>
       <section className="closing"><span>✳</span><h2>What would you make<br />for your group chat?</h2><a className="button cream" href="/dashboard#widgets">Explore the widgets</a></section>
     </main>
   </div>;

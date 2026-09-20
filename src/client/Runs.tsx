@@ -1,3 +1,6 @@
+import { RunOverview } from "./RunOverview";
+import { runStatus, type RunFilter } from "../shared/run-status";
+import "./runs-overview.css";
 import { mergeRunState, RUN_TIMEOUT_MESSAGE } from "../shared/run-timeout";
 import { runLabel } from "../shared/run-labels";
 import { RunDiagnostics } from "./RunDiagnostics";
@@ -50,6 +53,7 @@ export function Runs() {
   const [live, setLive] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [raw, setRaw] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<RunFilter>("all");
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try {
       const saved = localStorage.getItem(THEME_KEY);
@@ -73,12 +77,7 @@ export function Runs() {
   // kept apart because both the list fetch and the socket's hello replace `runs`
   // wholesale, which would drop it again.
   const [linked, setLinked] = useState<RunSummary | null>(null);
-  /**
-   * /runs?token=… — the API and the live socket both need it when RUNS_TOKEN is
-   * set. Once a working token has been seen it is remembered, so a bare /runs
-   * keeps working and the link only has to carry it the first time. Per-viewer
-   * convenience only: it never leaves this browser, and a 401 clears it.
-   */
+  // Optional operator token for cart edits; viewing runs never needs it.
   const token = useMemo(() => {
     const fromUrl = new URLSearchParams(window.location.search).get("token");
     try {
@@ -188,15 +187,6 @@ export function Runs() {
     const controller = new AbortController();
     const refresh = () => fetch(url, { signal: controller.signal })
       .then(async (r) => {
-        if (r.status === 401) {
-          // A remembered token that no longer works would wedge the page.
-          try {
-            localStorage.removeItem(TOKEN_KEY);
-          } catch {
-            /* nothing stored */
-          }
-          throw new Error("locked");
-        }
         if (!r.ok) throw new Error(`the server answered ${r.status}`);
         return r.json() as Promise<{ runs: RunSummary[] }>;
       })
@@ -236,14 +226,15 @@ export function Runs() {
 
   const chats = useMemo(() => [...new Set(runs.map((r) => r.chat))], [runs]);
   const shown = chat ? runs.filter((r) => r.chat === chat) : runs;
+  const filtered = shown.filter(run => statusFilter === "all" || runStatus(run).key === statusFilter);
   const sessions = useMemo(
     () =>
-      groupIntoSessions(shown)
-        .map((sess) => ({ ...sess, visible: showBackground ? sess.runs : sess.runs.filter((r) => !isBackground(r)) }))
+      groupIntoSessions(filtered)
+        .map((sess) => ({ ...sess, visible: showBackground || statusFilter !== "all" ? sess.runs : sess.runs.filter((r) => !isBackground(r)) }))
         // A session of nothing but background work — an e2e script, a dev tool
         // call — has no turn to look at, so it stays out of the way.
         .filter((sess) => sess.visible.length),
-    [shown, showBackground],
+    [shown, showBackground, statusFilter],
   );
 
   // A session opens when it holds the selected run, or when anything in it is
@@ -251,7 +242,7 @@ export function Runs() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const isOpen = (sess: Session) =>
     collapsed[sess.id] === undefined
-      ? sess.runs.some((r) => r.runId === selected || r.ended === null)
+      ? statusFilter !== "all" || sess.runs.some((r) => r.runId === selected || r.ended === null)
       : !collapsed[sess.id];
 
   const detail = selected
@@ -301,39 +292,18 @@ export function Runs() {
           <header style={{ padding: "18px 18px 14px", position: "sticky", top: 0, background: "var(--ground)", zIndex: 2 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
               <a href="/" style={{ textDecoration: "none", fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16, letterSpacing: "-0.01em", lineHeight: 1 }}>Whim</a>
-              <span className="rv-meta">Runs</span>
-              <span
-                title={live ? "Connected: new runs appear as they happen" : "Not connected. New runs will not appear until it reconnects."}
-                aria-label={live ? "connected" : "disconnected"}
-                style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: live ? "var(--good)" : "var(--faint)" }}
-              />
+              <span className="rv-meta">Telemetry</span>
+              <span className={`rv-connection${live ? " is-live" : ""}`} title={live ? "New activity appears immediately" : "Reconnecting; history refreshes every 15 seconds"}><i aria-hidden="true" />{live ? "Live" : "Reconnecting"}</span>
             </div>
             {problem ? (
               <p style={{ margin: "10px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--error)" }}>
-                {problem === "locked" ? "Locked. Enter the viewer key." : `Failed to load runs: ${problem}`}
+                {`Failed to load runs: ${problem}`}
               </p>
             ) : null}
-            {problem === "locked" ? (
-              // Asked for once per browser. The key is RUNS_TOKEN; it is kept in this browser only.
-              <form
-                style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "flex-end" }}
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const key = String(new FormData(e.currentTarget).get("key") ?? "").trim();
-                  if (!key) return;
-                  try {
-                    localStorage.setItem(TOKEN_KEY, key);
-                    window.location.reload();
-                  } catch {
-                    // No storage (private window): carry it in the URL for this visit instead.
-                    window.location.search = `?token=${encodeURIComponent(key)}`;
-                  }
-                }}
-              >
-                <input className="rv-input" name="key" type="password" placeholder="Viewer key" autoFocus autoComplete="current-password" style={{ flex: 1 }} aria-label="Viewer key" />
-                <button className="rv-btn is-go" type="submit">Unlock</button>
-              </form>
-            ) : null}
+            <p style={{ fontSize: 11, color: "var(--soft)", margin: "14px 0 0" }}>Recent activity · counts reflect loaded runs</p>
+            <div className="rv-filter-grid" aria-label="Filter runs by status">
+              {([['all', 'All runs'], ['active', 'In progress'], ['attention', 'Needs attention'], ['finished', 'Finished']] as const).map(([key, label]) => <button key={key} aria-pressed={statusFilter === key} onClick={() => { setStatusFilter(key); setFollow(false); }}><span>{label}</span><b>{shown.filter(run => key === 'all' || runStatus(run).key === key).length}</b></button>)}
+            </div>
             <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
               <span className="rv-select">
                 <select value={chat} onChange={(e) => setChat(e.target.value)} aria-label="Chat">
@@ -345,8 +315,8 @@ export function Runs() {
                   ))}
                 </select>
               </span>
-              <button className={`rv-btn${follow ? " is-on" : ""}`} onClick={() => setFollow((f) => !f)} aria-pressed={follow} title="Open each new run as it starts">
-                Follow
+              <button className={`rv-btn${follow ? " is-on" : ""}`} onClick={() => { if (!follow) setStatusFilter("all"); setFollow((f) => !f); }} aria-pressed={follow} title="Open each new run as it starts">
+                {follow ? "Auto-follow on" : "Auto-follow off"}
               </button>
               <button
                 className={`rv-btn${showBackground ? " is-on" : ""}`}
@@ -354,10 +324,10 @@ export function Runs() {
                 aria-pressed={showBackground}
                 title="Work that happened outside a model turn: workflow callbacks, browser steps, form submissions, dev tool calls."
               >
-                Background
+                Background activity
               </button>
               <button className={`rv-btn${raw ? " is-on" : ""}`} onClick={() => setRaw((r) => !r)} aria-pressed={raw} title="Print every step's fields on the tape">
-                Raw
+                Technical fields
               </button>
               <button className="rv-btn is-quiet" onClick={flipTheme} title="Toggle theme">
                 {theme === "light" ? "Dark" : "Light"}
@@ -373,13 +343,13 @@ export function Runs() {
               />
               {isOpen(sess) &&
                 sess.visible.map((r) => (
-                  <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => select(r.runId)} />
+                  <RunRow key={r.runId} run={r} selected={r.runId === selected} onClick={() => { setFollow(false); select(r.runId); }} />
                 ))}
             </div>
           ))}
-          {!shown.length && !problem && (
+          {!sessions.length && !problem && (
             <p style={{ color: "var(--soft)", padding: "16px 18px", fontSize: 13.5, borderTop: "1px solid var(--hair)", margin: 0, maxWidth: "36ch" }}>
-              No runs yet.
+              {statusFilter === "all" ? "No runs to show. Try including background activity." : "No runs match this status."}
               {isLocal ? <> Or, in a terminal: <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>POST /api/dev/message</code>.</> : null}
             </p>
           )}
@@ -392,9 +362,10 @@ export function Runs() {
             <>
               <RunHead run={detail} nodes={nodes} onBack={mid ? undefined : () => setRailOpen(true)} />
               <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 18px 0 12px" }}>
+                <RunOverview run={detail} events={nodes} onPick={setPicked} />
+                <div className="rv-feed-heading"><h2>Activity, step by step</h2><p>Read from top to bottom. Select a step to inspect its details.</p></div>
                 <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
-                {/* Analytics sit under the tape: the run reads first, the numbers after. */}
-                <RunDiagnostics key={detail.runId} events={nodes} onPick={setPicked} run={detail} />
+                <details className="rv-advanced" key={detail.runId}><summary>Performance & technical details<span>Timing, model usage, traces, and all recorded errors</span></summary><RunDiagnostics events={nodes} onPick={setPicked} run={detail} /></details>
               </div>
             </>
           ) : (
@@ -411,20 +382,6 @@ export function Runs() {
         </div>
       )}
     </div>
-  );
-}
-
-/** The six inks, named once, so a projected page needs no explaining. */
-function Legend() {
-  return (
-    <p style={{ margin: "0 0 12px", display: "flex", flexWrap: "wrap", gap: "4px 14px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)" }}>
-      {(Object.keys(SERVICES) as (keyof typeof SERVICES)[]).map((k) => (
-        <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <i style={{ width: 7, height: 7, borderRadius: "50%", background: `var(${SERVICES[k].v})` }} />
-          {SERVICES[k].label}
-        </span>
-      ))}
-    </p>
   );
 }
 
@@ -505,7 +462,7 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
           </span>
           <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--faint)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{clock(session.to)}</span>
         </span>
-        <span style={{ display: "flex", gap: 10, marginTop: 3, fontFamily: "var(--mono)", fontSize: 11, color: bad ? "var(--error)" : "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
+        <span style={{ display: "flex", gap: 10, marginTop: 3, fontFamily: "var(--mono)", fontSize: 11, color: bad ? "var(--error)" : "var(--soft)", flexWrap: "wrap" }}>
           {facts.map((f) => <span key={f as string}>{f}</span>)}
           {live > 0 && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ink)", marginLeft: "auto" }}>
@@ -520,34 +477,17 @@ function SessionHeader({ session, open, onToggle }: { session: ShownSession; ope
 }
 
 /** What each outcome code means, in a sentence a judge can read from the back of the room. */
-const OUTCOME_TITLE: Record<string, string> = {
-  timed_out: "Timed out",
-  replied: "Replied",
-  silent: "No reply",
-  llm_failed: "Model error",
-  max_steps: "Max steps",
-  background: "Background",
-};
 
-/**
- * The run's head, drawn as the ticket's: meta row, title, and a stub that
- * counts the one number the room cares about. Wall clock and turn time differ
- * on purpose: research runs in a workflow outside the turn, so a short turn can
- * sit inside a long run.
- */
+
+/** Keep the selected run’s identity and result visible above its activity. */
 function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number; ms: number | null; event: string; fields: Record<string, unknown> }[]; onBack?: () => void }) {
-  const running = run.ended === null;
   const wall = nodes.length ? nodes[nodes.length - 1].ts - nodes[0].ts : null;
-  const slowest = [...nodes].filter((n) => n.ms != null && n.event !== "turn.end" && !["agent", "workflow", "workflow.step"].includes(String(n.fields.op))).sort((a, b) => (b.ms as number) - (a.ms as number))[0];
   const asked = nodes.find((n) => (n.event === "message.in" || n.event === "message.stored") && typeof n.fields.text === "string");
   const label = runLabel({ ...run, said: (asked?.fields.text as string | undefined)?.trim() || run.said });
   const title = label.title;
-  const verdict = running ? "Running" : (OUTCOME_TITLE[run.outcome ?? ""] ?? run.outcome ?? "run");
   const facts = [
-    wall != null ? `${dur(wall)} wall` : null,
-    run.ms != null ? `${dur(run.ms)} in turn` : null,
+    wall != null ? `${dur(wall)} recorded` : null,
     `${nodes.length || run.events} event${(nodes.length || run.events) === 1 ? "" : "s"}`,
-    slowest ? `slowest ${slowest.fields.operation ?? slowest.event}` : null,
   ].filter(Boolean) as string[];
   return (
     <header style={{ flex: "none", padding: "18px 18px 0", borderBottom: "1px solid var(--hair)" }}>
@@ -557,13 +497,7 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
             {onBack && (
               <button className="rv-btn is-quiet" onClick={onBack} style={{ padding: "3px 8px" }}>All runs</button>
             )}
-            {/* A reply is the ordinary case and goes without saying; anything else is worth a label. */}
-            {(running || run.outcome !== "replied") && (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: run.level === "error" ? "var(--error)" : "var(--ink)" }}>
-                <i className={running ? "rv-live" : undefined} style={{ width: 7, height: 7, borderRadius: "50%", background: running ? "var(--ink)" : levelColor(run.level) }} />
-                {verdict}
-              </span>
-            )}
+            <span className={`rv-status is-${runStatus(run).key}`}>{runStatus(run).label}</span>
             <span title={run.chat} style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>{run.chat.slice(0, 8)}</span>
             <span style={{ fontVariantNumeric: "tabular-nums" }}>{new Date(run.started).toLocaleString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" })}</span>
           </div>
@@ -581,12 +515,9 @@ function RunHead({ run, nodes, onBack }: { run: RunSummary; nodes: { ts: number;
               Sentry event: {String(nodes.find((n) => n.event === "run.timeout")?.fields.sentryEventId)}
             </p>}
           </div>}
-          <Legend />
+
         </div>
-        <div className="rv-stub" style={{ marginBottom: 14 }}>
-          <b>{run.tokens ? run.tokens.toLocaleString() : "—"}</b>
-          <span className="rv-meta">tokens</span>
-        </div>
+
       </div>
     </header>
   );
@@ -614,13 +545,14 @@ function RunRow({ run, selected, onClick }: { run: RunSummary; selected: boolean
         <span style={{ color: "var(--faint)", fontFamily: "var(--mono)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{clock(run.started)}</span>
       </span>
       {label.detail && <span className="rv-clamp2" title={label.detail} style={{ margin: "5px 0 0 14px", fontSize: 11, color: "var(--soft)", textAlign: "left", overflowWrap: "anywhere" }}>{label.detail}</span>}
-      <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", whiteSpace: "nowrap", overflow: "hidden" }}>
+      <span style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, fontFamily: "var(--mono)", fontSize: 11, color: "var(--soft)", flexWrap: "wrap" }}>
         <span style={{ display: "flex", gap: 3 }}>
           {servicesForTools(run.tools).map((s) => (
             <i key={s} title={SERVICES[s].label} style={{ width: 6, height: 6, borderRadius: "50%", background: `var(${SERVICES[s].v})` }} />
           ))}
         </span>
-        {facts.map((f) => <span key={f}>{f}</span>)}
+        <span className={`rv-status is-${runStatus(run).key}`}>{runStatus(run).label}</span>
+        {facts.filter(f => f !== "running" && f !== OUTCOME_WORD[run.outcome ?? ""]).map((f) => <span key={f}>{f}</span>)}
       </span>
     </button>
   );

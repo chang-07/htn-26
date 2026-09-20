@@ -16,7 +16,7 @@
  *
  * Privacy: these rows are whatever `note()` already logged, which masks phone
  * numbers and records message bodies as lengths. Nothing new is exposed — but
- * the viewer is reachable from the internet, so see requireRunsAuth().
+ * the viewer and live feed are publicly readable. requireRunsAuth() protects writes.
  */
 import { RUN_TIMEOUT_MS } from "../shared/run-timeout";
 import { expireRunRecords } from "./run-timeouts";
@@ -482,13 +482,9 @@ export async function listChats(env: Env) {
   return results;
 }
 
-/**
- * The viewer is on the public Worker and run history names tools, briefs and
- * masked handles. If RUNS_TOKEN is set as a secret, every /api/runs request
- * must carry it; if it is unset the viewer is open, which is a deliberate
- * choice. Localhost is exempt either way.
- */
+/** Telemetry reads and the live feed are public; RUNS_TOKEN protects write actions. */
 export function requireRunsAuth(request: Request, url: URL, env: Env): Response | null {
+  if (request.method === "GET" || request.method === "HEAD") return null;
   // Localhost is already trusted here — /api/dev/* is wide open on the same
   // origin — and a token on the dev server only means hunting through .env
   // every time the page is opened.

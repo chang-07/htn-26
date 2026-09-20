@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {companyDomain, mediaKey, downloadMedia, generateCover, collectPlanMedia} from '../src/server/plan-media.ts';
+import {companyDomain, mediaKey, downloadMedia, generateCover, collectPlanMedia, mediaCompanies} from '../src/server/plan-media.ts';
 const plan = {title:'Friday game night',status:'voting',options:[{id:'1',title:'Venue',bookingUrl:'https://www.venue.com/book?token=secret'}],counts:{},awaiting:[],version:1};
 const png = () => new Response(new Uint8Array([137,80,78,71]), {headers:{'content-type':'image/png'}});
 const jpeg = {type:'image/jpeg',data:Buffer.from([255,216,255,224,0,16,255,217]).toString('base64')};
@@ -64,4 +64,10 @@ test('legacy web covers are replaced; booking changes reuse generated covers', a
   assert.equal(updated.logos['uber.com'],'/uber');
   const newEvent=await collectPlanMedia({...plan,title:'Picnic',media},async()=>{generations++;return jpeg},async()=>'/picnic',async()=>assert.fail('reuse logo'));
   assert.equal(generations,2); assert.equal(newEvent.cover.url,'/picnic');
+});
+
+test('generic event providers and legacy itinerary links receive company logos without leaking full URLs', () => {
+ const state={...plan,options:[],itinerary:[{url:'https://www.aircanada.com/booking?secret=abc'}],event:{items:[{provider:{name:'Uber',url:'https://uber.com'},links:[{url:'https://m.uber.com/ride?token=private'}]}]}};
+ assert.deepEqual(mediaCompanies(state),['aircanada.com','m.uber.com','uber.com']);
+ assert.doesNotMatch(mediaKey(state),/private|secret|abc/);
 });

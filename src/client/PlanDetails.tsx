@@ -1,20 +1,11 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { useAgent } from "agents/react";
-import { cartsOf, type PlanState } from "../types";
+import type { PlanState } from "../types";
+import { eventFromPlan, type EventDocument } from "../shared/events";
+import { eventView, type PlanView } from "./event-view";
 import "./PlanDetails.css";
 
-type ServiceItem = {
-  id: string; category: string; provider: string; title: string; detail: string;
-  status: "Booked" | "Payment recorded" | "Ready to order" | "Saved" | "Searched" | "Needs confirmation" | "In progress" | "Needs attention";
-  logoUrl?: string; price?: string; notes: string[]; url?: string; linkLabel?: string;
-};
-type PlanView = {
-  title: string; subtitle: string; example: boolean;
-  schedule: { day: string; date: string; events: { time: string; title: string; note: string }[] }[];
-  items: ServiceItem[];
-  research: { provider: string; title: string; detail: string; result: string }[];
-};
 const safeUrl = (url?: string) => { try { const parsed = new URL(url || ""); return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : undefined; } catch { return undefined; } };
 const EXAMPLE_PLANS: Record<string, PlanView> = {
   "game-night": {
@@ -62,12 +53,12 @@ function ServiceLogo({ provider, logoUrl }: { provider: string; logoUrl?: string
 function PlanContent({ plan, voteLink }: { plan: PlanView; voteLink?: string }) {
   const [tab, setTab] = useState("Plan");
   const [dayIndex, setDayIndex] = useState(0);
-  const day = plan.schedule[dayIndex];
+  const day = plan.schedule[dayIndex] ?? plan.schedule[0];
   return <div className="plan-details">
     <div className="plan-overline"><p>{plan.subtitle}</p>{plan.example && <span className="plan-example-note" title="Bookings, prices, and research are sample data.">Example plan</span>}</div>
     <nav className="plan-detail-tabs" aria-label="Plan details">{["Plan", "Bookings"].map(name => <button key={name} onClick={() => setTab(name)} aria-current={tab === name ? "page" : undefined}>{name}</button>)}</nav>
     {tab === "Plan" && <>
-      {day && <section className="plan-itinerary"><div className="plan-section-heading"><h3>Itinerary</h3><div className="plan-days" aria-label="Itinerary day">{plan.schedule.map((entry, index) => <button key={entry.day} onClick={() => setDayIndex(index)} aria-pressed={index === dayIndex}>{entry.day.slice(0, 3)}</button>)}</div></div><div className="plan-day-events">{day.events.map((event, i) => <div className="plan-event" key={i}><span>{event.time}</span><strong>{event.title}</strong></div>)}</div></section>}
+      {day && <section className="plan-itinerary"><div className="plan-section-heading"><h3>{day.date}</h3><div className="plan-days" aria-label="Itinerary day">{plan.schedule.map((entry, index) => <button key={entry.date + entry.day} onClick={() => setDayIndex(index)} aria-pressed={index === dayIndex}>{entry.day.slice(0, 3)}</button>)}</div></div><div className="plan-day-events">{day.events.map((event, i) => <div className="plan-event" key={i}><span>{event.time}</span><div>{event.details?.length ? <details className="plan-timeline-details"><summary><strong>{event.title}</strong></summary>{event.details.map((detail, index) => <p className="plan-timeline-note" key={index}>{detail}</p>)}</details> : <strong>{event.title}</strong>}{event.note && <p className="plan-timeline-note">{event.note}</p>}</div></div>)}</div></section>}
       {!day && <p className="plan-empty">The timeline will appear here once times are set.</p>}
     </>}
     {tab === "Bookings" && <>
@@ -78,7 +69,7 @@ function PlanContent({ plan, voteLink }: { plan: PlanView; voteLink?: string }) 
         <div className="plan-service-meta">{item.price && <strong>{item.price}</strong>}<span className={`plan-state ${item.status === "Booked" ? "confirmed" : ""}`}>{item.status}</span></div></div>
         <span className="plan-expand" aria-hidden="true">+</span>
         <div className="plan-booking-action">{safeUrl(item.url) ? <a href={safeUrl(item.url)} target="_blank" rel="noreferrer" aria-label={`${item.linkLabel || "Open booking page"}: ${item.title}`} title={item.linkLabel || "Open booking page"} onClick={event => event.stopPropagation()}><ArrowUpRight size={20} strokeWidth={2} aria-hidden="true" /></a> : <p>Booking link not available yet.</p>}</div>
-      </summary><div className="plan-service-detail"><p className="plan-item-meta">{item.detail}</p>{item.notes.map((note, i) => <p key={i}>{note}</p>)}</div></details></article>)}</div>
+      </summary><div className="plan-service-detail"><p className="plan-item-meta">{item.detail}</p>{item.notes.map((note, i) => <p key={i}>{note}</p>)}{item.links?.filter(link => safeUrl(link.url)).map((link, i) => <a className="plan-extra-link" key={i} href={safeUrl(link.url)} target="_blank" rel="noreferrer">{link.label}<ArrowUpRight size={14} aria-hidden="true" /></a>)}</div></details></article>)}</div>
       {!plan.items.length && <p className="plan-empty">Your bookings will appear here.</p>}
 
     </>}
@@ -88,20 +79,8 @@ function PlanContent({ plan, voteLink }: { plan: PlanView; voteLink?: string }) 
 }
 export function ExamplePlanDetails({ id }: { id: string }) { return <PlanContent plan={EXAMPLE_PLANS[id] ?? EXAMPLE_PLANS["game-night"]} />; }
 
-export function liveView(state: PlanState): PlanView {
-  const chosen = state.options.find(option => option.id === state.chosenOptionId);
-  const items: ServiceItem[] = [];
-  const company = (url?: string) => { try { return new URL(url || "").hostname.replace(/^www\./, ""); } catch { return undefined; } };
-  const logoFor = (url?: string) => state.media?.logos[company(url) || ""];
-  if (chosen) items.push({ id: chosen.id, category: "Reservation", provider: company(chosen.bookingUrl) || "Whim", logoUrl: logoFor(chosen.bookingUrl), title: chosen.title, detail: chosen.subtitle || "Selected by your group", status: state.status === "booked" ? "Booked" : state.status === "booking" ? "In progress" : state.status === "failed" ? "Needs attention" : "Needs confirmation", notes: [state.bookingNote || "No additional booking details available."], url: chosen.bookingUrl, linkLabel: "Open venue booking page" });
-  state.options.filter(option => option.id !== chosen?.id && safeUrl(option.bookingUrl)).forEach(option => items.push({
-    id: option.id, category: "Option", provider: company(option.bookingUrl) || "Whim", logoUrl: logoFor(option.bookingUrl),
-    title: option.title, detail: option.subtitle || "Found for your group", status: "Saved",
-    notes: [option.availability || "Not booked yet."], url: option.bookingUrl, linkLabel: "Open booking page",
-  }));
-  cartsOf(state).forEach((cart, i) => items.push({ id: `cart-${i}`, category: "Shopping", provider: cart.shop, logoUrl: logoFor(cart.checkoutUrl), title: `Order from ${cart.shop}`, detail: `${cart.lines.reduce((n, line) => n + line.quantity, 0)} items`, status: cart.paidBy ? "Payment recorded" : "Ready to order", price: cart.total, notes: [...cart.lines.map(line => `${line.quantity} × ${line.title} · ${line.price}`), ...(cart.paidBy ? [`${cart.paidBy} marked this order as paid. Check the merchant for fulfillment.`] : ["Checkout prepared. An order confirmation hasn’t been provided."])], url: cart.checkoutUrl, linkLabel: "Open checkout" }));
-  return { title: state.title, subtitle: state.going?.length ? `${state.going.length} people going · From your iMessage group` : "From your iMessage group", example: false, schedule: [], items, research: state.options.map(option => ({ provider: "Whim", title: option.title, detail: [option.subtitle, option.availability].filter(Boolean).join(" · ") || "Proposed to your group", result: option.id === state.chosenOptionId ? "Selected by the group" : `${state.counts[option.id] ?? 0} votes` })) };
-}
+export function EventPlanDetails({ event }: { event: EventDocument }) { return <PlanContent plan={eventView(event)} />; }
+export function liveView(state: PlanState): PlanView { return eventView(state.event ?? eventFromPlan(state, "", "legacy")); }
 export function LivePlanDetails({ agent }: { agent: string }) {
   const [plan, setPlan] = useState<PlanState | null>(null);
   const [error, setError] = useState(false);
