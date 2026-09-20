@@ -159,6 +159,11 @@ const MAX_STEPS = 8;
 const CONCURRENT_TOOLS = new Set<string>(["shop_search", "find_matches"]);
 /** The bubble lasts ~85s per call; Linq says to refresh every 60. */
 const TYPING_REFRESH_MS = 55_000;
+/** How long a chat must be quiet before the agent reads it: one person waiting, or several typing at once. */
+const QUIET_DIRECT_MS = 800;
+const QUIET_GROUP_MS = 1_600;
+/** However long a burst goes on, the turn it keeps pushing back runs by now. */
+const MAX_TURN_WAIT_MS = 6_000;
 const HISTORY_LIMIT = 40;
 const NUDGE_AFTER_SECONDS = 20 * 60;
 const MAX_SENDS_PER_TURN = 3;
@@ -341,10 +346,37 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
     }
 
-    // A short delay batches a burst of texts into a single turn. A group needs
-    // the longer one, since several people type at once; one person in a direct
-    // chat is waiting on the reply, and this delay was a third of that wait.
-    await this.schedule(msg.isGroup === false ? 1 : 2, "runTurn");
+    // A group needs the longer pause, since several people type at once; one
+    // person in a direct chat is waiting on the reply.
+    await this.wakeSoon(msg.isGroup === false ? QUIET_DIRECT_MS : QUIET_GROUP_MS);
+  }
+
+  /**
+   * One pending turn per chat, run once the chat has gone quiet. Every new
+   * reason to wake moves that moment back instead of queueing another turn, so
+   * a burst of texts is read once and whole: three quick texts used to mean
+   * three turns, the first of them run on a third of the thought.
+   *
+   * The pause is counted here, in milliseconds, because the scheduler only
+   * knows whole seconds: asked for "1s" it may fire 50ms later.
+   */
+  private async wakeSoon(quietMs: number) {
+    this.setMeta("wake_at", String(Date.now() + quietMs));
+    // A pending mark this old is a turn that died before clearing it.
+    if (Date.now() - Number(this.getMeta("turn_pending") || 0) < 30_000) return;
+    this.setMeta("turn_pending", String(Date.now()));
+    await this.schedule(0, "runTurn");
+  }
+
+  /** Holds the pending turn until nothing new has arrived for the pause asked for, up to a cap. */
+  private async untilQuiet() {
+    const since = Number(this.getMeta("turn_pending") || Date.now());
+    for (;;) {
+      const left = Math.min(Number(this.getMeta("wake_at") || 0) - Date.now(), since + MAX_TURN_WAIT_MS - Date.now());
+      if (left <= 0) break;
+      await new Promise((r) => setTimeout(r, left));
+    }
+    this.setMeta("turn_pending", "");
   }
 
   /** Why this message should wake the model, or null to stay asleep. */
@@ -424,7 +456,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // model's attention (and tokens) once it settles the question.
     if (this.state.awaiting.length === 0) {
       this.setMeta("turn_reason", "votes_in");
-      await this.schedule(2, "runTurn");
+      await this.wakeSoon(QUIET_GROUP_MS);
     }
   }
 
@@ -1336,6 +1368,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     try {
       do {
         this.turnRequested = false;
+        await this.untilQuiet();
         await telemetryScope(this.note, () => traceOperation("agent.turn", "agent", {}, () => this.think()));
       } while (this.turnRequested);
     } catch (err) {
@@ -2326,7 +2359,7 @@ this.rememberCardId(id);
     });
     this.sql`INSERT INTO research (ts, ok, report) VALUES (${Date.now()}, ${report.ok ? 1 : 0}, ${JSON.stringify(report)})`;
     // Nobody texted, but there is news: give the model a turn to share it.
-    await this.schedule(1, "runTurn");
+    await this.wakeSoon(QUIET_DIRECT_MS);
   }
 
   /** What the model is told about research: in progress, fresh results, or earlier results. */
@@ -2500,7 +2533,7 @@ this.rememberCardId(id);
     );
     // Nobody texted, but there is news: give the model a turn to share it.
     this.setMeta("turn_reason", "availability_in");
-    await this.schedule(1, "runTurn");
+    await this.wakeSoon(QUIET_DIRECT_MS);
   }
 
   /** Called over RPC by BookingWorkflow while the pilot works. */
