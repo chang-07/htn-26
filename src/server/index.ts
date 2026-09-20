@@ -721,6 +721,20 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
   const bucket = (env as { CARDS?: R2Bucket }).CARDS;
 
+  // Rendering is the expensive part (satori layout + PNG encode) and repeated
+  // renders can exhaust the Worker's resources (Cloudflare error 1102), so
+  // finished PNGs live in the edge cache. Game/music URLs carry a `v` param
+  // that tracks state, which makes the full URL a safe cache key.
+  const edgeCache = (caches as unknown as { default: Cache }).default;
+  const edgeKey = new Request(url.toString());
+  const edgeHit = await edgeCache.match(edgeKey);
+  if (edgeHit) return edgeHit;
+  const cachePng = (image: ArrayBuffer): Response => {
+    const resp = new Response(image, { headers: { "content-type": "image/png", "cache-control": "public, max-age=300" } });
+    ctx.waitUntil(edgeCache.put(edgeKey, resp.clone()));
+    return resp;
+  };
+
   // The first render on a cold isolate can lose the Google-Fonts fetch race
   // and throw; loadFonts resets itself on failure, so one retry recovers.
   const renderPng = async (t: Ticket): Promise<ArrayBuffer> => {
@@ -743,7 +757,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     if (!ticket) return new Response("Not found", { status: 404 });
     const image = await renderPng(ticket);
     if (bucket) ctx.waitUntil(bucket.put(key, image));
-    return new Response(image, { headers: pngHeaders });
+    return cachePng(image);
   }
 
   // A method, not the `state` property: the Sentry wrapper around the agent
@@ -775,7 +789,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       stub: { big: v.phase === "done" ? "GG" : "▶", label: v.phase === "done" ? "Final" : "Play" },
       art: { tiles, tint },
     };
-    return new Response(await renderPng(ticket), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+    return cachePng(await renderPng(ticket));
   }
   if (kindParam === "music") {
     const tracks = plan.playlist ?? [];
@@ -787,7 +801,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       stub: { big: String(tracks.length), label: tracks.length === 1 ? "Track" : "Tracks" },
       art: { tiles: [{ disc: true, small: "33" }, { disc: true, small: "45" }, { disc: true, small: "Mix" }], tint: "#179b6b" },
     };
-    return new Response(await renderPng(ticket), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
+    return cachePng(await renderPng(ticket));
   }
 
   if (icon) {
