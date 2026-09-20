@@ -64,6 +64,10 @@
   .nav-actions .dashboard-link { padding: 8px 0; border: 0; background: transparent; }
   .nav-actions .button { background: #ff467c; color: #291922; }
   .nav-actions .button:hover { background: #ff729a; }
+  @media (max-width: 520px) {
+    .nav { height: auto; min-height: 64px; flex-wrap: wrap; gap: 8px 16px; padding-block: 12px; }
+    .nav-actions { flex-wrap: wrap; }
+  }
   @media (max-width: 420px) {
     .nav-actions { gap: 12px; }
     .nav-actions .dashboard-link { font-size: 11px; }

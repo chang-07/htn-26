@@ -1,4 +1,4 @@
-import { eventFromPlan, eventItemSchema } from "../shared/events";
+import { eventFromPlan, eventInputSchema, eventItemSchema, type EventItem } from "../shared/events";
 import { website } from "./website";
 import { collectPlanMedia, generateCover, mediaKey, mediaCompanies, type MediaFile } from "./plan-media";
 import { findLocations, getWeather } from "./weather";
@@ -256,7 +256,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** Set when something worth celebrating just happened; consumed by the next text sent. */
   private mediaInFlight = new Set<string>();
-  private websiteRosterInFlight?: Promise<string[]>;
+  private websiteRosterInFlight?: Promise<{ handles: string[]; version: number }>;
   private coverInFlight = new Map<string, Promise<MediaFile>>();
   private celebrateNextSend = false;
   private turnRunning = false;
@@ -596,7 +596,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
 
   /** Recomputes the derived fields and pushes the new state to every client. */
-  private publish(patch: Partial<PlanState>) {
+  private publish(patch: Partial<PlanState>, itemOverrides?: Record<string, Partial<EventItem>>) {
     const next = { ...this.state, ...patch };
     const votes = this.sql<{ voter: string; option_id: string }>`SELECT voter, option_id FROM votes`;
     const people = this.participants();
@@ -622,8 +622,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
     };
     if (published.title.trim()) published.event = eventFromPlan(published, this.name, published.event?.id ?? crypto.randomUUID());
     if (published.event) {
-      const overrides = JSON.parse(this.getMeta("event_item_overrides") || "{}");
-      published.event.items = published.event.items.map(item => ({ ...item, ...overrides[item.id] }));
+      // Custom items already carry their latest fields. Only generated items
+      // need overlays, since they are rebuilt from itinerary/options/cart data.
+      const overrides = itemOverrides ?? JSON.parse(this.getMeta("event_item_overrides") || "{}");
+      const retained = Object.fromEntries(published.event.items
+        .filter(item => item.source !== "agent" && Object.hasOwn(overrides, item.id))
+        .map(item => [item.id, overrides[item.id]]));
+      published.event.items = published.event.items.map(item => ({ ...item, ...retained[item.id] }));
+      published.event = { ...published.event, ...eventInputSchema.parse(published.event) };
+      this.setMeta("event_item_overrides", JSON.stringify(retained));
     }
     this.setState(published);
     this.queuePlanMedia();
@@ -642,30 +649,27 @@ export class PlanAgent extends Agent<Env, PlanState> {
   }
   /** Internal RPC, never browser-callable. Backfills plans created before accounts. */
   async syncWebsiteEvent() {
-    if (!this.state.title.trim()) return;
+    // Local/demo agents have no Linq roster and cannot grant account access.
+    if (!this.state.title.trim() || !/^[a-f0-9-]{36}$/i.test(this.name)) return;
     let event = this.state.event;
     if (!event) {
       event = eventFromPlan(this.state, this.name, crypto.randomUUID());
       this.setState({ ...this.state, event });
     }
-    const known = this.participants().map(p => p.handle);
     const roster = await this.websiteRoster();
-    await website(this.env).syncEvent(JSON.stringify(event), [...new Set([...known, ...roster])]);
+    await website(this.env).syncEvent(JSON.stringify(event), roster.handles, roster.version);
   }
 
-  private async websiteRoster(): Promise<string[]> {
-    const cached = JSON.parse(this.getMeta("website_roster") || "null") as { at: number; handles: string[] } | null;
-    if (!this.env.LINQ_API_KEY || !/^[a-f0-9-]{36}$/i.test(this.name)) return [];
-    if (cached && Date.now() - cached.at < 300_000) return cached.handles;
+  private async websiteRoster(): Promise<{ handles: string[]; version: number }> {
+    // Never publish new event data using historical participants or a stale
+    // roster. A provider failure leaves the old index intact and retries sync.
     if (this.websiteRosterInFlight) return this.websiteRosterInFlight;
     this.websiteRosterInFlight = (async () => {
-      let handles = cached?.handles ?? [];
-      try {
-        const chat = await linqClient(this.env).chats.retrieve(this.name, { timeout: 5000, maxRetries: 0 });
-        handles = chat.handles.filter(handle => !handle.is_me && !handle.left_at && handle.status !== "left" && handle.status !== "removed").map(handle => handle.handle);
-      } catch { /* Recorded participants still get their plans during a provider outage. */ }
-      this.setMeta("website_roster", JSON.stringify({ at: Date.now(), handles }));
-      return handles;
+      const chat = await linqClient(this.env).chats.retrieve(this.name, { timeout: 5000, maxRetries: 0 });
+      const handles = chat.handles.filter(handle => !handle.is_me && !handle.left_at && handle.status !== "left" && handle.status !== "removed").map(handle => handle.handle);
+      const version = Math.max(Date.now(), Number(this.getMeta("website_roster_version") || "0") + 1);
+      this.setMeta("website_roster_version", String(version));
+      return { handles, version };
     })();
     try { return await this.websiteRosterInFlight; } finally { this.websiteRosterInFlight = undefined; }
   }
@@ -2284,11 +2288,14 @@ ${transcript}`,
         const args = parseToolArgs("update_event_item", rawArgs);
         const item = this.state.event?.items.find(item => item.id === args.id);
         if (!item) return "Unknown item. Use an item ID from the current event.";
-        eventItemSchema.parse({ ...item, ...args.fields });
-        const overrides = JSON.parse(this.getMeta("event_item_overrides") || "{}");
-        overrides[args.id] = { ...overrides[args.id], ...args.fields };
-        this.setMeta("event_item_overrides", JSON.stringify(overrides));
-        this.publish({});
+        const updated = eventItemSchema.parse({ ...item, ...args.fields });
+        if (item.source === "agent") {
+          this.publish({ event: { ...this.state.event!, items: this.state.event!.items.map(value => value.id === args.id ? updated : value) } });
+        } else {
+          const overrides = JSON.parse(this.getMeta("event_item_overrides") || "{}");
+          overrides[args.id] = { ...overrides[args.id], ...args.fields };
+          this.publish({}, overrides);
+        }
         return JSON.stringify({ saved: true, item: this.state.event?.items.find(item => item.id === args.id) });
       }
       case "propose_plan": {

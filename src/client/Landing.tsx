@@ -31,7 +31,7 @@ export function Landing() {
   return <div className="whim-page">
     <nav className="nav shell" aria-label="Main navigation">
       <a href="#" className="wordmark" aria-label="Whim home">whim<span>✳</span></a>
-      <div className="nav-actions"><a className="dashboard-link" href="/dashboard">Dashboard</a><a className="button small" href="/dashboard">Try widgets</a></div>
+      <div className="nav-actions"><a className="dashboard-link" href="/runs">Telemetry</a><a className="dashboard-link" href="/dashboard">Dashboard</a><a className="button small" href="/dashboard">Try widgets</a></div>
     </nav>
     <main>
       <section className="hero shell">

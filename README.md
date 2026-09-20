@@ -124,8 +124,8 @@ curl 'localhost:5173/api/dev/logs?chat=demo'      # that chat's event history, a
 | `localhost:5173/card/demo` | the plan card as a PNG, exactly as the chat sees it |
 | `localhost:5173/live/demo` | the browser, live, while a booking or research run is going |
 
-The run viewer needs no token on localhost. On the deployed Worker it does —
-see `RUNS_TOKEN` in the secrets table.
+The run viewer and live feed need no password locally or on the deployed Worker.
+`RUNS_TOKEN`, when configured, protects write actions such as cart edits and chat resets.
 
 ### Real iMessage from your laptop
 
@@ -354,15 +354,14 @@ PlanAgent.note() ──> RunRecorder ──waitUntil──> RunHub ──> D1 (r
   (per chat)         groups into runs           (one)   └─> WebSocket -> /runs
 ```
 
-Nothing new is exposed: these are the lines `note()` already logged, with phone
-numbers masked and bodies as lengths. But unlike `/api/dev/*` this is reachable
-on the deployed Worker, so set a token if that matters:
+Run history and the live feed are public. Set an operator token to protect
+write actions such as cart edits and chat resets:
 
 ```sh
-npx wrangler secret put RUNS_TOKEN     # then /runs?token=… , or a Bearer header
+npx wrangler secret put RUNS_TOKEN     # write requests use ?token=… or a Bearer header
 ```
 
-Unset, the viewer is open — fine locally, a deliberate choice anywhere else.
+The token does not gate viewing the dashboard.
 
 The JSON behind it, if you want to script against it:
 
@@ -874,7 +873,7 @@ done
 | `PUBLIC_BASE_URL` | this Worker's own URL | card images, the vote page, the Shopify agent profile |
 | `BROWSERBASE_API_KEY` | Browserbase key | research and booking. Optional — without it, Cloudflare Browser Rendering is used, on datacenter IPs that review sites block |
 | `IMESSAGE_TEAM_ID` / `IMESSAGE_BUNDLE_ID` | your Messages extension identity | interactive cards. Blank is fine: cards fall back to image + text |
-| `RUNS_TOKEN` | any random string | locks `/runs` in production. Unset leaves run history public |
+| `RUNS_TOKEN` | any random string | protects telemetry write actions in production; the viewer remains public |
 
 `RUNS_TOKEN` is deliberately not in the loop above — decide whether you want it.
 Localhost never asks for it either way.

@@ -26,7 +26,7 @@ export class Website extends DurableObject<Env> {
   verify(id: string, code: string) { return this.store.verify(id, code); }
   account(session: string) { return this.store.account(session); }
   logout(session: string) { return this.store.logout(session); }
-  syncEvent(document: string, handles: string[]) { return this.store.syncEvent(JSON.parse(document) as EventDocument, handles); }
+  syncEvent(document: string, handles: string[], rosterVersion: number) { return this.ctx.storage.transactionSync(() => this.store.syncEvent(JSON.parse(document) as EventDocument, handles, rosterVersion)); }
   async events(session: string): Promise<unknown> { const a = await this.store.account(session); return a ? this.store.events(a) : null; }
   async event(session: string, id: string): Promise<unknown> { const a = await this.store.account(session); return a ? this.store.event(a, id) : null; }
   async workspace(session: string) { const a = await this.store.account(session); return a ? this.store.workspace(a) : null; }

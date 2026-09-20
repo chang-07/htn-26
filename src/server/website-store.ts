@@ -16,7 +16,9 @@ export class WebsiteStore {
       `CREATE TABLE IF NOT EXISTS challenges (id TEXT PRIMARY KEY, phone TEXT NOT NULL, hash TEXT NOT NULL, expires INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)`,
       `CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS event_documents (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, json TEXT NOT NULL, revision INTEGER NOT NULL, updated INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS event_documents_group ON event_documents(group_id)`,
       `CREATE TABLE IF NOT EXISTS memberships (group_id TEXT NOT NULL, phone TEXT NOT NULL, PRIMARY KEY (group_id, phone))`,
+      `CREATE TABLE IF NOT EXISTS group_rosters (group_id TEXT PRIMARY KEY, version INTEGER NOT NULL)`,
       `CREATE INDEX IF NOT EXISTS memberships_phone ON memberships(phone)`,
       `CREATE TABLE IF NOT EXISTS workspaces (account_id TEXT PRIMARY KEY, json TEXT NOT NULL, revision INTEGER NOT NULL)`,
     ]) sql.exec(query);
@@ -62,7 +64,15 @@ export class WebsiteStore {
     return this.rows<WebsiteAccount>(`SELECT a.id,a.phone FROM sessions s JOIN accounts a ON a.id=s.account_id WHERE s.hash=? AND s.expires>?`, await hash(session), now)[0] ?? null;
   }
   async logout(session: string) { this.sql.exec(`DELETE FROM sessions WHERE hash=?`, await hash(session)); }
-  syncEvent(event: EventDocument, handles: string[]) {
+  syncEvent(event: EventDocument, handles: string[], rosterVersion: number) {
+    if (!Number.isSafeInteger(rosterVersion) || rosterVersion < 1) throw new Error("Invalid roster version");
+    const current = this.rows<{ revision: number }>(`SELECT MAX(revision) AS revision FROM event_documents WHERE group_id=?`, event.groupId)[0];
+    const roster = this.rows<{ version: number }>(`SELECT version FROM group_rosters WHERE group_id=?`, event.groupId)[0];
+    // Delayed deliveries must not restore revoked access or publish new data
+    // against an older roster. The Durable Object wraps these writes atomically.
+    if ((current?.revision ?? -1) > event.revision || (roster?.version ?? 0) > rosterVersion) return;
+    this.sql.exec(`INSERT INTO group_rosters VALUES (?,?) ON CONFLICT(group_id) DO UPDATE SET version=excluded.version`, event.groupId, rosterVersion);
+    this.sql.exec(`DELETE FROM memberships WHERE group_id=?`, event.groupId);
     // Revision is the agent's persisted state version, not arrival time.
     this.sql.exec(`INSERT INTO event_documents VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json,revision=excluded.revision,updated=excluded.updated WHERE excluded.revision >= event_documents.revision`, event.id, event.groupId, JSON.stringify(event), event.revision, event.updatedAt);
     for (const handle of handles) {

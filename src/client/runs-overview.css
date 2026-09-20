@@ -1,0 +1,39 @@
+.rv { overflow-x: clip; }
+.rv .rv-connection { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--soft); margin-left: auto; white-space: nowrap; }
+.rv .rv-connection i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.rv .rv-connection.is-live i { background: var(--good); }
+.rv .rv-filter-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin-top: 16px; }
+.rv .rv-filter-grid button { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px; border: 1px solid var(--hair); border-radius: 8px; background: var(--ground); color: var(--soft); font: inherit; font-size: 12px; cursor: pointer; }
+.rv .rv-filter-grid button[aria-pressed=true] { color: var(--ink); background: var(--paper2); border-color: var(--ink); }
+.rv .rv-filter-grid b { font-variant-numeric: tabular-nums; font-size: 16px; }
+.rv .rv-status { display: inline-flex; width: fit-content; align-items: center; border-radius: 5px; padding: 4px 7px; font-family: var(--sans); font-size: 11px; font-weight: 650; color: var(--good); background: color-mix(in srgb,var(--good) 10%,var(--ground)); }
+.rv .rv-status.is-active { color: var(--ink); background: var(--paper2); }
+.rv .rv-status.is-attention { color: var(--error); background: color-mix(in srgb,var(--error) 10%,var(--ground)); }
+.rv .rv-overview { border: 1px solid var(--hair); border-left: 4px solid var(--good); border-radius: 12px; padding: 20px; margin: 12px 0 24px; background: var(--ground); }
+.rv .rv-overview.is-active { border-left-color: var(--ink); }
+.rv .rv-overview.is-attention { border-left-color: var(--error); }
+.rv .rv-overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.rv .rv-overview-heading>span:last-child { font-size: 11px; color: var(--soft); }
+.rv .rv-overview h2 { font-size: 20px; letter-spacing: -.4px; margin: 18px 0 6px; }
+.rv .rv-overview p { margin: 0; color: var(--soft); font-size: 13px; line-height: 1.6; }
+.rv .rv-overview-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; border-top: 1px solid var(--hair); padding-top: 16px; margin-top: 18px; }
+.rv .rv-overview-metrics span { display: block; font-size: 11px; color: var(--soft); margin-bottom: 7px; }
+.rv .rv-overview-metrics strong { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rv .rv-current-work { padding: 12px; margin-top: 15px; border-radius: 8px; background: var(--paper2); font-size: 12px; }
+.rv .rv-current-work>strong { display: block; font-size: 11px; color: var(--soft); margin-bottom: 6px; }
+.rv .rv-current-work button { display: flex; justify-content: space-between; gap: 12px; width: 100%; border: 0; padding: 8px 0; color: var(--ink); background: transparent; text-align: left; font: inherit; cursor: pointer; }
+.rv .rv-current-work button span { flex-shrink: 0; color: var(--soft); }
+.rv .rv-error-link { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 14px; border: 1px solid color-mix(in srgb,var(--error) 35%,var(--hair)); background: color-mix(in srgb,var(--error) 5%,var(--ground)); color: var(--error); border-radius: 8px; padding: 12px; margin-top: 16px; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.rv .rv-error-link strong,.rv .rv-error-link>span>span { display: block; overflow-wrap: anywhere; }
+.rv .rv-error-link strong { margin-bottom: 4px; }
+.rv .rv-reply { margin-top: 16px; border-top: 1px solid var(--hair); padding-top: 14px; font-size: 12px; }
+.rv .rv-reply summary,.rv .rv-advanced>summary { cursor: pointer; font-weight: 600; }
+.rv .rv-reply p { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv .rv-feed-heading { margin: 0 0 14px 6px; }
+.rv .rv-feed-heading h2 { font-size: 15px; margin: 0 0 5px; }
+.rv .rv-feed-heading p { font-size: 12px; color: var(--soft); margin: 0; }
+.rv .rv-advanced { border-top: 1px solid var(--hair); margin: 24px 0; padding-top: 18px; }
+.rv .rv-advanced>summary { font-size: 13px; }
+.rv .rv-advanced>summary span { display: block; font-size: 11px; font-weight: 400; color: var(--soft); margin: 6px 0 0 16px; }
+.rv button:focus-visible,.rv summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+@media(max-width:600px) { .rv .rv-overview { padding: 15px; } .rv .rv-overview-metrics { gap: 8px; } .rv .rv-overview-metrics strong { font-size: 16px; } }

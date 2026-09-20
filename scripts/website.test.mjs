@@ -38,10 +38,10 @@ test('five wrong attempts invalidate a code and request limits apply to phone an
 });
 test('events are restricted to verified group members; stale sync never replaces newer data',async()=>{
  const {store}=fixture(); const a=await login(store); const b=await login(store,'+14165550456');
- store.syncEvent({...event('one',2),title:'Updated'},[phone,'web:'+b.account.phone]);
- store.syncEvent({...event('one',1),title:'Stale'},[phone]);
+ store.syncEvent({...event('one',2),title:'Updated'},[phone,'web:'+b.account.phone],2);
+ store.syncEvent({...event('one',1),title:'Stale'},[phone],1);
  assert.equal(store.events(a.account)[0].title,'Updated'); assert.deepEqual(store.events(b.account),[]); assert.equal(store.event(b.account,'one'),null);
- store.syncEvent(event('two',3),[b.account.phone]); assert.equal(store.events(b.account).length,2);
+ store.syncEvent(event('two',3),[b.account.phone],3); assert.equal(store.events(b.account).length,2);
 });
 test('workspace persists per account and rejects stale saves',async()=>{
  const {store}=fixture(); const a=await login(store); const b=await login(store,'+14165550456');
@@ -49,6 +49,24 @@ test('workspace persists per account and rejects stale saves',async()=>{
  assert.deepEqual(store.saveWorkspace(a.account,{widgets:['game']},0),{revision:1});
  assert.deepEqual(store.saveWorkspace(a.account,{widgets:[]},0),{conflict:true});
  assert.deepEqual(store.workspace(a.account).data,{widgets:['game']}); assert.equal(store.workspace(b.account).data,null);
+});
+test('roster replacement revokes access and delayed syncs cannot restore it',async()=>{
+ const {store}=fixture(); const a=await login(store); const b=await login(store,'+14165550456');
+ store.syncEvent(event(),[phone,b.account.phone],1);
+ store.syncEvent({...event('one',2),title:'After removal'},[b.account.phone],2);
+ assert.deepEqual(store.events(a.account),[]); assert.equal(store.event(a.account,'one'),null);
+ assert.equal(store.event(b.account,'one').title,'After removal');
+ // Both a delayed event and an equal-revision delivery with an old roster
+ // must leave access revoked. A newer event with an older roster is unsafe too.
+ for(const revision of [1,2,3]) store.syncEvent(event('one',revision),[phone],1);
+ assert.deepEqual(store.events(a.account),[]);
+ assert.equal(store.event(b.account,'one').title,'After removal');
+ const db=backend(store),send=async()=>{};
+ assert.equal((await websiteRequest(request('/api/events/one','GET',undefined,a.session),db,send)).status,404);
+ store.syncEvent(event('one',2),[],3);
+ assert.deepEqual(store.events(b.account),[]);
+ store.syncEvent(event('one',3),[phone,b.account.phone],4);
+ assert.equal(store.events(a.account).length,1);
 });
 test('HTTP sign-in sends a code privately, sets a secure HttpOnly cookie and logs out',async()=>{
  const {store}=fixture(); const db=backend(store); let delivered;
@@ -63,7 +81,7 @@ test('HTTP sign-in sends a code privately, sets a secure HttpOnly cookie and log
  assert.equal((await websiteRequest(request('/api/events','GET',undefined,session),db,send)).status,401);
 });
 test('HTTP rejects cross-origin writes, oversized bodies and unauthorized event IDs',async()=>{
- const {store}=fixture();const db=backend(store); const send=async()=>{}; const a=await login(store); const b=await login(store,'+14165550456');store.syncEvent(event(),[phone]);
+ const {store}=fixture();const db=backend(store); const send=async()=>{}; const a=await login(store); const b=await login(store,'+14165550456');store.syncEvent(event(),[phone],1);
  assert.equal((await websiteRequest(request('/api/account/code','POST',{phone},'','https://evil.test'),db,send)).status,403);
  assert.equal((await websiteRequest(request('/api/account/code','POST',{phone,extra:'x'.repeat(200001)}),db,send)).status,400);
  assert.equal((await websiteRequest(request('/api/events/one','GET',undefined,b.session),db,send)).status,404);

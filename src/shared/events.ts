@@ -71,7 +71,7 @@ export function eventFromPlan(state: PlanState, groupId: string, id: string, now
   }
   return {
     schemaVersion: 1, id, groupId,
-    title: previous?.title || state.title || "Your event", description: previous?.description,
+    title: state.title || previous?.title || "Your event", description: previous?.description,
     startsAt: previous?.startsAt, endsAt: previous?.endsAt, timeZone: previous?.timeZone, location: previous?.location,
     status: previous?.status ?? "planning", items: items.map(item => {
       const domain = provider(item.provider?.url || item.links[0]?.url)?.name;
