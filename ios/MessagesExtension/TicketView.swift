@@ -51,7 +51,7 @@ struct TicketView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .animation(.snappy(duration: 0.35), value: store.plan)
         .onAppear { store.start() }

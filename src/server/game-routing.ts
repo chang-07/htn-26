@@ -49,10 +49,10 @@ const routeQuestions = {
   },
   copyRisk: {
     type: "noul",
-    instructions: "Does the request ask to copy a named game, its recognizable rules, characters, assets, or protected presentation?",
+    instructions: "Does the request ask for a literal copy of a named game, including its recognizable rules, characters, assets, levels, or presentation? A named game can be a broad mechanic reference when the requested result is original.",
     criteria: {
-      true: "It requests a recognizable named game or a direct copy of its rules or presentation.",
-      false: "It asks for an original game or only a broad mood, genre, or generic mechanic.",
+      true: "It requests a recognizable named game itself, or a direct copy of its rules, characters, assets, levels, or presentation.",
+      false: "It asks for an original game, including one that uses a named game only as a broad form-factor or mechanic reference.",
     },
   },
 };
@@ -73,7 +73,11 @@ const defaultEvaluator: Evaluator = (env, state, questions) => askJev(env, state
 
 export async function classifyGamePrompt(env: JevEnv, prompt: string, evaluate: Evaluator = defaultEvaluator): Promise<GameRoute> {
   try {
-    const result = RouteAnswersZ.parse(await evaluate(env, { prompt: prompt.trim().slice(0, 500), surfaces: GAME_SURFACES }, routeQuestions));
+    const result = RouteAnswersZ.parse(await evaluate(env, {
+      prompt: prompt.trim().slice(0, 500),
+      intent: "Create an original game. A named game can only describe a broad mechanic, never a clone.",
+      surfaces: GAME_SURFACES,
+    }, routeQuestions));
     return gateGameRoute({
       surface: result.answers.surface.choice,
       confidence: result.answers.surface.confidence,

@@ -4,7 +4,14 @@ import SwiftUI
 // small app-avatar header, one hero element per card, pill CTAs, brand green.
 
 enum Whim {
-    /// Brand green (the Whim tile).
+    /// Frontend palette, kept explicit so Messages' host appearance cannot
+    /// resolve text and surfaces against opposite color schemes.
+    static let paper = Color(red: 0xFA / 255, green: 0xF9 / 255, blue: 0xF6 / 255)
+    static let panel = Color.white
+    static let ink = Color(red: 0x28 / 255, green: 0x28 / 255, blue: 0x27 / 255)
+    static let coral = Color(red: 0xFF / 255, green: 0x46 / 255, blue: 0x7C / 255)
+    static let mint = Color(red: 0x84 / 255, green: 0xEF / 255, blue: 0xC4 / 255)
+    /// Brand green (the Whim tile and primary CTA).
     static let green = Color(red: 0x17 / 255, green: 0x9B / 255, blue: 0x6B / 255)
     static let greenDeep = Color(red: 0x0E / 255, green: 0x6F / 255, blue: 0x4C / 255)
 
@@ -35,7 +42,7 @@ struct WhimHeader: View {
             }
             Text(context)
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Whim.ink.opacity(0.62))
             Spacer()
             if let chipText {
                 Text(chipText)
@@ -102,7 +109,7 @@ struct PillButtonStyle: ButtonStyle {
                 prominent ? AnyShapeStyle(Whim.tileGradient) : AnyShapeStyle(Color(uiColor: .secondarySystemBackground)),
                 in: Capsule()
             )
-            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .foregroundStyle(prominent ? Color.white : Whim.ink)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
     }
@@ -111,6 +118,8 @@ struct PillButtonStyle: ButtonStyle {
 extension View {
     /// Card page chrome: padding rhythm + brand tint for interactive elements.
     func whimPage() -> some View {
-        self.tint(Whim.green)
+        self
+            .environment(\.colorScheme, .light)
+            .tint(Whim.green)
     }
 }

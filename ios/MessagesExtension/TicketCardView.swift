@@ -50,7 +50,7 @@ struct TicketCardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .task { await load() }
     }

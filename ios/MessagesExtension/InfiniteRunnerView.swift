@@ -116,7 +116,7 @@ struct InfiniteRunnerView: View {
             if presentation.isTranscript { compact }
             else { expanded }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
         .onAppear { tracker.start() }
         .onDisappear { stopRun(); tracker.stop() }
