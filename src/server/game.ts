@@ -157,11 +157,20 @@ function bjDraw(bj: BjExtra): string {
   return shoe.cards.pop() ?? freshShoe()[0];
 }
 
+function copyBj(bj: NonNullable<GameState["bj"]>): BjExtra {
+  return {
+    hands: Object.fromEntries(
+      Object.entries(bj.hands).map(([voter, hand]) => [voter, { ...hand, cards: [...hand.cards] }]),
+    ),
+    dealer: [...bj.dealer],
+  };
+}
+
 export function bjHit(g: GameState, voter: string): GameState {
   if (g.spec.kind !== "blackjack" || g.phase !== "round" || !g.bj) return g;
   const hand = g.bj.hands[voter];
   if (!hand || hand.done || hand.bust) return g;
-  const bj = { ...g.bj, hands: { ...g.bj.hands, [voter]: { ...hand, cards: [...hand.cards] } } } as BjExtra;
+  const bj = copyBj(g.bj);
   bj.hands[voter].cards.push(bjDraw(bj));
   const total = handTotal(bj.hands[voter].cards);
   if (total > 21) { bj.hands[voter].bust = true; bj.hands[voter].done = true; }
@@ -178,7 +187,7 @@ export function bjStand(g: GameState, voter: string): GameState {
 
 function bjResolve(g: GameState): GameState {
   if (!g.bj) return g;
-  const bj = { ...g.bj, hands: { ...g.bj.hands }, dealer: [...g.bj.dealer] } as BjExtra;
+  const bj = copyBj(g.bj);
   while (handTotal(bj.dealer) < 17) bj.dealer.push(bjDraw(bj));
   const dealerTotal = handTotal(bj.dealer);
   const dealerBust = dealerTotal > 21;

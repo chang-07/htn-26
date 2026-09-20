@@ -359,6 +359,12 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     await agent.devSeedCart(String(body.shop), String(body.total ?? "$10.00"));
     return Response.json({ ok: true });
   }
+  if (url.pathname === "/api/dev/seedgame") {
+    const spec = body.spec;
+    const voter = String(body.voter ?? "dev-player");
+    if (!spec || typeof spec !== "object") return new Response("spec is required", { status: 400 });
+    return Response.json(await agent.devCreateGame(spec as Parameters<PlanAgentClass["devCreateGame"]>[0], voter, body.name));
+  }
   if (url.pathname === "/api/dev/tool") {
     const { tool, args } = body as unknown as { tool: string; args?: unknown };
     return Response.json({ result: await agent.devRunTool(tool, args) });

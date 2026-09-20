@@ -13,7 +13,7 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches, upsertProfile } from "./tools/match";
 import { searchTrack } from "./tools/music";
-import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
@@ -1151,6 +1151,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** Prompt -> spec -> stored game -> card in the thread. RPC from /api/widget and the make_game tool. */
   async gameCreate(topic: string, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
     const spec = await generateGame(this.env, topic.slice(0, 140));
+    return this.createGame(spec, creator, creatorName);
+  }
+
+  /** Local smoke-test entry point. The caller supplies an already validated spec, so no model is involved. */
+  async devCreateGame(spec: GameSpec, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
+    return this.createGame(GameSpecZ.parse(spec), creator, creatorName);
+  }
+
+  private async createGame(spec: GameSpec, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
     const id = crypto.randomUUID().slice(0, 12);
     let g = newGame(id, spec, creator);
     if (creatorName) g = joinGame(g, creator, creatorName);

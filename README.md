@@ -48,6 +48,15 @@ With no `LINQ_API_KEY` set, the Linq transport is **dry**: sends are logged, not
 delivered. Drive the agent with the localhost-only simulator:
 
 ```sh
+npm run test:games    # deterministic Blackjack engine checks; no model or deploy
+npm run eval:games    # live game-generation prompts; run npm run dev first
+```
+
+`eval:games` scores the selected game type and playable contract rather than
+the model's exact wording. It creates simulator chats only, so it neither
+deploys nor sends a real message.
+
+```sh
 curl -X POST localhost:5173/api/dev/message -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","text":"dinner friday? ramen downtown"}'
 curl -X POST localhost:5173/api/dev/react -H 'content-type: application/json' \
