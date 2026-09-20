@@ -1006,7 +1006,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
   async payFinished(result: PayResult) {
     this.setMeta(`pay_running:${result.shop}`, "");
     const who = this.label(result.payer);
-    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId });
+    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId, ...(result.cause ? { cause: result.cause } : {}) });
     const carts = this.carts();
     const cart = carts.find((c) => shopKey(c.shop) === result.shop);
 
@@ -1014,9 +1014,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // dry run — a real checkout, really priced, nothing charged — is played out
     // as a purchase: the cart goes paid, the receipt and the split follow. It is
     // marked as a mock in the run log, and PAYMENTS_LIVE always wins over it.
-    if (result.status === "dry_run" && cart && this.env.PAY_MOCK === "true" && this.env.PAYMENTS_LIVE !== "true") {
-      this.note("warn", "pay.mocked", { shop: result.shop, total: result.total, who: mask(result.payer) });
-      result = { ...result, status: "paid", confirmation: `DEMO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`, detail: "demo mode: nothing was charged" };
+    // A checkout that could not even run (no browser, a store page that broke)
+    // is mocked too, at the cart's own total: the demo must not hang on a
+    // provider. Never when Pay may have been pressed.
+    const mockable = result.status === "dry_run" || (result.status === "failed" && !result.unsure);
+    if (mockable && cart && this.env.PAY_MOCK === "true" && this.env.PAYMENTS_LIVE !== "true") {
+      this.note("warn", "pay.mocked", { shop: result.shop, total: result.total ?? cart.total, who: mask(result.payer), instead_of: result.status });
+      result = { ...result, status: "paid", total: result.total ?? cart.total, confirmation: `DEMO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`, detail: "demo mode: nothing was charged" };
     }
 
     if (result.status === "paid" && cart) {

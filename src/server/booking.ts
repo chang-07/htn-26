@@ -50,6 +50,8 @@ export type PayResult = {
   /** The store's order status page, which later says when it ships. */
   orderUrl?: string;
   detail?: string;
+  /** Why it failed, for the run log only: never shown in the chat. */
+  cause?: string;
   /** Pay was pressed but the store never confirmed: it may or may not have charged. */
   unsure?: boolean;
   shotId?: string;
@@ -134,7 +136,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       session = await openBrowser(this.env, { timeoutSeconds: 570 });
     } catch (err) {
       log("error", "pay", "browser.failed", errorFields(err));
-      return { ...base, status: "failed", detail: "couldn't start a browser to check out with" };
+      return { ...base, status: "failed", detail: "couldn't start a browser to check out with", cause: String(err instanceof Error ? err.message : err).slice(0, 300) };
     }
     let paymentId: string | undefined;
     let shotId: string | undefined;
