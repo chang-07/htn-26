@@ -19,6 +19,7 @@
   "dependencies": {
     "@cloudflare/puppeteer": "^1.4.0",
     "@linqapp/sdk": "^0.69.2",
+    "@radix-ui/react-select": "^2.3.7",
     "@sentry/cloudflare": "^10.75.0",
     "agents": "^0.24.0",
     "framework7": "^9.1.3",
