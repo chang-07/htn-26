@@ -17,7 +17,7 @@ import { LANE_NAMES, laneCatalogue, normaliseLanes, type LaneName } from "./lane
  * direct chat mid-onboarding or with an intro to answer always has the people
  * lane, and only a group turn may end silent.
  */
-export type RouteSource = "reason" | "triage" | "fallback" | "single";
+export type RouteSource = "reason" | "sticky" | "triage" | "fallback" | "single";
 
 export type Route = {
   /** Never includes core; systemFor and laneToolNames add it. Empty means core only. */
@@ -35,6 +35,13 @@ export type WakeFacts = {
   reason: string;
   /** With votes_in: the kind of the lone winner when it came from the trip sources, else undefined. */
   winnerKind?: string;
+  /**
+   * The lanes of the turn that asked the question this message answers, when
+   * that question's window is still open and the message reads as an answer
+   * (isShortAnswer). "Friday" or "the second one" needs no triage: the
+   * conversation is still in the lanes it was in.
+   */
+  sticky?: LaneName[];
 };
 
 export type ChatFacts = {
@@ -56,6 +63,18 @@ export type TriageInput = {
 };
 
 const CHOOSABLE = LANE_NAMES.filter((l) => l !== "core") as Exclude<LaneName, "core">[];
+
+/**
+ * A reply to a question the agent asked is short ("friday", "sam, sam@x.com",
+ * "the second one"); a new ask is not. Only a short one reuses the asking
+ * turn's lanes, so "actually, also order balloons" still gets triaged.
+ */
+export const SHORT_ANSWER_WORDS = 8;
+export function isShortAnswer(text: string): boolean {
+  const t = text.trim();
+  if (!t || /https?:\/\//i.test(t)) return false;
+  return t.split(/\s+/).length <= SHORT_ANSWER_WORDS;
+}
 
 /** Lanes a wake reason fixes on its own, or undefined when the message decides. */
 export function routeByReason(wake: WakeFacts): LaneName[] | undefined {
@@ -85,7 +104,8 @@ export function settleRoute(route: Route, chat: ChatFacts): Route {
   return { ...route, lanes: normaliseLanes(lanes).filter((l) => l !== "core"), silent };
 }
 
-export const TRIAGE_BUDGET_MS = 4000;
+/** Generous on purpose: a provider that has not answered a 30-line question by now is in trouble, and the fallback costs only what the turn cost before this split. */
+export const TRIAGE_BUDGET_MS = 8000;
 
 const TRIAGE_SYSTEM = `You are the triage step for Whim, a planning agent in an iMessage chat. Whim was just woken by the latest message(s) in the transcript (or by answering a question it asked). Your only job is to pick which of Whim's lanes this turn needs, from the catalogue. Pick every lane the latest ask touches: "flights and a hotel, and order balloons" is trip and shop. A vague ask about what to do or where to go is venues. Something about a person's own details, or wanting to be paired up with someone, is people. Talking, thanking, agreeing, small talk, or answering a question Whim asked that needs no tool is no lane at all: return an empty list and Whim will still reply. In a group chat, if the latest messages are people talking among themselves and nobody asked Whim anything, return an empty list too. Never invent lane names.`;
 
@@ -102,6 +122,7 @@ export async function routeTurn(env: Env, wake: WakeFacts, input: TriageInput, o
   if (env.AGENT_PIPELINE === "single") return { lanes: [...CHOOSABLE], source: "single", tokens: 0, ms: 0, silent: false };
   const fixed = routeByReason(wake);
   if (fixed) return { lanes: fixed, source: "reason", tokens: 0, ms: 0, silent: false };
+  if (wake.sticky) return { lanes: normaliseLanes(wake.sticky).filter((l) => l !== "core"), source: "sticky", tokens: 0, ms: 0, silent: false };
 
   const ask = opts.ask ?? askJson;
   const budget = opts.budgetMs ?? TRIAGE_BUDGET_MS;

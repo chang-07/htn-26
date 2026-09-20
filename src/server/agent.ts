@@ -34,8 +34,8 @@ import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS,
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
 import { redirectFor, travelKindOf } from "./research-routing";
-import { laneToolNames, systemFor } from "./lanes";
-import { routeTurn, settleRoute } from "./triage";
+import { laneToolNames, systemFor, type LaneName } from "./lanes";
+import { isShortAnswer, routeTurn, settleRoute } from "./triage";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
@@ -1713,11 +1713,16 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // the prompt and only those tools, instead of every rule and all 45 tools
     // on every call. What the harness knows (onboarding, a pending intro,
     // direct vs group) is applied once both are in. See triage.ts.
+    // A short message inside the window of a question the agent asked is the
+    // answer to it, and stays in the lanes the question was asked from.
+    const last = history[history.length - 1];
+    const answering = Date.now() < Number(this.getMeta("awaiting_answer_until") ?? 0) && last?.direction === "in" && isShortAnswer(last.body ?? "");
+    const sticky = answering ? this.stickyLanes() : undefined;
     const [about, routed] = await Promise.all([
       this.aboutPeople(people, direct),
       routeTurn(
         this.env,
-        { reason: reason ?? "", winnerKind },
+        { reason: reason ?? "", winnerKind, sticky },
         {
           direct,
           transcript: history.slice(-TRIAGE_LINES).map(line).join("\n"),
@@ -1905,6 +1910,7 @@ ${transcript}`,
       if (askedQuestion) {
         this.setMeta("awaiting_answer_until", String(Date.now() + ANSWER_WINDOW_MS));
         this.setMeta("awaiting_answer_wakes", "0");
+        this.setMeta("route_sticky", JSON.stringify(route.lanes));
         end("info", "replied", { steps: step + 1, awaitingAnswer: true });
         if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
         return;
@@ -1912,6 +1918,16 @@ ${transcript}`,
     }
     end("warn", "max_steps");
     if (research.deliveredId) this.sql`UPDATE research SET delivered = 1 WHERE id = ${research.deliveredId}`;
+  }
+
+  /** The lanes the last question was asked from, for triage.ts's sticky route; undefined when unknown or unreadable. */
+  private stickyLanes(): LaneName[] | undefined {
+    try {
+      const parsed = JSON.parse(this.getMeta("route_sticky") || "null");
+      return Array.isArray(parsed) ? (parsed as LaneName[]) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async runTool(name: string, rawArgs: string): Promise<string> {

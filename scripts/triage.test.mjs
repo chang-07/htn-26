@@ -105,3 +105,27 @@ test("a malformed triage answer falls back to every lane", async () => {
   assert.equal(route.source, "fallback");
   assert.equal(route.tokens, 5);
 });
+
+test("a short reply inside the answer window is an answer; a long one or a link is a new ask", async () => {
+  const b = await build({ entryPoints: ["src/server/triage.ts"], bundle: true, write: false, format: "esm", platform: "node", external: ["@sentry/cloudflare", "cloudflare:*"] });
+  const { isShortAnswer } = await import(`data:text/javascript;base64,${Buffer.from(b.outputFiles[0].text).toString("base64")}`);
+  for (const t of ["friday", "the second one", "Sam Lee, sam@example.com", "yes go ahead", "  8pm works  "]) assert.equal(isShortAnswer(t), true, t);
+  for (const t of ["", "   ", "actually can you also grab balloons and a banner from partycity for six of us", "check this https://example.com/menu"]) assert.equal(isShortAnswer(t), false, JSON.stringify(t));
+});
+
+test("an answer to the agent's own question reuses the asking turn's lanes without a triage call", async () => {
+  let asked = 0;
+  const route = await routeTurn(env, { reason: "", sticky: ["shop", "core"] }, input, { ask: async () => (asked++, { value: { lanes: ["trip"] }, tokens: 1 }) });
+  assert.equal(asked, 0);
+  assert.deepEqual(route, { lanes: ["shop"], source: "sticky", tokens: 0, ms: 0, silent: false });
+  // A sticky route with no lanes is core only and never silent, in a group or not.
+  const bare = await routeTurn(env, { reason: "", sticky: [] }, input, { ask: async () => (asked++, { value: { lanes: [] }, tokens: 1 }) });
+  assert.equal(settleRoute(bare, { direct: false, onboarding: false, pendingIntro: false }).silent, false);
+  assert.equal(asked, 0);
+});
+
+test("a fixed wake reason beats a sticky route", async () => {
+  const route = await routeTurn(env, { reason: "votes_in", sticky: ["shop"] }, input, {});
+  assert.deepEqual(route.lanes, ["venues"]);
+  assert.equal(route.source, "reason");
+});
