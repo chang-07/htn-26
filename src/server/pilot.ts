@@ -82,7 +82,7 @@ Each turn you see the page's interactive elements, each with an id. Reply with O
 - click   {id}           press a button, link, tab, date cell or time slot
 - type    {id, text}     replace the contents of an input
 - select  {id, text}     choose the option with that visible text in a <select>
-- scroll                 reveal more of the page
+- scroll                 trigger content that only loads on scroll
 - wait                   the page is still loading
 - submit  {id}           the FINAL button that commits the booking (Confirm / Complete reservation / Book now on the last step). Use "click" for every earlier Next/Continue button.
 - done    {summary, confirmation?, slots?}   the task is complete
@@ -95,6 +95,8 @@ Rules:
 - Do not create accounts or log in. If that is required, give_up.
 - Decline optional extras, newsletters and upsells. Accept cookie banners only to clear them.
 - If the requested time is unavailable, pick the closest available time and say so in your summary.
+- The element list covers the WHOLE page, not just what is on screen, so scrolling does not reveal controls that are already listed or missing. Scroll at most once, and only when the page is visibly still loading more.
+- If the page has no date, time or party-size controls and no Reserve / Book a table link to follow, this place cannot be booked here: give_up and say it does not take online reservations on this page.
 - Be decisive: do not repeat an action that already failed; try something else or give_up.`;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -448,7 +450,7 @@ ELEMENTS:
 ${seen.elements.join("\n") || "(none found — try wait or scroll)"}
 
 ACTIONS SO FAR:
-${steps.join("\n") || "(none)"}`;
+${steps.join("\n") || "(none)"}${goal.vision ? "\n\nA screenshot of what is on screen now is attached: use it to read calendars, time grids and error messages the element list cannot convey." : ""}`;
 
     let action: Action;
     try {
