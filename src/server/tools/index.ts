@@ -250,7 +250,7 @@ const descriptions: Record<ToolName, string> = {
     "Read where the people in this chat are, for anyone sharing their location with you. Works in groups and one-to-one. Returns each person's city and how far apart they are. Call it whenever someone says they shared their location, or asks anything that depends on where people are: how far apart they are, what is between them, what is near them.",
   remember_name: "Remember what a participant goes by, once they or someone else says it.",
   research:
-    "Research real options on the live web: reads guides, lists and venue sites, then returns ranked places with sources. Runs in the background for a few minutes and the results arrive on their own — say you're looking into it, then stop. Use it once the group has given you something to go on (what, where, roughly when).",
+    "Research real options on the live web: reads guides, lists and venue sites, then returns ranked places with sources. Runs in the background for a few minutes and the results arrive on their own — say you're looking into it, then stop. Use it once the group has given you something to go on (what, where, roughly when). Not for flights, places to stay or ticketed events: search_flights, search_stays and find_events answer those in this turn.",
   propose_plan:
     "Post the plan card with 2-4 concrete options and open voting. Calling it again redraws the same card in place, so use it whenever the options change.",
   get_votes: "Read the current tally and who has not voted yet.",
@@ -318,7 +318,10 @@ const descriptions: Record<ToolName, string> = {
     "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
-export function openAiTools() {
+/** Built once per isolate: the schemas never change, and this ran before every model call. */
+let tools: ReturnType<typeof buildTools> | undefined;
+
+function buildTools() {
   return (Object.keys(toolSchemas) as ToolName[]).map((name) => ({
     type: "function" as const,
     function: {
@@ -327,6 +330,10 @@ export function openAiTools() {
       parameters: z.toJSONSchema(toolSchemas[name]) as Record<string, unknown>,
     },
   }));
+}
+
+export function openAiTools() {
+  return (tools ??= buildTools());
 }
 
 export function parseToolArgs<N extends ToolName>(

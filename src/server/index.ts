@@ -670,13 +670,28 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   const icon = path.endsWith("/icon.png");
   const name = decodeURIComponent(icon ? path.slice(0, -"/icon.png".length) : path);
   const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, name);
+
+  // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
+  const bucket = (env as { CARDS?: R2Bucket }).CARDS;
+
+  const ticketId = url.searchParams.get("t");
+  if (ticketId) {
+    // A stored ticket never changes, so its id is the whole cache key — and
+    // the plan state is not needed to draw it, so it is not fetched.
+    const key = `${name}/t-${ticketId}.png`;
+    const hit = await bucket?.get(key);
+    if (hit) return new Response(hit.body, { headers: pngHeaders });
+    const ticket = await agent.getTicket(ticketId);
+    if (!ticket) return new Response("Not found", { status: 404 });
+    const image = await (await renderTicket(ticket)).arrayBuffer();
+    if (bucket) ctx.waitUntil(bucket.put(key, image));
+    return new Response(image, { headers: pngHeaders });
+  }
+
   // A method, not the `state` property: the Sentry wrapper around the agent
   // class passes method calls through but answers undefined for a remote
   // property read, which took every card image down with a 500.
   const plan = (await agent.publicState()) as PlanState;
-
-  // CARDS is optional: see the r2_buckets note in wrangler.jsonc.
-  const bucket = (env as { CARDS?: R2Bucket }).CARDS;
 
   if (icon) {
     const key = `${name}/icon-${plan.version}.png`;
@@ -684,19 +699,6 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
     if (hit) return new Response(hit.body, { headers: pngHeaders });
     const venue = plan.options.find((o) => o.id === plan.chosenOptionId)?.title ?? plan.title;
     const image = await (await renderPlanIcon(planEmoji(plan), venue)).arrayBuffer();
-    if (bucket) ctx.waitUntil(bucket.put(key, image));
-    return new Response(image, { headers: pngHeaders });
-  }
-
-  const ticketId = url.searchParams.get("t");
-  if (ticketId) {
-    // A stored ticket never changes, so its id is the whole cache key.
-    const key = `${name}/t-${ticketId}.png`;
-    const hit = await bucket?.get(key);
-    if (hit) return new Response(hit.body, { headers: pngHeaders });
-    const ticket = await agent.getTicket(ticketId);
-    if (!ticket) return new Response("Not found", { status: 404 });
-    const image = await (await renderTicket(ticket)).arrayBuffer();
     if (bucket) ctx.waitUntil(bucket.put(key, image));
     return new Response(image, { headers: pngHeaders });
   }
