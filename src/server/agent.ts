@@ -398,6 +398,17 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.sql`INSERT INTO messages (linq_id, direction, author, body, ts)
              VALUES (${msg.linqId}, 'in', ${msg.from}, ${msg.text}, ${Date.now()})`;
 
+    // Record receipt before command handlers can return (or fail). Payments
+    // and resets are user messages too, even when they need no model turn.
+    const wake = this.wakeReason(msg);
+    this.note("info", wake ? "message.in" : "message.stored", {
+      from: mask(msg.from),
+      chars: msg.text.length,
+      group: msg.isGroup,
+      ...(wake ? { wake } : {}),
+      ...this.body(msg.text),
+    });
+
     // Every message is remembered, but only one addressed to the agent wakes the
     // model. Group chatter costs no tokens and draws no interjections; when the
     // agent is finally called on, the whole conversation is already in its memory.
@@ -410,16 +421,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     }
     if (await this.handlePayText(msg)) return;
 
-    const wake = this.wakeReason(msg);
+    if (wake === "answer") {
+      const wakes = Number(this.getMeta("awaiting_answer_wakes") ?? 0) + 1;
+      this.setMeta("awaiting_answer_wakes", String(wakes));
+      if (wakes >= ANSWER_WINDOW_MAX_WAKES) this.setMeta("awaiting_answer_until", "0");
+    }
     // Someone asking again is what re-arms research after a failure.
     if (wake) this.setMeta("research_failed", "0");
-    this.note("info", wake ? "message.in" : "message.stored", {
-      from: mask(msg.from),
-      chars: msg.text.length,
-      group: msg.isGroup,
-      ...(wake ? { wake } : {}),
-      ...this.body(msg.text),
-    });
     if (!wake) return;
 
     let scheduled = false;
@@ -518,9 +526,6 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (msg.mentionsMe) return "mention";
     if (msg.replyToId && this.isOwnMessage(msg.replyToId)) return "reply";
     if (Date.now() < Number(this.getMeta("awaiting_answer_until") ?? 0)) {
-      const wakes = Number(this.getMeta("awaiting_answer_wakes") ?? 0) + 1;
-      this.setMeta("awaiting_answer_wakes", String(wakes));
-      if (wakes >= ANSWER_WINDOW_MAX_WAKES) this.setMeta("awaiting_answer_until", "0");
       return "answer";
     }
     return null;

@@ -647,7 +647,7 @@ export function StepDetail({ node, t0, chat, onClose, onPrev, onNext }: { node: 
             <span>{node.event}</span>
           </div>
           <h2 style={{ margin: "8px 0 0", fontFamily: "var(--sans)", fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.3, textWrap: "balance" }}>
-            {node.title}{node.sub ? <span style={{ fontWeight: 400, color: "var(--soft)" }}> · {node.sub}</span> : null}
+            <span className="rv-title">{node.title}</span>{node.sub ? <span style={{ fontWeight: 400, color: "var(--soft)" }}> · {node.sub}</span> : null}
           </h2>
           <p style={{ margin: "8px 0 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--soft)", fontVariantNumeric: "tabular-nums" }}>
             {elapsedLabel(node.gapMs)} since {node.firstEvent ? 'start' : 'previous event'} · {elapsedLabel(node.totalMs)} total elapsed{node.ms != null && ` · operation took ${elapsedLabel(node.ms)}`} · seq {node.seq}

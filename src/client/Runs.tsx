@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import type { RunEventRow, RunSummary } from "../server/runs";
 import { RunTape, StepDetail, toNodes, type TapeEvent } from "./RunTape";
-import { FONT_LINK, THEME_CSS, clock, dur } from "./ui";
+import { FONT_LINK, THEME_CSS, SERVICES, clock, dur } from "./ui";
 
 /**
  * Live view of what the agent is doing, across every chat.
@@ -354,6 +354,15 @@ export function Runs() {
                 <details className="rv-trace" key={`trace-${detail.runId}`} open>
                   <summary>Activity trace <span>{nodes.length} events</span></summary>
                   <p>Each row shows time since the previous recorded event, then total elapsed time. Select a step for details.</p>
+                  <details className="rv-colour-legend">
+                    <summary>Colours</summary>
+                    <ul aria-label="Event colour legend">
+                      {Object.entries(SERVICES).map(([id, service]) => (
+                        <li key={id}><i aria-hidden="true" style={{ background: `var(${service.v})` }} />{service.label}</li>
+                      ))}
+                      <li><i aria-hidden="true" style={{ background: "var(--error)" }} />Error</li>
+                    </ul>
+                  </details>
                   <RunTape run={detail} nodes={nodes} token={token} picked={picked} onPick={setPicked} raw={raw} />
                 </details>
               </div>
