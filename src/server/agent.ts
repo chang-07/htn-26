@@ -27,7 +27,7 @@ import type { ShipTo } from "./checkout";
 import type { PayParams, PayResult } from "./booking";
 import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools";
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
-import { findMatches, upsertProfile } from "./tools/match";
+import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
@@ -2524,7 +2524,13 @@ this.rememberCardId(id);
         const { who, blurb } = parseToolArgs("join_match_pool", rawArgs);
         const person = this.participants().find((p) => this.label(p.handle) === who);
         if (!person) return `No participant labelled ${who}`;
-        await upsertProfile(this.env, { id: person.handle, name: this.label(person.handle), blurb });
+        // The pool is a view of the profile. Writing the model's blurb straight to
+        // the index replaced what they had said about themselves, and left the
+        // opt-in unset, so find_matches still turned them away.
+        const store = peopleStore(this.env);
+        const before = (await store.getMany([person.handle]))[person.handle];
+        const saved = await store.save(person.handle, { matchOptIn: true, ...(before?.interests ? {} : { interests: blurb.slice(0, 200) }) });
+        if (!(await syncMatchPool(this.env, person.handle, saved))) this.note("warn", "match_pool.failed", {});
         return "added to the pool";
       }
 
