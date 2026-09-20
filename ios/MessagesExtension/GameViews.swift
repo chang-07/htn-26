@@ -8,8 +8,8 @@ struct GameView_: Codable, Equatable {
     struct Player: Codable, Equatable {
         let name: String
         let score: Int
-        let answered: Bool? = nil
-        let chosen: Bool? = nil
+        var answered: Bool? = nil
+        var chosen: Bool? = nil
         var hasAnswered: Bool { answered ?? chosen ?? false }
     }
     struct Question: Codable, Equatable { let q: String; let options: [String]; let myAnswer: Int? }
@@ -41,23 +41,23 @@ struct GameView_: Codable, Equatable {
         let dealerTotal: Int?
         let outcomes: [BjOutcome]?
     }
-    let gameType: String? = nil
-    let surface: String? = nil
-    let kind: String? = nil
-    let bj: Bj? = nil
+    var gameType: String? = nil
+    var surface: String? = nil
+    var kind: String? = nil
+    var bj: Bj? = nil
     let id: String
     let title: String
     let topic: String
     let phase: String
     let round: Int
     let totalRounds: Int
-    let visual: Visual? = nil
+    var visual: Visual? = nil
     let players: [Player]
-    let question: Question? = nil
-    let reveal: Reveal? = nil
-    let choiceRound: ChoiceRound? = nil
-    let tapDodge: TapDodge? = nil
-    let joined: Bool? = nil
+    var question: Question? = nil
+    var reveal: Reveal? = nil
+    var choiceRound: ChoiceRound? = nil
+    var tapDodge: TapDodge? = nil
+    var joined: Bool? = nil
 
     var isProcedural: Bool { gameType == "procedural" }
     var isJoined: Bool { joined ?? false }
@@ -209,7 +209,8 @@ struct TriviaGameView: View {
 
                 Group {
                     switch g.phase {
-                    case "lobby": g.isProcedural ? proceduralLobby(g) : lobby(g)
+                    case "lobby":
+                        if g.isProcedural { proceduralLobby(g) } else { lobby(g) }
                     case "round":
                         if g.isProcedural { proceduralRound(g) }
                         else if g.kind == "blackjack" { bjRound(g) } else { round(g) }
