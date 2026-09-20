@@ -44,6 +44,7 @@ import { People as PeopleBase, people as peopleStore } from "./people";
 export type People = PeopleBase;
 export const People: typeof PeopleBase = Sentry.instrumentDurableObjectWithSentry(sentryOptions, PeopleBase);
 import { handleProfile } from "./profile";
+import { BRAND_AVATAR_PNG_BASE64 } from "./brand-avatar";
 import { handleDemo } from "./demos";
 
 export default Sentry.withSentry(sentryOptions, {
@@ -166,10 +167,11 @@ export default Sentry.withSentry(sentryOptions, {
       return handleProfile(request, url, env);
     }
 
-    // The contact photo (scripts/linq-contact-card.mjs points Linq at it).
+    // The contact photo (scripts/linq-contact-card.mjs points Linq at it):
+    // the brand asterisk on cream, same mark the widget header uses.
     if (url.pathname === "/card/avatar.png") {
-      const image = await renderAvatar(env.IMESSAGE_APP_NAME);
-      return new Response(image.body, { headers: { ...pngHeaders, "cache-control": "public, max-age=300" } });
+      const image = Uint8Array.from(atob(BRAND_AVATAR_PNG_BASE64), (c) => c.charCodeAt(0));
+      return new Response(image, { headers: { ...pngHeaders, "cache-control": "public, max-age=300" } });
     }
 
     // Short link to the Browserbase live view of a booking in progress.

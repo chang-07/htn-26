@@ -31,7 +31,7 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
-import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { actProceduralGame, isProceduralGame, newProceduralGame, viewProceduralGame, type ProceduralAction, type ProceduralGameState } from "./procedural-game";
 import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameSurface, type PendingRoute } from "./game-routing";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
@@ -1857,6 +1857,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** Prompt -> Jev gate -> surface definition -> card. Never chooses a surface after an abstention. */
   async gameCreate(prompt: string, creator: string, creatorName?: string): Promise<GameCreateResponse> {
+    // Blackjack is our own built-in engine, not a copied game — send it there
+    // instead of the procedural router, whose copy-risk guard would refuse it.
+    if (/\bblack\s*jack\b/i.test(prompt)) {
+      const spec = await generateGame(this.env, prompt);
+      if (spec.kind === "blackjack") {
+        const made = await this.createGame(spec, creator, creatorName);
+        return { status: "created", id: made.id, title: made.title, route: { status: "accepted", surface: "choice_rounds", confidence: 1, decisionVersion: 1 } };
+      }
+    }
     const route = await classifyGamePrompt(this.env, prompt);
     if (route.status !== "accepted") return this.pendingGamePrompt(prompt, route);
     return this.createProceduralGame(prompt, route, creator, creatorName);
