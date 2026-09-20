@@ -39,6 +39,20 @@ struct GalleryView: View {
             Screen(id: "Playlist · sheet", bubble: false) { AnyView(PlaylistView(store: fixturePlanStore(fxPlan), presentation: fxSheet)) },
             Screen(id: "Home · linked", bubble: false) { AnyView(HomeView(base: URL(string: "https://preview.invalid")!, chat: "preview", presentation: fxSheet, onRoute: { _ in })) },
             Screen(id: "Runner · sheet", bubble: false) { AnyView(InfiniteRunnerView(presentation: fxSheet)) },
+            Screen(id: "Runner · card", bubble: false) {
+                // The exact pipeline the challenge card uses: view -> UIImage.
+                let banner = RunnerCardBanner(big: "👑 23", label: "NEW CHAMP", face: nil, crowned: true)
+                let renderer = ImageRenderer(content: banner)
+                renderer.scale = 3
+                return AnyView(VStack(spacing: 12) {
+                    Text(renderer.uiImage == nil ? "ImageRenderer: NIL" : "ImageRenderer: ok")
+                        .font(.caption.weight(.bold))
+                    if let ui = renderer.uiImage {
+                        Image(uiImage: ui).resizable().scaledToFit().padding()
+                            .border(.quaternary)
+                    }
+                })
+            },
         ]
     }
 

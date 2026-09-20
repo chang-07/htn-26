@@ -218,21 +218,21 @@ struct RunnerCardBanner: View {
             Text("✳︎").font(.system(size: 130, weight: .heavy))
                 .foregroundStyle(Whim.coral.opacity(0.16))
                 .rotationEffect(.degrees(12)).offset(x: 120, y: 40)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(big).font(.system(size: 58, weight: .heavy, design: .rounded)).foregroundStyle(Whim.ink)
-                Text(label).font(.system(size: 13, weight: .heavy)).kerning(2.5).foregroundStyle(Whim.coral)
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(big).font(.system(size: 54, weight: .heavy, design: .rounded)).foregroundStyle(Whim.ink)
+                Text(label).font(.system(size: 12, weight: .heavy)).kerning(2.5).foregroundStyle(Whim.coral)
             }
-            .padding(.leading, 22).padding(.bottom, 88)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 26).padding(.bottom, 108)
             Rectangle().fill(Whim.ink.opacity(0.75)).frame(height: 3).padding(.bottom, 34)
             ZStack(alignment: .bottom) {
                 Capsule().fill(Whim.greenDeep).frame(width: 12, height: 52)
                 Capsule().fill(Whim.greenDeep).frame(width: 8, height: 24).offset(x: -9, y: -16)
                 Capsule().fill(Whim.greenDeep).frame(width: 8, height: 20).offset(x: 9, y: -22)
             }
-            .offset(x: 250, y: -36)
+            .offset(x: 262, y: -36)
             FaceRunnerSprite(face: face, phase: 1.1, airborne: false, crowned: crowned)
-                .scaleEffect(1.35, anchor: .bottom)
-                .offset(x: 40, y: -36)
+                .offset(x: 44, y: -40)
         }
         .frame(width: 340, height: 210)
     }

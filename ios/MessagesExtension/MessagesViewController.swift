@@ -275,7 +275,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         // The banner: dino course, the sender's runner, giant score.
         let face = UserDefaults.standard.data(forKey: "whim.runner.avatar").flatMap(UIImage.init(data:))
         let banner = RunnerCardBanner(
-            big: won == true ? "👑 \(score)" : "\(target)",
+            big: "\(target)",
             label: won == true ? "NEW CHAMP" : won == false ? "CROWN HOLDS" : "CAMERA RUNNER",
             face: face,
             crowned: won == true)
