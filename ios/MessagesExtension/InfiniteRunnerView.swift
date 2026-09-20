@@ -167,10 +167,12 @@ struct InfiniteRunnerView: View {
     private var runnerScene: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottomLeading) {
+                // The camera is the point of the game — show it, with only a
+                // light brand tint so the runner and obstacles stay readable.
                 RunnerCameraPreview(tracker: tracker)
-                    .opacity(tracker.cameraDenied ? 0 : 0.28)
+                    .opacity(tracker.cameraDenied ? 0 : 0.9)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                LinearGradient(colors: [Whim.green.opacity(0.18), Whim.greenDeep.opacity(0.32)], startPoint: .top, endPoint: .bottom)
+                LinearGradient(colors: [Whim.green.opacity(0.1), Whim.greenDeep.opacity(0.22)], startPoint: .top, endPoint: .bottom)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 Capsule().fill(Color.primary.opacity(0.18)).frame(height: 4).padding(.horizontal, 14).padding(.bottom, 20)
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

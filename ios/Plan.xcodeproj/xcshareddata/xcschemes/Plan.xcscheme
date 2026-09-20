@@ -15,9 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "4753941B6528DF61C2A0CFCE"
-               BuildableName = "PlanPreviews.app"
-               BlueprintName = "PlanPreviews"
+               BlueprintIdentifier = "FC9D45DC2C61B5A89BB4E3BD"
+               BuildableName = "Plan.app"
+               BlueprintName = "Plan"
                ReferencedContainer = "container:Plan.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -32,9 +32,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "4753941B6528DF61C2A0CFCE"
-            BuildableName = "PlanPreviews.app"
-            BlueprintName = "PlanPreviews"
+            BlueprintIdentifier = "FC9D45DC2C61B5A89BB4E3BD"
+            BuildableName = "Plan.app"
+            BlueprintName = "Plan"
             ReferencedContainer = "container:Plan.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -55,9 +55,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "4753941B6528DF61C2A0CFCE"
-            BuildableName = "PlanPreviews.app"
-            BlueprintName = "PlanPreviews"
+            BlueprintIdentifier = "FC9D45DC2C61B5A89BB4E3BD"
+            BuildableName = "Plan.app"
+            BlueprintName = "Plan"
             ReferencedContainer = "container:Plan.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -72,9 +72,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "4753941B6528DF61C2A0CFCE"
-            BuildableName = "PlanPreviews.app"
-            BlueprintName = "PlanPreviews"
+            BlueprintIdentifier = "FC9D45DC2C61B5A89BB4E3BD"
+            BuildableName = "Plan.app"
+            BlueprintName = "Plan"
             ReferencedContainer = "container:Plan.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

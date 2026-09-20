@@ -10,6 +10,15 @@ settings:
     SWIFT_VERSION: "5.9"
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: "1.0"
+schemes:
+  Plan:
+    build:
+      targets:
+        Plan: all
+  PlanPreviews:
+    build:
+      targets:
+        PlanPreviews: all
 targets:
   Plan:
     type: application
@@ -23,6 +32,9 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: Whim
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # TCC reads camera usage for the Messages extension from the HOST
+        # app's Info.plist — without this the runner dies with a TCC abort.
+        INFOPLIST_KEY_NSCameraUsageDescription: Whim uses the camera only to turn a hand pinch into a jump in the infinite runner.
     dependencies:
       - target: PlanMessages
         embed: true
