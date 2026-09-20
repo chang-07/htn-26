@@ -1,6 +1,9 @@
 import { traceOperation } from "./telemetry.ts";
 import { z } from "zod";
 import type { PageText, SearchHit } from "./browser.ts";
+import { askJev, hasJev, requireJev } from "./jev.ts";
+
+export { hasJev, requireJev } from "./jev.ts";
 
 type SourceEnv = {
   BROWSERBASE_API_KEY?: string;
@@ -72,14 +75,6 @@ export async function searchSources(env: SourceEnv, query: string, limit = 8): P
 export const JEV_BATCH_SIZE = 16;
 const JEV_CONCURRENCY = 2;
 
-/** Without the key research still runs: the LLM picks sources and options go unscored. */
-export const hasJev = (env: SourceEnv) => !!env.AI_GATEWAY_API_KEY?.trim();
-
-export function requireJev(env: SourceEnv) {
-  if (!env.AI_GATEWAY_API_KEY?.trim()) throw new Error("AI_GATEWAY_API_KEY is required for Jev scoring; research cannot use unscored results");
-  if (env.JEV_MODEL && env.JEV_MODEL !== "typesafe-ai/jev") throw new Error("Research scoring requires typesafe-ai/jev");
-}
-
 type Judgment = { relevance: number; confidence: number };
 async function scoreRows(env: SourceEnv, brief: string, rows: ResearchHit[], stage: "source" | "candidate") {
   if (!rows.length) return { scores: [] as Judgment[], tokens: 0 };
@@ -112,18 +107,14 @@ async function scoreRows(env: SourceEnv, brief: string, rows: ResearchHit[], sta
         "The supplied evidence directly supports this option as a strong fit for the requested plan.",
       ],
     }]));
-    const result = JevResponse.parse(await postJson("https://ai-gateway.vercel.sh/typesafe/v1/systemone", {
-      authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
-    }, {
-      model: "typesafe-ai/jev",
-      state: JSON.stringify({ brief, results: batch.map((hit, index) => ({
+    const result = await askJev(env, JSON.stringify({
+      brief, results: batch.map((hit, index) => ({
         index, title: hit.title.slice(0, 400), url: hit.url.slice(0, 2000),
         snippet: hit.snippet.slice(0, stage === "candidate" ? 4000 : 1200),
         ...(hit.query ? { query: hit.query.slice(0, 200) } : {}),
         ...(hit.publishedDate ? { publishedDate: hit.publishedDate.slice(0, 80) } : {}),
-      })) }),
-      questions,
-    }));
+      })),
+    }), questions, JevResponse);
     batch.forEach((_, i) => {
       const answer = result.answers[`hit_${i}`];
       if (!answer) throw new Error(`Jev omitted score for result ${offset + i}`);
