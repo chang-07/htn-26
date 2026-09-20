@@ -125,7 +125,8 @@ on a time, book it, and order anything they need.
   exactly that in one line. shop_build_cart posts one store's cart card with
   a checkout link a human can also complete by hand. When the group changes that order,
   call it again with that store's whole new cart; never describe cart changes in
-  text.
+  text. "Check out" is not a change: the cart and its link already exist, so
+  say how to pay instead of rebuilding it.
 - An event usually shops at several stores (cake from one, balloons from
   another). Each store has its own cart and its own checkout: build them one
   store at a time, and never put one store's variantId in another store's cart.
@@ -2425,7 +2426,10 @@ this.rememberCardId(id);
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(args.contactEmail) || /example\.(com|org)$/i.test(args.contactEmail)) {
           return "That is not a real email address. Ask the person booking for theirs; do not invent one.";
         }
-        if (!option.bookingUrl) return "This option has no online booking link, so there is nothing to drive. Tell the group they will need to call or book it themselves.";
+        // Research sometimes finds only a phone number ("tel:…"): a browser cannot open that.
+        if (!option.bookingUrl || !/^https?:\/\//i.test(option.bookingUrl)) {
+          return `This option has no online booking link, so there is nothing to drive. Tell the group they will need to call or book it themselves${option.bookingUrl ? `: ${option.bookingUrl}` : ""}.`;
+        }
 
         this.setMeta("booking_running", "1");
         this.setMeta("booking_for", JSON.stringify({ title: option.title, onBallot: Boolean(onBallot) }));
@@ -2474,6 +2478,14 @@ this.rememberCardId(id);
         const names = Object.fromEntries(
           this.sql<{ variant_id: string; name: string }>`SELECT variant_id, name FROM product_names`.map((r) => [r.variant_id, r.name]),
         );
+        // A made-up id only fails at the store, with an error nobody can act on.
+        const unknown = args.lines.filter((l) => !(l.variantId in names) && !l.variantId.startsWith("gid://"));
+        if (unknown.length) {
+          const standing = this.carts().find((c) => shopKey(c.shop) === shop);
+          return `${unknown.map((l) => l.variantId).join(", ")} is not a variantId from shop_search, so nothing changed.${
+            standing ? ` The ${shop} cart (${standing.total}) and its checkout link still stand: if the group only wants to check out, there is nothing to rebuild — tell them to thumbs-up the cart card or text "i'll pay".` : ""
+          } To change the cart, call shop_search first and copy the variantId exactly.`;
+        }
         const cart = await setCart(this.env, shop, args.lines, this.getMeta(`cart_id:${shop}`) || undefined, names);
         this.setMeta(`cart_id:${shop}`, cart.id);
         if (!cart.lines.length) {
