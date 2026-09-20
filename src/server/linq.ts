@@ -1,6 +1,6 @@
 import { tracedFetch } from "./telemetry";
 import LinqAPIV3 from "@linqapp/sdk";
-import { SLOT_EMOJI, cartsOf, shopKey, type PlanState } from "../types";
+import { cartsOf, shopKey, type PlanState } from "../types";
 import { errorFields, log, short } from "./log";
 
 export function linqClient(env: Env) {
@@ -115,10 +115,6 @@ export function cartCardPart(env: Env, agentName: string, plan: PlanState, shop?
         : cartImageUrl(env, agentName, plan.version, cart.shop),
     },
   };
-}
-
-export function tapbackLegend(plan: PlanState) {
-  return plan.options.map((o, i) => `${SLOT_EMOJI[i]} ${o.title}`).join("\n");
 }
 
 /**

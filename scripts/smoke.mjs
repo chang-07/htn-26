@@ -77,11 +77,11 @@ await check("propose_plan opens a ballot with 3 options", async () => {
   const { state } = await dump(a);
   expect(state.status === "voting" && state.options.length === 3, `status=${state.status} options=${state.options.length}`);
 });
-await check("one ticket photo per ballot, none per vote", async () => {
+await check("the plan card is the only ballot: no ticket for it, none per vote", async () => {
   for (const r of ["love", "like", "love"]) await post("/api/dev/react", { chat: a, from: "+15550001111", reaction: r });
   await sleep(1500);
   const text = await logs(a);
-  expect(count(text, "ticket.out") === 1, `ticket.out fired ${count(text, "ticket.out")} times`);
+  expect(count(text, "ticket.out") === 0, `ticket.out fired ${count(text, "ticket.out")} times`);
   expect(count(text, "vote.cast") === 3, `vote.cast fired ${count(text, "vote.cast")} times`);
 });
 await check("a voter's latest tapback replaces their earlier one", async () => {
@@ -89,20 +89,17 @@ await check("a voter's latest tapback replaces their earlier one", async () => {
   expect(votes.length === 1, `${votes.length} votes stored for one voter`);
   expect(Object.values(state.counts).reduce((x, y) => x + y, 0) === 1, "counts do not sum to 1");
 });
-await check("a tapback on the plan photo counts as a vote, in that slot", async () => {
+await check("a tapback on the plan card counts as a vote, in that slot", async () => {
   await post("/api/dev/react", { chat: a, from: "+15550002222", reaction: "like" });
-  await post("/api/dev/react", { chat: a, on: "photo", from: "+15550003333", reaction: "laugh" });
+  await post("/api/dev/react", { chat: a, from: "+15550003333", reaction: "laugh" });
   const { state, votes } = await dump(a);
   const v = votes.find((x) => x.voter === "+15550003333");
-  expect(v?.option_id === state.options[2].id && v.source === "reaction", `vote on the photo: ${JSON.stringify(v ?? "dropped")}`);
+  expect(v?.option_id === state.options[2].id && v.source === "reaction", `vote on the card: ${JSON.stringify(v ?? "dropped")}`);
 });
-await check("a new ballot forgets the old photo; a booking's confirmation photo takes no votes", async () => {
+await check("a ballot posts no photo; a booking's confirmation photo takes no votes", async () => {
   const b = chat("reballot");
   await tool(b, "propose_plan", PLAN);
-  const first = (await dump(b)).planPhotos;
-  await tool(b, "propose_plan", { ...PLAN, title: "Take two", options: PLAN.options.slice(0, 2) });
-  const second = (await dump(b)).planPhotos;
-  expect(first.length === 1 && second.length === 1 && second[0] !== first[0], `photos: first=${first.length} second=${second.length} same=${second[0] === first[0]}`);
+  expect((await dump(b)).planPhotos.length === 0, "an open ballot posted a ticket photo beside the plan card");
   await post("/api/dev/booked", { chat: b });
   expect((await dump(b)).planPhotos.length === 0, "the confirmation photo was kept as a vote target");
   const res = await post("/api/dev/react", { chat: b, on: "photo", from: "+15550004444", reaction: "love" });

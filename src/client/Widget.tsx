@@ -7,7 +7,7 @@ import { fmtMoney, invoiceFor } from "../invoice";
 // The same words the ticket image uses, so the page reads as the card opened up.
 const STATUS_META: Record<PlanState["status"], string> = {
   idle: "Whim",
-  voting: "React to vote",
+  voting: "Tap to vote",
   booking: "Booking",
   booked: "Confirmed",
   handoff: "Yours to finish",
