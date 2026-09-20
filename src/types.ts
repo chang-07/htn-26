@@ -55,7 +55,14 @@ export type CartSummary = {
  * holding the vote page, so it must never contain phone numbers or the
  * transcript — those live in the agent's private SQLite tables.
  */
+export type PlanMedia = {
+  title: string;
+  cover?: { url: string; generated?: boolean; source?: string; credit?: string; attributionFree?: boolean };
+  logos: Record<string, string>;
+};
+
 export type PlanState = {
+  media?: PlanMedia;
   title: string;
   /** One emoji for the outing, picked by the model with the ballot. Badges the chat once it is booked. */
   emoji?: string;

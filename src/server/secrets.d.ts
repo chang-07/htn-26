@@ -15,6 +15,8 @@ interface SecretBindings {
   IMESSAGE_TEAM_ID: string;
   IMESSAGE_BUNDLE_ID: string;
   OPENAI_API_KEY: string;
+  /** Image model for event covers; defaults to gpt-image-2. */
+  PLAN_IMAGE_MODEL?: string;
   DEV_LLM_BASE_URL?: string;
   DEV_LLM_API_KEY?: string;
   DEV_LLM_MODEL?: string;
