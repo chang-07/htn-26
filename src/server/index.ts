@@ -40,6 +40,7 @@ import { People as PeopleBase } from "./people";
 export type People = PeopleBase;
 export const People: typeof PeopleBase = Sentry.instrumentDurableObjectWithSentry(sentryOptions, PeopleBase);
 import { handleProfile } from "./profile";
+import { handleDemo } from "./demos";
 
 export default Sentry.withSentry(sentryOptions, {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -64,12 +65,50 @@ export default Sentry.withSentry(sentryOptions, {
     // WebSocket. Public plan state only, and the unguessable chat id is the
     // capability, exactly as on /w/<chat>.
     if (url.pathname.startsWith("/api/widget/")) {
-      const [chatEnc, action] = url.pathname.slice("/api/widget/".length).split("/");
+      const [chatEnc, action, extra, sub] = url.pathname.slice("/api/widget/".length).split("/");
       const chat = decodeURIComponent(chatEnc ?? "");
       if (!chat) return new Response("Not found", { status: 404 });
       const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
+      // Games: create from a prompt, fetch the redacted view, act (join/answer/advance).
+      if (action === "game") {
+        if (!extra && request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { prompt?: string; voter?: string; name?: string };
+          if (!body.prompt || !body.voter) return new Response("prompt and voter are required", { status: 400 });
+          try {
+            const made = await agent.gameCreate(body.prompt, body.voter, body.name);
+            return Response.json(made);
+          } catch (err) {
+            return new Response(err instanceof Error ? err.message : "generation failed", { status: 502 });
+          }
+        }
+        if (extra && !sub && request.method === "GET") {
+          const v = await agent.gameFetch(extra, url.searchParams.get("voter") ?? "");
+          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        if (extra && sub && request.method === "POST") {
+          const body = (await request.json().catch(() => ({}))) as { voter?: string; name?: string; choice?: number };
+          if (!body.voter) return new Response("voter is required", { status: 400 });
+          const act =
+            sub === "join" ? { type: "join" as const, name: body.name ?? "" }
+            : sub === "answer" ? { type: "answer" as const, choice: Number(body.choice) }
+            : sub === "advance" ? { type: "advance" as const }
+            : null;
+          if (!act) return new Response("Not found", { status: 404 });
+          const v = await agent.gameAct(extra, body.voter, act);
+          return v ? Response.json(v, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        return new Response("Not found", { status: 404 });
+      }
       if (!action && request.method === "GET") {
         return Response.json(await agent.publicState(), { headers: { "cache-control": "no-store" } });
+      }
+      // A stored ticket's JSON, for the native ticket card. Tickets are
+      // immutable once posted, so they cache hard.
+      if (action === "ticket" && extra && request.method === "GET") {
+        const ticket = await agent.getTicket(extra);
+        return ticket
+          ? Response.json(ticket, { headers: { "cache-control": "public, max-age=86400" } })
+          : new Response("Not found", { status: 404 });
       }
       if (action === "vote" && request.method === "POST") {
         const body = (await request.json().catch(() => ({}))) as { optionId?: string; voter?: string };
@@ -114,6 +153,11 @@ export default Sentry.withSentry(sentryOptions, {
 
     if (url.pathname.startsWith("/card/")) {
       return handleCard(url, env, ctx);
+    }
+
+    // The Linq showcase suite: six demo apps a card can open into.
+    if (url.pathname === "/demo" || url.pathname.startsWith("/demo/")) {
+      return handleDemo(url);
     }
 
     // Shopify fetches this to validate every UCP call the agent makes.

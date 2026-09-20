@@ -231,6 +231,9 @@ export const toolSchemas = {
     price: z.string().optional().describe("What was paid, as they said it, e.g. 'CA$254'"),
     paidBy: z.string().optional().describe("Who paid, as they are shown in the transcript"),
   }),
+  make_game: z.object({
+    topic: z.string().describe("What the game should be about, in the asker's words"),
+  }),
 } as const;
 
 export type ToolName = keyof typeof toolSchemas;
@@ -311,6 +314,8 @@ const descriptions: Record<ToolName, string> = {
     "When someone gives a flight number (AC123), read its live status now and keep watching: gate, delay, departed, landed are posted on their own from 36 hours before departure. Pass itemId when it is a stop on the itinerary.",
   confirm_item:
     "When a person says they booked or paid for an itinerary stop, mark it confirmed. With price and paidBy it also logs the expense so the invoice splits it.",
+  make_game:
+    "Generate a trivia game about the topic someone asked for and post its card. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
 export function openAiTools() {

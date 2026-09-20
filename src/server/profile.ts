@@ -41,7 +41,17 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
       <hr class="tk-perf"><p class="tk-lede" style="margin:0">Text the planner "profile" and it will send you a fresh one.</p>`);
   }
   const { handle, profile } = found;
+  const wantsJson = url.searchParams.get("json") === "1";
   if (rest === "ship") return handleShipTo(request, url, env, handle, profile);
+
+  // Native widget prefill: the same fields the form shows, as JSON.
+  if (wantsJson && request.method === "GET") {
+    return Response.json({
+      name: profile.name ?? "", area: profile.area ?? "", diet: profile.diet ?? "",
+      budget: profile.budget ?? "", interests: profile.interests ?? "", about: profile.about ?? "",
+      links: profile.links.join("\n"), matchOptIn: profile.matchOptIn ?? false,
+    }, { headers: { "cache-control": "no-store" } });
+  }
 
   if (request.method === "POST") {
     const form = await request.formData();
@@ -75,6 +85,7 @@ export async function handleProfile(request: Request, url: URL, env: Env): Promi
       const agent = await getAgentByName<Env, PlanAgent>(env.PlanAgent, saved.dmChat);
       await agent.profileSaved(saved.name).catch((err) => log("warn", "people", "profile.ack_failed", { error: String(err).slice(0, 200) }));
     }
+    if (wantsJson) return Response.json({ ok: true, name: saved.name ?? "" });
     return page(`<div class="tk-meta">Saved</div><h1 class="tk-title">Got it${saved.name ? `, ${esc(saved.name)}` : ""}</h1>
       <hr class="tk-perf"><p style="margin:0">The planner uses this in every chat you're in. Open this link again to change it, or text "forget me" to delete it.</p>`, true);
   }
@@ -130,6 +141,10 @@ async function handleShipTo(request: Request, url: URL, env: Env, handle: string
   let filled: Record<string, string | undefined> = toEvent
     ? { ...delivery.address, name: (profile.shipTo ?? profile.contact)?.name, email: (profile.shipTo ?? profile.contact)?.email }
     : { ...profile.shipTo };
+  const wantsJson = url.searchParams.get("json") === "1";
+  if (wantsJson && request.method === "GET") {
+    return Response.json({ shipTo: toEvent ? filled : (profile.shipTo ?? null) }, { headers: { "cache-control": "no-store" } });
+  }
   let problem = "";
   if (request.method === "POST") {
     const form = await request.formData();
@@ -151,6 +166,7 @@ async function handleShipTo(request: Request, url: URL, env: Env, handle: string
       log("info", "people", "ship_to.saved", { who: mask(handle), country: shipTo.country, event: toEvent });
       // Only resumes if that chat really is waiting on this person: the agent checks.
       if (agent) await agent.payResume(handle).catch((err) => log("warn", "people", "pay.resume_failed", { error: String(err).slice(0, 200) }));
+      if (wantsJson) return Response.json({ ok: true });
       return page(`<div class="tk-meta">Saved</div><h1 class="tk-title">That's where it ships</h1>
         <hr class="tk-perf"><p style="margin:0">${
           toEvent
@@ -158,6 +174,7 @@ async function handleShipTo(request: Request, url: URL, env: Env, handle: string
             : 'Back to the chat: the planner carries on from here. Open this link again to change the address, or text "forget me" to delete it.'
         }</p>`, true);
     }
+    if (wantsJson) return Response.json({ ok: false, problem });
     filled = shipTo;
   }
   const inputs = SHIP_FIELDS.map(
