@@ -7,6 +7,7 @@ interface __BaseEnv_Env {
 	BROWSER: BrowserRun;
 	AI: Ai;
 	LLM_PROFILE: string;
+	AGENT_PIPELINE: string;
 	OPENAI_MODEL: string;
 	BOOKING_DRY_RUN: string;
 	IMESSAGE_APP_NAME: string;

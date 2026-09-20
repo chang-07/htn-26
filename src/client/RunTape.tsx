@@ -130,6 +130,10 @@ function classify(e: TapeEvent): { svc: ServiceId; title: string; sub: string } 
     case "card.update": return { svc: "chat", title: "card redrawn", sub: `version ${num(f.version) ?? "?"}` };
     case "vote.cast": return { svc: "chat", title: "vote", sub: `by ${str(f.source) ?? "?"}` };
     case "turn.start": return { svc: "model", title: "turn", sub: str(f.llm) ?? "" };
+    case "turn.route": {
+      const lanes = Array.isArray(f.lanes) ? (f.lanes as string[]) : [];
+      return { svc: "model", title: f.silent ? "nothing for me" : "routed", sub: `${lanes.length ? lanes.join(", ") : "core only"} · ${str(f.source) ?? "?"}` };
+    }
     case "turn.step": {
       const calls = Array.isArray(f.calls) ? (f.calls as string[]) : [];
       return {

@@ -318,11 +318,15 @@ const descriptions: Record<ToolName, string> = {
     "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
-/** Built once per isolate: the schemas never change, and this ran before every model call. */
-let tools: ReturnType<typeof buildTools> | undefined;
+/**
+ * Built once per tool list, not per model call: the schemas never change. The
+ * full list is the common case; a turn scoped to some lanes (lanes.ts) asks
+ * for its subset by name and gets the same array back each time for that set.
+ */
+const built = new Map<string, ReturnType<typeof buildTools>>();
 
-function buildTools() {
-  return (Object.keys(toolSchemas) as ToolName[]).map((name) => ({
+function buildTools(names: readonly ToolName[]) {
+  return names.map((name) => ({
     type: "function" as const,
     function: {
       name,
@@ -332,8 +336,11 @@ function buildTools() {
   }));
 }
 
-export function openAiTools() {
-  return (tools ??= buildTools());
+export function openAiTools(names: readonly ToolName[] = Object.keys(toolSchemas) as ToolName[]) {
+  const key = names.join(",");
+  let tools = built.get(key);
+  if (!tools) built.set(key, (tools = buildTools(names)));
+  return tools;
 }
 
 export function parseToolArgs<N extends ToolName>(
