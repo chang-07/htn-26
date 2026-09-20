@@ -1870,8 +1870,74 @@ export class PlanAgent extends Agent<Env, PlanState> {
       }
     }
     const route = await classifyGamePrompt(this.env, prompt);
+    // Boundary mode: a game we can't run natively gets BUILT — a generated
+    // single-file web game behind a card link, instead of a refusal.
+    if (route.status === "copy_risk") return this.gameWebCreate(prompt);
     if (route.status !== "accepted") return this.pendingGamePrompt(prompt, route);
     return this.createProceduralGame(prompt, route, creator, creatorName);
+  }
+
+  // ---------------------------------------------------------- generated web games
+
+  /**
+   * The sandbox tier: the model writes a complete single-file HTML game,
+   * stored here and served at /game-web/<chat>/<id> with a strict CSP. It
+   * referees nothing — shared play goes through the dumb revisioned state
+   * blob, and anything with real stakes stays on the fixed engines.
+   */
+  async gameWebCreate(prompt: string): Promise<GameCreateResponse> {
+    const id = crypto.randomUUID().slice(0, 12);
+    const title = prompt.trim().slice(0, 48);
+    this.ctx.waitUntil(
+      this.buildWebGame(id, prompt).catch(async (err) => {
+        this.note("warn", "game_web.failed", errorFields(err));
+        await this.say("that game build fizzled — give me the prompt once more and I'll take another run at it").catch(() => undefined);
+      }),
+    );
+    return { status: "created", id, title, route: { status: "accepted", surface: "choice_rounds", confidence: 1, decisionVersion: 1 } };
+  }
+
+  private async buildWebGame(id: string, prompt: string) {
+    const { client, model } = llmFor(this.env);
+    const stateUrl = `/game-web/${encodeURIComponent(this.name)}/${id}/state`;
+    const res = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: `You build complete, playable, single-file HTML5 games. Output ONLY the HTML document — no markdown fences, no commentary. Hard rules: everything inline (CSS and JS), no external resources of any kind, mobile-first for a 390px-wide phone with touch controls, a <title> naming the game, clear how-to-play text on screen, and a real end state that names the winner with a play-again button. Make it look polished: bold colors, big touch targets. If turn-based play across friends' phones genuinely fits, you may persist JSON state: GET ${stateUrl} returns {"revision":n,"state":any}; PUT ${stateUrl} with JSON body {"expectedRevision":n,"state":any} — a 409 means re-GET and retry. Otherwise build it fully local for pass-and-play on one phone.`,
+        },
+        { role: "user", content: `Build this game: ${prompt}` },
+      ],
+    });
+    let html = (res.choices[0]?.message?.content ?? "").trim();
+    html = html.replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
+    if (!/<html[\s>]/i.test(html)) throw new Error("The generator returned no HTML document");
+    this.setMeta(`game_web:${id}`, html);
+    this.setMeta(`game_web_state:${id}`, JSON.stringify({ revision: 0, state: null }));
+    const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
+    this.note("info", "game_web.created", { id, title, bytes: html.length });
+    const url = `${this.env.PUBLIC_BASE_URL}/game-web/${encodeURIComponent(this.name)}/${id}`;
+    await sendLinkCard(this.env, this.name, { title, subtitle: "Built just now from your prompt", button: "Play", url }).catch(() => undefined);
+  }
+
+  async gameWebFetch(id: string): Promise<string | null> {
+    return this.getMeta(`game_web:${id}`) || null;
+  }
+
+  async gameWebState(id: string): Promise<{ revision: number; state: unknown } | null> {
+    const raw = this.getMeta(`game_web_state:${id}`);
+    return raw ? (JSON.parse(raw) as { revision: number; state: unknown }) : null;
+  }
+
+  /** Compare-and-swap only — this referees concurrency, never rules. */
+  async gameWebPutState(id: string, expectedRevision: number, state: unknown): Promise<{ ok: boolean; revision: number; state: unknown } | null> {
+    const current = await this.gameWebState(id);
+    if (!current) return null;
+    if (current.revision !== expectedRevision) return { ok: false, ...current };
+    const next = { revision: current.revision + 1, state };
+    this.setMeta(`game_web_state:${id}`, JSON.stringify(next));
+    return { ok: true, ...next };
   }
 
   /** A human-selected surface resumes an opaque, short-lived prompt. */

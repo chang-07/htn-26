@@ -92,6 +92,45 @@ export default Sentry.withSentry(sentryOptions, {
       return requireRunsAuth(request, url, env) ?? handleRuns(request, url, env);
     }
 
+    // Generated web games: the sandbox tier. The page is model-written HTML
+    // served under a strict CSP; the only server surface it can reach is its
+    // own revisioned state blob (compare-and-swap, referees concurrency only).
+    if (url.pathname.startsWith("/game-web/")) {
+      const [chatEnc, id, sub] = url.pathname.slice("/game-web/".length).split("/");
+      const chat = decodeURIComponent(chatEnc ?? "");
+      if (!chat || !id) return new Response("Not found", { status: 404 });
+      const agent = await getAgentByName<Env, PlanAgentClass>(env.PlanAgent, chat);
+      if (sub === "state") {
+        if (request.method === "GET") {
+          const s = await agent.gameWebState(id);
+          return s ? Response.json(s, { headers: { "cache-control": "no-store" } }) : new Response("Not found", { status: 404 });
+        }
+        if (request.method === "PUT" || request.method === "POST") {
+          const body = (await request.json().catch(() => null)) as { expectedRevision?: number; state?: unknown } | null;
+          if (!body || typeof body.expectedRevision !== "number") return new Response("expectedRevision is required", { status: 400 });
+          const r = (await agent.gameWebPutState(id, body.expectedRevision, body.state ?? null)) as
+            { ok: boolean; revision: number; state: unknown } | null;
+          if (!r) return new Response("Not found", { status: 404 });
+          return Response.json(r, { status: r.ok ? 200 : 409, headers: { "cache-control": "no-store" } });
+        }
+        return new Response("Not found", { status: 404 });
+      }
+      if (!sub && request.method === "GET") {
+        const html = await agent.gameWebFetch(id);
+        if (!html) return new Response("Not found", { status: 404 });
+        return new Response(html, {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+            "cache-control": "no-store",
+          },
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    }
+
     // The native iMessage widget: plain HTTP where the web page uses the
     // WebSocket. Public plan state only, and the unguessable chat id is the
     // capability, exactly as on /w/<chat>.
