@@ -22,7 +22,7 @@ import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive
 import type { FlightStatus, OrderStatus } from "./sources/types";
 import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { linqClient, type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
+import { linqClient, type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendWebGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
 import type { ShipTo } from "./checkout";
@@ -1917,8 +1917,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.setMeta(`game_web_state:${id}`, JSON.stringify({ revision: 0, state: null }));
     const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
     this.note("info", "game_web.created", { id, title, bytes: html.length });
-    const url = `${this.env.PUBLIC_BASE_URL}/game-web/${encodeURIComponent(this.name)}/${id}`;
-    await sendLinkCard(this.env, this.name, { title, subtitle: "Built just now from your prompt", button: "Play", url }).catch(() => undefined);
+    await sendWebGameCard(this.env, this.name, this.name, id, title).catch(() => undefined);
   }
 
   async gameWebFetch(id: string): Promise<string | null> {

@@ -353,6 +353,34 @@ export async function sendGameCard(env: Env, chatId: string, agentName: string, 
   return res.message.id;
 }
 
+/** A generated web game as an app card: the extension opens it expanded in its own sheet. */
+export async function sendWebGameCard(env: Env, chatId: string, agentName: string, gameId: string, title: string): Promise<string> {
+  const url = `${env.PUBLIC_BASE_URL}/game-web/${encodeURIComponent(agentName)}/${gameId}`;
+  if (isDry(env, chatId)) {
+    log("info", "linq", "dry.web_game_card", { chat: short(chatId), game: gameId, title });
+    return `dry-web-game-${gameId}`;
+  }
+  if (!hasAppIdentity(env)) {
+    return sendLinkCard(env, chatId, { title: title.slice(0, 64), subtitle: "Built just now from your prompt", button: "Play", url });
+  }
+  const res = await linqClient(env).chats.messages.send(chatId, {
+    message: {
+      parts: [{
+        type: "imessage_app" as const,
+        app: { name: env.IMESSAGE_APP_NAME, team_id: env.IMESSAGE_TEAM_ID, bundle_id: env.IMESSAGE_BUNDLE_ID },
+        url,
+        fallback_text: "Play the game",
+        layout: {
+          caption: title.slice(0, 64),
+          subcaption: "Built just now from your prompt",
+          trailing_caption: "PLAY",
+        },
+      }],
+    },
+  });
+  return res.message.id;
+}
+
 // ------------------------------------------------------------------- music
 
 /** The playlist as an app card: our extension renders the player from /music/<chat>. */

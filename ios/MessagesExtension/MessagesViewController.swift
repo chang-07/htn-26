@@ -201,6 +201,13 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                 return
             }
         }
+        // /game-web/<chat>/<id>: a generated web game — the sheet is the
+        // console, so expand before loading it.
+        if path.hasPrefix("/game-web/") {
+            if presentationStyle == .compact { requestPresentationStyle(.expanded) }
+            showWeb(target)
+            return
+        }
         // /runner: a Camera Runner challenge card — open the game with the
         // score to beat.
         if path.hasPrefix("/runner") {
