@@ -33,6 +33,7 @@ import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, 
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
+import { redirectFor, travelKindOf } from "./research-routing";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
@@ -73,10 +74,12 @@ on a time, book it, and order anything they need.
 - A vote needs at least two real options. If research found only one good
   place, do not pad the list: tell the group about that one and ask whether to
   go with it or look further.
-- To find real places, call research. It takes a few minutes and its findings
-  appear under "Research" below when done: tell the group you're on it, then
-  stop. Never start a second run while one is in progress, and never invent
-  places, prices or links — propose only what research found.
+- To find real places (restaurants, bars, activities, venues), call research.
+  It takes a few minutes and its findings appear under "Research" below when
+  done: tell the group you're on it, then stop. Never start a second run while
+  one is in progress, and never invent places, prices or links — propose only
+  what research found. Flights, places to stay and ticketed events are never
+  research: search_flights, search_stays and find_events answer in this turn.
 - For a trip or a night out, work in segments and open one ballot at a time:
   flights first, then where to stay, then what to do. search_flights,
   search_stays and find_events return real options in this turn with their
@@ -1306,11 +1309,18 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return items.map((i) => `${i.id} ${ITEM_EMOJI[i.kind]} ${i.title} — ${i.status}${i.note ? ` (${i.note})` : ""}${i.price ? `, ${i.price}` : ""}${i.lastUpdate ? `; ${i.lastUpdate}` : ""}`).join(" | ");
   }
 
-  /** A source failed: log the cause, tell the model something it can say. */
+  /**
+   * A source failed: log the cause, tell the model something it can say. The
+   * cause travels with it, so a key or plan problem (a 402 on the proxy, say)
+   * is never softened into "nothing matched": on a real phone, "did not answer"
+   * became "the search came up empty again", which sent the person off to
+   * change dates that were never the problem.
+   */
   private sourceFailure(err: unknown, what: string): string {
     this.note("warn", "source.failed", { what, ...errorFields(err) });
     if (err instanceof SourceError && err.code === "no_browserbase") return `${what} needs BROWSERBASE_API_KEY, which is not set here. Say you can't look that up right now.`;
-    return `${what} did not answer this time. Say so in one line and offer to try again.`;
+    const cause = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
+    return `${what} could not be reached (${cause}). This is a system problem on this side, not a lack of results: say in one line that the lookup isn't working right now, do NOT say nothing matched or ask them to change dates or airports, and do not call it again this turn.`;
   }
 
   private static WATCH_SECONDS = 15 * 60;
@@ -2063,6 +2073,13 @@ ${transcript}`,
         if (this.getMeta("research_failed") === "1") {
           this.note("warn", "research.retry_blocked", {});
           return "Research just failed and nobody has asked for anything since. Do not retry. Tell them once, in one line, that the search didn't work and ask what to change.";
+        }
+        // A hotel or flight brief would run for minutes and end in "nothing
+        // found"; the tools that actually answer it are a call away.
+        const travel = travelKindOf(args.brief);
+        if (travel) {
+          this.note("info", "research.redirected", { to: travel === "flight" ? "search_flights" : "search_stays", brief: args.brief.slice(0, 120) });
+          return redirectFor(travel);
         }
         return this.startResearch(args);
       }

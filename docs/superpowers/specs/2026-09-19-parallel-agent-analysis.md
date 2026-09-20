@@ -78,6 +78,39 @@ lock, which delays a follow-up message's turn.
 - `/api/dev/watch` with two seeded watches: both checked in one wave.
 - Browserbase Fetch probe at 4 and 8 concurrent calls: no throttling.
 
+## The phone said "checking… when the results return", then "came up empty again"
+
+Reported mid-branch, from production, for a Toronto hotel on Sept 20 and a
+Toronto → Vancouver flight that night. Investigated before touching anything:
+
+- The two sources answer for exactly those queries from here: 10 Toronto
+  hotels for the 20th (adults 1), a WestJet fare for that evening. So the
+  data exists and the parsers work against today's Google pages.
+- The production model (gpt-5.6-luna, probed directly with the agent's real
+  system prompt and tool list, original and new) routes both asks straight to
+  `search_stays` / `search_flights`. It does not send them to research.
+- Therefore the tools ran in production and either failed or came back empty
+  there. Their failure text was "did not answer this time. Say so in one line
+  and offer to try again", which the model rendered as "came up empty again…
+  I'll retry", and a genuinely empty parse says "showed nothing for those
+  dates", which reads the same. Neither told the person the real cause.
+- Production runs on a teammate's Cloudflare account, so its logs are not
+  readable from this machine. The distinguishing event is in the run viewer
+  (`/runs`, with `RUNS_TOKEN`) or `npx wrangler tail`: `source.failed` with
+  the error (a 401/402 means the Browserbase key or plan on that account is
+  not the one probed here), or `source.empty` with the page `title` (a
+  consent or interstitial page means Google is serving that proxy something
+  else).
+
+What changed so the next occurrence is honest and diagnosable:
+
+| Where | Before | After |
+|---|---|---|
+| `agent.ts` `sourceFailure` | "did not answer this time… offer to try again" | Carries the cause (status code and host) and tells the model it is a system problem: say the lookup isn't working, do not say nothing matched, do not ask for different dates |
+| `research.ts` (PR #40, merged meanwhile) | A missing Jev key failed every run in 0 ms with "say the search came up empty" | Research runs without the key: the LLM picks sources and options go unscored. This branch's own "unavailable" signal for that case was dropped on rebase, since nothing triggers it any more |
+| `agent.ts` research tool + `research-routing.ts` | A hotel or flight brief would start a minutes-long run that ends in "nothing found" | Refused with the tool to call instead; venue briefs that merely mention a hotel or a flight still go to research (13 cases in `research-routing.test.mjs`) |
+| system prompt + `research` description | "To find real places, call research" | Flights, stays and events are named as never research |
+
 ## How to see the difference
 
 `/runs` shows each tool as a span with a start and duration. On a turn that
