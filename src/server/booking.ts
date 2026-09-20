@@ -274,11 +274,12 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
     }
 
     const replayUrl = session.sessionId ? `https://browserbase.com/sessions/${session.sessionId}` : undefined;
+    let page: Awaited<ReturnType<typeof session.browser.newPage>> | undefined;
     try {
       // Lets the group watch the browser being driven while it happens.
       await this.live.bookingProgress("browser", { provider: session.provider, liveUrl: session.liveUrl });
 
-      const page = await session.browser.newPage();
+      page = await session.browser.newPage();
       const when = new Date(params.isoTime);
       const whenText = Number.isNaN(when.getTime())
         ? params.isoTime
@@ -325,7 +326,13 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       };
     } catch (err) {
       log("error", "book", "pilot.failed", errorFields(err));
-      return { ok: false, status: "error", detail: "the browser hit an error partway through", handoffUrl: params.url, replayUrl };
+      // Into the chat's own event log too: the console is gone by the time anyone asks why.
+      await this.live.bookingProgress("pilot_failed", { url: params.url.slice(0, 200), ...errorFields(err) }).catch(() => {});
+      const shotId = await page
+        ?.screenshot({ type: "jpeg", quality: 60, encoding: "base64" })
+        .then((b64) => this.live.saveShot(String(b64)))
+        .catch(() => undefined);
+      return { ok: false, status: "error", detail: "the browser hit an error partway through", handoffUrl: params.url, replayUrl, shotId };
     } finally {
       await session.close();
     }
