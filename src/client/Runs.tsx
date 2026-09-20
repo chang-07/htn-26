@@ -47,6 +47,8 @@ function useMedia(query: string) {
 
 export function Runs() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   const [selected, setSelected] = useState<string | null>(runIdFromPath);
   const [events, setEvents] = useState<Record<string, TapeEvent[]>>({});
   const [chat, setChat] = useState<string>("");
@@ -199,7 +201,9 @@ export function Runs() {
       // A blank list with no explanation is indistinguishable from "no runs yet".
       .catch((e: Error) => { if (!controller.signal.aborted) setProblem(e.message); });
     void refresh();
-    const timer = window.setInterval(refresh, 15_000);
+    // Live runs arrive over the socket; this only catches what it missed, so a
+    // tab nobody is looking at does not keep reading the database.
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 15_000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [chat, tokenParam]);
 
@@ -225,8 +229,8 @@ export function Runs() {
     if (!ids.length) return;
     const controller = new AbortController();
     let refreshing = false;
-    const refresh = async () => {
-      if (refreshing) return;
+    const refresh = async (ids: string[]) => {
+      if (refreshing || !ids.length) return;
       refreshing = true;
       let failed = false;
       for (let i = 0; i < ids.length && !controller.signal.aborted; i += 4) {
@@ -246,8 +250,13 @@ export function Runs() {
       refreshing = false;
     };
     setDetailProblem(false);
-    void refresh();
-    const timer = window.setInterval(refresh, 15_000);
+    void refresh(ids);
+    // A closed run's events never change, so only turns still open are read
+    // again, and only while someone is looking.
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void refresh(ids.filter(id => runsRef.current.find(run => run.runId === id)?.ended == null));
+    }, 15_000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [memberIds, selected, tokenParam, upsert]);
 
