@@ -1874,7 +1874,9 @@ ${transcript}`,
             // A question hands the conversation to the humans. There is nothing
             // left to do until they answer, so don't ask the model again — that
             // is exactly where it started rephrasing itself.
-            if (/\?\s*$/.test(parseToolArgs("send_message", call.function.arguments).text)) askedQuestion = true;
+            // A question anywhere in the text, not just at the end: "what dates? i'll
+            // need that first." still waits on an answer. A "?" inside a link is not one.
+            if (/\?(\s|$)/.test(parseToolArgs("send_message", call.function.arguments).text.replace(/https?:\/\/\S+/g, ""))) askedQuestion = true;
           }
         } catch (err) {
           // Already logged by timed(). Bad arguments are the model's to fix; an
