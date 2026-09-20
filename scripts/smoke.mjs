@@ -70,6 +70,30 @@ console.log("\nserver");
 await check("dev server is up", async () => expect((await get("/.well-known/ucp-agent.json")).status === 200, "not reachable — is `npm run dev` running?"));
 await check("vote page is served", async () => expect((await get("/w/x")).headers.get("content-type")?.includes("text/html"), "SPA not served"));
 
+console.log("\ngame widget HTTP pipeline");
+await check("blackjack can create, play, and reveal locally", async () => {
+  const c = chat("blackjack");
+  const voter = "local-player";
+  const made = await (await post("/api/dev/seedgame", {
+    chat: c,
+    voter,
+    name: "Luka",
+    spec: { version: 1, kind: "blackjack", title: "Local blackjack", topic: "Smoke table", rounds: 3, startingChips: 500 },
+  })).json();
+  expect(made.id, "game was not created");
+
+  const action = (sub) => post(`/api/widget/${encodeURIComponent(c)}/game/${made.id}/${sub}`, { voter });
+  await action("advance");
+  let view = await (await get(`/api/widget/${encodeURIComponent(c)}/game/${made.id}?voter=${encodeURIComponent(voter)}`)).json();
+  expect(view.kind === "blackjack" && view.phase === "round", `unexpected round: ${JSON.stringify(view)}`);
+  expect(view.bj?.dealer?.[1] === "??", "dealer hole card leaked during the round");
+
+  view = await (await action("stand")).json();
+  expect(view.phase === "reveal", `stand did not reveal: ${view.phase}`);
+  expect(view.bj?.dealer?.every((card) => card !== "??"), "dealer hole card stayed hidden after reveal");
+  expect(Array.isArray(view.bj?.outcomes) && view.bj.outcomes.length === 1, "round outcome missing");
+});
+
 console.log("\nplan, votes, cards");
 const a = chat("plan");
 await check("propose_plan opens a ballot with 3 options", async () => {
@@ -77,11 +101,11 @@ await check("propose_plan opens a ballot with 3 options", async () => {
   const { state } = await dump(a);
   expect(state.status === "voting" && state.options.length === 3, `status=${state.status} options=${state.options.length}`);
 });
-await check("one ticket photo per ballot, none per vote", async () => {
+await check("the plan card is the only ballot: no ticket for it, none per vote", async () => {
   for (const r of ["love", "like", "love"]) await post("/api/dev/react", { chat: a, from: "+15550001111", reaction: r });
   await sleep(1500);
   const text = await logs(a);
-  expect(count(text, "ticket.out") === 1, `ticket.out fired ${count(text, "ticket.out")} times`);
+  expect(count(text, "ticket.out") === 0, `ticket.out fired ${count(text, "ticket.out")} times`);
   expect(count(text, "vote.cast") === 3, `vote.cast fired ${count(text, "vote.cast")} times`);
 });
 await check("a voter's latest tapback replaces their earlier one", async () => {
@@ -89,20 +113,29 @@ await check("a voter's latest tapback replaces their earlier one", async () => {
   expect(votes.length === 1, `${votes.length} votes stored for one voter`);
   expect(Object.values(state.counts).reduce((x, y) => x + y, 0) === 1, "counts do not sum to 1");
 });
-await check("a tapback on the plan photo counts as a vote, in that slot", async () => {
+await check("a tapback on the plan card counts as a vote, in that slot", async () => {
   await post("/api/dev/react", { chat: a, from: "+15550002222", reaction: "like" });
-  await post("/api/dev/react", { chat: a, on: "photo", from: "+15550003333", reaction: "laugh" });
+  await post("/api/dev/react", { chat: a, from: "+15550003333", reaction: "laugh" });
   const { state, votes } = await dump(a);
   const v = votes.find((x) => x.voter === "+15550003333");
-  expect(v?.option_id === state.options[2].id && v.source === "reaction", `vote on the photo: ${JSON.stringify(v ?? "dropped")}`);
+  expect(v?.option_id === state.options[2].id && v.source === "reaction", `vote on the card: ${JSON.stringify(v ?? "dropped")}`);
 });
-await check("a new ballot forgets the old photo; a booking's confirmation photo takes no votes", async () => {
+await check("a tap on the card counts toward everyone having voted", async () => {
+  const g = chat("tapvotes");
+  for (const from of ["+15550005551", "+15550005552"]) await post("/api/dev/message", { chat: g, from, text: "hey", group: true });
+  await tool(g, "propose_plan", PLAN);
+  const { state } = await dump(g);
+  expect(state.awaiting.length === 2, `awaiting ${state.awaiting.length} of 2 before any vote`);
+  await post("/api/dev/react", { chat: g, from: "+15550005551", reaction: "love" });
+  const res = await post(`/api/widget/${g}/vote`, { optionId: state.options[1].id, voter: "phone-abc" });
+  expect(res.ok, `widget vote answered ${res.status}`);
+  const after = (await dump(g)).state;
+  expect(after.awaiting.length === 0, `still awaiting ${JSON.stringify(after.awaiting)} after a tapback and a card tap`);
+});
+await check("a ballot posts no photo; a booking's confirmation photo takes no votes", async () => {
   const b = chat("reballot");
   await tool(b, "propose_plan", PLAN);
-  const first = (await dump(b)).planPhotos;
-  await tool(b, "propose_plan", { ...PLAN, title: "Take two", options: PLAN.options.slice(0, 2) });
-  const second = (await dump(b)).planPhotos;
-  expect(first.length === 1 && second.length === 1 && second[0] !== first[0], `photos: first=${first.length} second=${second.length} same=${second[0] === first[0]}`);
+  expect((await dump(b)).planPhotos.length === 0, "an open ballot posted a ticket photo beside the plan card");
   await post("/api/dev/booked", { chat: b });
   expect((await dump(b)).planPhotos.length === 0, "the confirmation photo was kept as a vote target");
   const res = await post("/api/dev/react", { chat: b, on: "photo", from: "+15550004444", reaction: "love" });
@@ -204,6 +237,49 @@ await check("a misspelt \"remove my paymente\" is still handled in code, never b
   expect(!text.includes("turn.start"), "the model was left to answer a payment removal");
 });
 
+console.log("\nreset");
+await check("/reset wipes the plan, carts and transcript but keeps the people and the area", async () => {
+  const c = chat("reset");
+  await post("/api/dev/message", { chat: c, from: "+15550006661", text: "hey", group: true });
+  await post("/api/dev/message", { chat: c, from: "+15550006662", text: "yo", group: true });
+  await tool(c, "remember_area", { area: "Waterloo" });
+  await tool(c, "propose_plan", PLAN);
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/react", { chat: c, from: "+15550006661", reaction: "love" });
+  await post("/api/dev/message", { chat: c, from: "+15550006661", text: "/reset", group: true });
+  await sleep(500);
+  const d = await dump(c);
+  expect(d.state.status === "idle" && d.state.options.length === 0, `plan survived: ${d.state.status}, ${d.state.options.length} options`);
+  expect((d.state.carts ?? []).length === 0, "a cart survived");
+  expect(d.votes.length === 0, `${d.votes.length} votes survived`);
+  expect(d.transcript.length <= 1, `${d.transcript.length} messages survived`);
+  expect(d.participants.length === 2, `${d.participants.length} participants kept, wanted 2`);
+  expect(d.area === "Waterloo", `area is ${JSON.stringify(d.area)}`);
+  expect(!(await logs(c)).includes("turn.start"), "the model was woken by /reset");
+});
+
+await check("/reset forgets the introductions of the people in the chat, so they can be matched again", async () => {
+  const c = chat("resetintro");
+  const [a, b] = [`+1555${Date.now() % 10000000}`.padEnd(12, "1"), `+1555${Date.now() % 10000000}`.padEnd(12, "2")];
+  for (const from of [a, b]) await post("/api/dev/message", { chat: c, from, text: "hey", group: true });
+  await post("/api/dev/intro", { from: a, to: b });
+  const before = await (await get(`/api/dev/intro?handle=${encodeURIComponent(a)}`)).json();
+  expect(before.paired.includes(b), "the seeded introduction was not recorded");
+  await post("/api/dev/message", { chat: c, from: a, text: "/reset", group: true });
+  await sleep(500);
+  const after = await (await get(`/api/dev/intro?handle=${encodeURIComponent(a)}`)).json();
+  expect(after.paired.length === 0, `still paired with ${JSON.stringify(after.paired)} after /reset`);
+});
+
+console.log("\nmatching");
+await check("find_matches in a direct chat finds the person even when the model's label for them is off", async () => {
+  const c = chat("matchlabel");
+  await post("/api/dev/message", { chat: c, from: "+15550008881", text: "/reset" }); // a direct chat with one person, and no model turn
+  const out = await tool(c, "find_matches", { who: "Some Other Name", near: "London" });
+  expect(!/No participant labelled/.test(out), `refused on the label: ${out}`);
+  expect(!/Not in a group/.test(out), `treated a direct chat as a group: ${out}`);
+});
+
 console.log("\npaying (guards only: no browser, no wallet, no store)");
 await check("a thumbs up on a cart from someone with no wallet starts nothing", async () => {
   const c = chat("payguard");
@@ -214,6 +290,33 @@ await check("a thumbs up on a cart from someone with no wallet starts nothing", 
   expect(text.includes("pay.needs_wallet"), "no wallet check happened");
   expect(!text.includes("pay.started"), "a payment started for someone with no wallet");
   expect(count(text, "pay.asked") === 1, "a non-pay tapback was treated as an offer to pay");
+});
+await check("a thumbs up on the shopping list offers to pay the one unpaid cart", async () => {
+  const c = chat("paylist");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await tool(c, "show_shopping_list", {});
+  await post("/api/dev/react", { chat: c, on: "list", from: "+15550007777", reaction: "like" });
+  const text = await logs(c);
+  expect(count(text, "pay.asked") === 1, `pay.asked fired ${count(text, "pay.asked")} times for a thumbs up on the list`);
+  expect(!text.includes("not on the plan card"), "the tapback on the list was dropped");
+});
+await check("with PAY_MOCK a dry run ends as a purchase: cart paid, marked as a mock in the log", async () => {
+  const c = chat("paymock");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/payfinished", { chat: c, shop: "example-store.com", from: "+15550007777", status: "dry_run", total: "USD $14.50" });
+  const cart = (await dump(c)).state.carts.find((x) => x.shop === "example-store.com");
+  const text = await logs(c);
+  if (text.includes("pay.mocked")) expect(!!cart?.paidBy && cart.total === "USD $14.50", `mocked but cart is ${JSON.stringify(cart)}`);
+  else expect(!cart?.paidBy, "a dry run marked the cart paid with PAY_MOCK off");
+});
+await check("with PAY_MOCK a checkout that could not start is mocked at the cart's total; an unsure one never is", async () => {
+  const c = chat("paymockfail");
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/payfinished", { chat: c, shop: "example-store.com", from: "+15550007777", status: "failed", unsure: "1" });
+  expect(!(await dump(c)).state.carts[0].paidBy, "an unsure payment was mocked as paid");
+  await post("/api/dev/payfinished", { chat: c, shop: "example-store.com", from: "+15550007777", status: "failed" });
+  const cart = (await dump(c)).state.carts[0];
+  if ((await logs(c)).includes("pay.mocked")) expect(!!cart.paidBy && cart.total === "$12.00", `mocked but cart is ${JSON.stringify(cart)}`);
 });
 await check("\"i'll pay\" with no cart in the chat is ordinary conversation", async () => {
   const c = chat("paytext");

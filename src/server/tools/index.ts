@@ -235,7 +235,7 @@ export const toolSchemas = {
     paidBy: z.string().optional().describe("Who paid, as they are shown in the transcript"),
   }),
   make_game: z.object({
-    topic: z.string().describe("What the game should be about, in the asker's words"),
+    topic: z.string().optional().describe("What the game should be about, in the asker's words. When they named none (\"let's play a game\"), one you picked from what this chat is about."),
   }),
 } as const;
 
@@ -255,7 +255,7 @@ const descriptions: Record<ToolName, string> = {
     "Read where the people in this chat are, for anyone sharing their location with you. Works in groups and one-to-one. Returns each person's city and how far apart they are. Call it whenever someone says they shared their location, or asks anything that depends on where people are: how far apart they are, what is between them, what is near them.",
   remember_name: "Remember what a participant goes by, once they or someone else says it.",
   research:
-    "Research real options on the live web: reads guides, lists and venue sites, then returns ranked places with sources. Runs in the background for a few minutes and the results arrive on their own — say you're looking into it, then stop. Use it once the group has given you something to go on (what, where, roughly when).",
+    "Research real options on the live web: reads guides, lists and venue sites, then returns ranked places with sources. Runs in the background for a few minutes and the results arrive on their own — say you're looking into it, then stop. Use it once the group has given you something to go on (what, where, roughly when). Not for flights, places to stay or ticketed events: search_flights, search_stays and find_events answer those in this turn.",
   propose_plan:
     "Post the plan card with 2-4 concrete options and open voting. Calling it again redraws the same card in place, so use it whenever the options change.",
   get_votes: "Read the current tally and who has not voted yet.",
@@ -264,7 +264,7 @@ const descriptions: Record<ToolName, string> = {
   book_option:
     "Make a real reservation for the winning option. Only after voting has clearly settled, and only once.",
   shop_search:
-    "Search a Shopify store's catalog for things to order (decor, snacks, gifts). Prices come back ready to quote.",
+    "Search a Shopify store's catalog for things to order (decor, snacks, gifts, clothes). Prices come back ready to quote.",
   shop_build_cart:
     "Set ONE store's cart to these contents and post its card with a checkout link for someone to pay. Each store has its own cart, so an event can shop at several: build them one store at a time. Calling it again for the same shop replaces that shop's contents and redraws its card, leaving every other store's cart alone. You never pay yourself.",
   remember_fact:
@@ -320,10 +320,13 @@ const descriptions: Record<ToolName, string> = {
   confirm_item:
     "When a person says they booked or paid for an itinerary stop, mark it confirmed. With price and paidBy it also logs the expense so the invoice splits it.",
   make_game:
-    "Generate a trivia game about the topic someone asked for and post its card. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
+    "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
 };
 
-export function openAiTools() {
+/** Built once per isolate: the schemas never change, and this ran before every model call. */
+let tools: ReturnType<typeof buildTools> | undefined;
+
+function buildTools() {
   return (Object.keys(toolSchemas) as ToolName[]).map((name) => ({
     type: "function" as const,
     function: {
@@ -332,6 +335,10 @@ export function openAiTools() {
       parameters: z.toJSONSchema(toolSchemas[name]) as Record<string, unknown>,
     },
   }));
+}
+
+export function openAiTools() {
+  return (tools ??= buildTools());
 }
 
 export function parseToolArgs<N extends ToolName>(

@@ -22,7 +22,7 @@ import { baselineFor, diffFlight, diffOrder, flightWatchActive, orderWatchActive
 import type { FlightStatus, OrderStatus } from "./sources/types";
 import { tripKind } from "./sources/kind";
 import { fmtMoney, invoiceFor, parseMoney, type Expense, type Invoice } from "../invoice";
-import { linqClient, type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, tapbackLegend, updateCard, type SendOptions } from "./linq";
+import { linqClient, type PaymentConnection, attachLink, connectPayments, dressChat, markRead, readLocation, readPlaces, requestLocation, stopLocation, paymentConnection, planIconUrl, revokePayments, sendAttachCard, sendCard, sendLinkCard, hasAppIdentity, sendGameCard, sendTicketCard, sendMusicCard, updateMusicCard, sendPhoto, sendPhotos, sizedImage, verifyPayments, sendText, createGroupChat, shareContactCard, startTyping, stopTyping, updateCard, type SendOptions } from "./linq";
 import { groupName } from "../dressing";
 import { isComplete, parseAddress, type Address, type Delivery } from "../delivery";
 import type { ShipTo } from "./checkout";
@@ -31,9 +31,11 @@ import { openAiTools, parseToolArgs, toolSchemas, type ToolName } from "./tools"
 import { KNOWN_SHOPS, cancelCart, productName, searchCatalog, setCart } from "./tools/shopify";
 import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
-import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameState } from "./game";
+import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
+import { startConcurrent } from "./tool-concurrency";
+import { redirectFor, travelKindOf } from "./research-routing";
 import type { AvailabilityParams, AvailabilityResult, BookingParams, BookingResult } from "./booking";
 import type { ResearchParams, ResearchReport } from "./research";
 
@@ -65,6 +67,10 @@ on a time, book it, and order anything they need.
 - In a one-to-one chat there is nobody to out-vote: recommend one option, and
   ask directly whether to book it. Post a ballot only if they want to compare.
 - Do not announce what you are about to do. Do it, then report the result.
+- When a request needs several lookups that do not depend on each other
+  (flights and a hotel, two stores, a place and its weather), make all of
+  those calls in the same reply. They run at the same time, so the group
+  waits once instead of once per call.
 - "In the area" and "nearby" mean the group's own area, shown below. When
   someone states where they are, call remember_area; pass that area as the
   research "near" unless they name somewhere else for this outing.
@@ -82,10 +88,12 @@ on a time, book it, and order anything they need.
 - A vote needs at least two real options. If research found only one good
   place, do not pad the list: tell the group about that one and ask whether to
   go with it or look further.
-- To find real places, call research. It takes a few minutes and its findings
-  appear under "Research" below when done: tell the group you're on it, then
-  stop. Never start a second run while one is in progress, and never invent
-  places, prices or links — propose only what research found.
+- To find real places (restaurants, bars, activities, venues), call research.
+  It takes a few minutes and its findings appear under "Research" below when
+  done: tell the group you're on it, then stop. Never start a second run while
+  one is in progress, and never invent places, prices or links — propose only
+  what research found. Flights, places to stay and ticketed events are never
+  research: search_flights, search_stays and find_events answer in this turn.
 - For a trip or a night out, work in segments and open one ballot at a time:
   flights first, then where to stay, then what to do. search_flights,
   search_stays and find_events return real options in this turn with their
@@ -106,8 +114,8 @@ on a time, book it, and order anything they need.
 - Brainstorm in plain text. Once there are 2-4 concrete options, call
   propose_plan; it posts the card and opens voting. Call it again to redraw the
   same card when options change rather than describing changes in text.
-- People vote by reacting to the card with a tapback; the card shows the live
-  tally. Never ask anyone to reply with a number, and do not comment on
+- People vote by tapping an option on the plan card (a tapback on the card
+  counts too); the card shows the live tally. Never ask anyone to reply with a number, and do not comment on
   individual votes.
 - Check get_votes before naming a winner. Do not book while people are still
   voting unless someone in the chat tells you to go ahead.
@@ -153,9 +161,15 @@ on a time, book it, and order anything they need.
 - Quote shop prices exactly as shop_search returns them. Stores known to work:
 ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
   Other Shopify stores work too; if shop_search says a domain is not one, move on.
-- When someone asks for a game ("make a trivia game about X"), call make_game
-  with their topic. The game card posts itself; people join and play on the
-  card. Never list the questions in text.
+  Pick the store by what it sells, not the first on the list. When a store has
+  nothing that fits, search one or two others that could before saying so.
+  A list of different things (sunscreen and swim shorts) usually means a
+  different store for each: search each where it is sold, one cart per store.
+- When someone asks for a game ("let's play a game", "make a trivia game about
+  X"), call make_game straight away. With no topic named, do not ask for one:
+  pick it yourself from what this chat is about (the plan, the city, what
+  people here are into). The game card posts itself; people join and play on
+  the card. Never list the questions in text.
 - When someone names a song for the group playlist, call add_song once per
   song, exactly as they said it. The playlist card in the thread updates
   itself; never list the tracks in text. show_playlist reposts the card when
@@ -193,12 +207,6 @@ ${KNOWN_SHOPS.map((s) => `  ${s.shop} (${s.sells})`).join("\n")}
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
 
 const MAX_STEPS = 8;
-/**
- * Tools that only fetch over the network and do not care what ran before them
- * in the same step. Anything that speaks, posts a card or edits the plan stays
- * out: those are read in order by the group and guarded in order by the turn.
- */
-const CONCURRENT_TOOLS = new Set<string>(["shop_search", "find_matches"]);
 /** The bubble lasts ~85s per call; Linq says to refresh every 60. */
 const TYPING_REFRESH_MS = 55_000;
 const HISTORY_LIMIT = 40;
@@ -361,6 +369,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     // Every message is remembered, but only one addressed to the agent wakes the
     // model. Group chatter costs no tokens and draws no interjections; when the
     // agent is finally called on, the whole conversation is already in its memory.
+    // A demo is run more than once. Handled in code so it costs nothing, cannot
+    // be talked out of, and wipes the message that asked for it too.
+    if (/^\s*(@\S+\s+)?\/reset\s*$/i.test(msg.text)) {
+      await this.resetChat();
+      await this.say("reset. fresh start, and i still know who you are");
+      return;
+    }
     if (await this.handlePayText(msg)) return;
 
     const wake = this.wakeReason(msg);
@@ -411,6 +426,60 @@ export class PlanAgent extends Agent<Env, PlanState> {
     }
   }
 
+  /**
+   * Back to a chat that has never planned anything, for running a demo again.
+   *
+   * Goes: the transcript, the plan, votes, carts, the itinerary, expenses,
+   * RSVPs, the playlist, games, research, tickets, watches and every timer.
+   * Stays: who is in the chat and their names, where the group is based, and
+   * that they have been onboarded. What people told the agent about themselves
+   * (profile, address, payments) lives with the person, not the chat, and is
+   * untouched. Run history stays too: a reset is itself worth seeing there.
+   * The thread on people's phones is theirs; nothing can unsend it.
+   */
+  async resetChat() {
+    for (const s of await this.listSchedules().catch(() => [])) await this.cancelSchedule(s.id).catch(() => false);
+    // Best effort: an abandoned store cart expires on its own.
+    for (const c of this.carts()) {
+      const cartId = this.getMeta(`cart_id:${shopKey(c.shop)}`);
+      if (cartId) await cancelCart(this.env, shopKey(c.shop), cartId).catch(() => false);
+    }
+
+    this.sql`DELETE FROM messages`;
+    this.sql`DELETE FROM votes`;
+    this.sql`DELETE FROM research`;
+    this.sql`DELETE FROM product_names`;
+    this.sql`DELETE FROM tickets`;
+    this.sql`DELETE FROM rsvps`;
+    this.sql`DELETE FROM games`;
+    this.sql`DELETE FROM watches`;
+    this.sql`DELETE FROM plan_media`;
+    const KEEP = ["is_group", "area", "onboarded", "profile_link_sent", "profile_card_sent", "profile_card_hold", "profile_ack_at", "contact_card_shared", "location_seen", "runs_last"];
+    for (const { key } of this.sql<{ key: string }>`SELECT key FROM meta`) {
+      if (!KEEP.includes(key)) this.sql`DELETE FROM meta WHERE key = ${key}`;
+    }
+    // The version keeps climbing so an open vote page or card redraws as empty.
+    this.setState({ ...EMPTY_PLAN, version: this.state.version + 1 });
+
+    // An introduction is remembered for good, so that nobody is offered the
+    // same person twice — which also means a demo of matching runs once. Forget
+    // the ones these people were in, and the ask still open in their own chats.
+    const handles = this.participants().map((p) => p.handle);
+    const store = peopleStore(this.env);
+    const intros = await store.clearIntros(handles).catch(() => 0);
+    const profiles = await store.getMany(handles).catch(() => ({}) as Record<string, { dmChat?: string }>);
+    for (const h of handles) {
+      const dm = profiles[h]?.dmChat;
+      if (dm && dm !== this.name) await (await getAgentByName<Env, PlanAgent>(this.env.PlanAgent, dm)).clearPendingIntro().catch(() => {});
+    }
+    this.note("info", "chat.reset", { kept: handles.length, intros });
+  }
+
+  /** Drops an introduction ask that no longer exists. Called when another chat is reset. */
+  async clearPendingIntro() {
+    for (const key of ["pending_intro", "pending_intro_common", "pending_intro_at", "match_candidates"]) this.setMeta(key, "");
+  }
+
   /** Why this message should wake the model, or null to stay asleep. */
   private wakeReason(msg: { isGroup?: boolean; mentionsMe?: boolean; replyToId?: string }): string | null {
     if (this.getMeta("is_group") !== "1") return "direct chat";
@@ -450,6 +519,18 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (cart) {
       if (r.reactionType !== "like" && r.reactionType !== "love") return void this.note("info", "reaction.ignored", { reason: "not a pay tapback", type: r.reactionType });
       await this.startPay(shopKey(cart.shop), r.from, "reaction");
+      return;
+    }
+    // The shopping list is every cart at once, and a thumbs up on it means the
+    // same thing as on a cart. With one cart unpaid that is the one; with
+    // several, which one is theirs to say.
+    const onList = this.sql<Row>`SELECT 1 FROM tickets WHERE kind = 'list' AND message_id = ${r.messageId}`.length > 0;
+    if (onList) {
+      if (r.reactionType !== "like" && r.reactionType !== "love") return void this.note("info", "reaction.ignored", { reason: "not a pay tapback", type: r.reactionType });
+      const unpaid = this.carts().filter((c) => !c.paidBy);
+      if (!unpaid.length) return void this.note("info", "reaction.ignored", { reason: "every cart is paid", type: r.reactionType });
+      if (unpaid.length > 1) return void (await this.say(`which one? thumbs up the cart you're covering: ${unpaid.map((c) => c.shop).join(", ")}`));
+      await this.startPay(shopKey(unpaid[0].shop), r.from, "reaction");
       return;
     }
     if (!this.cardIds().includes(r.messageId) && !this.planPhotoIds().includes(r.messageId)) {
@@ -520,6 +601,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
     const votes = this.sql<{ voter: string; option_id: string }>`SELECT voter, option_id FROM votes`;
     const people = this.participants();
     const voted = new Set(votes.map((v) => v.voter));
+    // A tap on the card carries no phone number, so it cannot be matched to a
+    // name. Each one still is somebody's vote: it stands for one of the people
+    // not otherwise accounted for, or "everyone has voted" never comes true
+    // for a group that votes on the card.
+    const unvoted = people.filter((p) => !voted.has(p.handle));
+    const taps = votes.filter((v) => v.voter.startsWith("web:")).length;
 
     const published: PlanState = {
       ...next,
@@ -528,7 +615,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       ),
       awaiting:
         next.status === "voting"
-          ? people.filter((p) => !voted.has(p.handle)).map((p) => this.label(p.handle, people))
+          ? unvoted.slice(0, Math.max(0, unvoted.length - taps)).map((p) => this.label(p.handle, people))
           : [],
       going: this.splitNames(),
       version: this.state.version + 1,
@@ -657,10 +744,6 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return JSON.parse(this.getMeta("plan_photo_ids") ?? "[]");
   }
 
-  private rememberPlanPhoto(id: string) {
-    this.setMeta("plan_photo_ids", JSON.stringify([...this.planPhotoIds().filter((x) => x !== id), id].slice(-10)));
-  }
-
   /** Keeps the playlist card's track count current: first change posts it, later ones redraw it. */
   private async syncMusicCard() {
     const count = (this.state.playlist ?? []).length;
@@ -728,6 +811,9 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * booking lands — not on every propose_plan, which models call freely.
    */
   private async planTicketIfNew() {
+    // An open ballot is the plan card alone: it is the poll, tapped to vote. A
+    // static "react to vote" ticket beside it was a second, worse ballot.
+    if (this.state.status === "voting") return void this.setMeta("plan_photo_ids", "[]");
     const key = this.state.status === "booked" ? `booked:${this.state.chosenOptionId}` : this.state.options.map((o) => o.title).join("|");
     // The same ballot is not posted twice in a row — but a ballot posted a while
     // ago is far up the thread by now, and re-proposing it means "show me again".
@@ -738,8 +824,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     if (this.getMeta("plan_ticket_key") !== key) this.setMeta("plan_photo_ids", "[]");
     this.setMeta("plan_ticket_key", key);
     this.setMeta("plan_ticket_at", String(Date.now()));
-    const id = await this.postTicket("plan", planTicket(this.state));
-    if (id && this.state.status === "voting") this.rememberPlanPhoto(id);
+    await this.postTicket("plan", planTicket(this.state));
   }
 
   /**
@@ -880,9 +965,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.note("info", "pay.asked", { shop, who: mask(payer), source });
 
     // The wallet: Linq is the authority, the profile flag only a cache of it.
+    // Both are needed before anything is decided, so they are read together.
     const store = peopleStore(this.env);
-    const profile = (await store.getMany([payer]))[payer];
-    const wallet: PaymentConnection = await paymentConnection(this.env, this.name, payer).catch(() => ({ status: "not_connected" }));
+    const [profiles, wallet] = await Promise.all([
+      store.getMany([payer]),
+      paymentConnection(this.env, this.name, payer).catch((): PaymentConnection => ({ status: "not_connected" })),
+    ]);
+    const profile = profiles[payer];
     if (wallet.status !== "connected" && !(wallet.simulated && profile?.payments === "connected")) {
       this.note("info", "pay.needs_wallet", { who: mask(payer) });
       await this.say(`${who}, you haven't set up payments yet. text me "set up payments" in a direct message (takes a minute), then thumbs up the cart again`);
@@ -924,7 +1013,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
       checkoutUrl: cart.checkoutUrl,
       payer,
       shipTo,
-      capCents: Number(this.env.PAY_CAP_CENTS) || 6000,
+      // No limit unless one is configured: the person approves each exact total themselves.
+      capCents: Number(this.env.PAY_CAP_CENTS) || undefined,
       key: crypto.randomUUID(),
     };
     const workflowId = await this.runWorkflow("BOOKING_WORKFLOW", params, WORKFLOW_OPTS);
@@ -1005,9 +1095,22 @@ export class PlanAgent extends Agent<Env, PlanState> {
   async payFinished(result: PayResult) {
     this.setMeta(`pay_running:${result.shop}`, "");
     const who = this.label(result.payer);
-    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId });
+    this.note(result.status === "paid" ? "info" : "warn", "pay.finished", { shop: result.shop, status: result.status, total: result.total, who: mask(result.payer), shot: result.shotId, ...(result.cause ? { cause: result.cause } : {}) });
     const carts = this.carts();
     const cart = carts.find((c) => shopKey(c.shop) === result.shop);
+
+    // A demo with payments off still has to end somewhere. With PAY_MOCK the
+    // dry run — a real checkout, really priced, nothing charged — is played out
+    // as a purchase: the cart goes paid, the receipt and the split follow. It is
+    // marked as a mock in the run log, and PAYMENTS_LIVE always wins over it.
+    // A checkout that could not even run (no browser, a store page that broke)
+    // is mocked too, at the cart's own total: the demo must not hang on a
+    // provider. Never when Pay may have been pressed.
+    const mockable = result.status === "dry_run" || (result.status === "failed" && !result.unsure);
+    if (mockable && cart && this.env.PAY_MOCK === "true" && this.env.PAYMENTS_LIVE !== "true") {
+      this.note("warn", "pay.mocked", { shop: result.shop, total: result.total ?? cart.total, who: mask(result.payer), instead_of: result.status });
+      result = { ...result, status: "paid", total: result.total ?? cart.total, confirmation: `DEMO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`, detail: "demo mode: nothing was charged" };
+    }
 
     if (result.status === "paid" && cart) {
       const paid = { ...cart, paidBy: who, total: result.total ?? cart.total };
@@ -1023,7 +1126,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.say(`paid. ${who} covered ${result.shop}: ${result.total ?? cart.total} with shipping and tax${result.confirmation ? `, order ${result.confirmation}` : ""}. ${result.detail ?? "the receipt goes to their email"}`, { screenEffect: "confetti" });
       return;
     }
-    const cap = `$${((Number(this.env.PAY_CAP_CENTS) || 6000) / 100).toFixed(0)}`;
+    const cap = `$${((Number(this.env.PAY_CAP_CENTS) || 0) / 100).toFixed(0)}`; // over_cap only happens when one is set
     const line: Record<Exclude<PayResult["status"], "paid">, string> = {
       dry_run: `dry run: ${result.shop} comes to ${result.total} with shipping and tax, and the card form is ready. nothing was charged (payments are switched off)`,
       over_cap: `${result.shop} comes to ${result.total}, over my ${cap} limit per purchase, so i didn't pay. here's the checkout: ${cart?.checkoutUrl ?? ""}`,
@@ -1376,11 +1479,18 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return items.map((i) => `${i.id} ${ITEM_EMOJI[i.kind]} ${i.title} — ${i.status}${i.note ? ` (${i.note})` : ""}${i.price ? `, ${i.price}` : ""}${i.lastUpdate ? `; ${i.lastUpdate}` : ""}`).join(" | ");
   }
 
-  /** A source failed: log the cause, tell the model something it can say. */
+  /**
+   * A source failed: log the cause, tell the model something it can say. The
+   * cause travels with it, so a key or plan problem (a 402 on the proxy, say)
+   * is never softened into "nothing matched": on a real phone, "did not answer"
+   * became "the search came up empty again", which sent the person off to
+   * change dates that were never the problem.
+   */
   private sourceFailure(err: unknown, what: string): string {
     this.note("warn", "source.failed", { what, ...errorFields(err) });
     if (err instanceof SourceError && err.code === "no_browserbase") return `${what} needs BROWSERBASE_API_KEY, which is not set here. Say you can't look that up right now.`;
-    return `${what} did not answer this time. Say so in one line and offer to try again.`;
+    const cause = err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
+    return `${what} could not be reached (${cause}). This is a system problem on this side, not a lack of results: say in one line that the lookup isn't working right now, do NOT say nothing matched or ask them to change dates or airports, and do not call it again this turn.`;
   }
 
   private static WATCH_SECONDS = 15 * 60;
@@ -1426,22 +1536,35 @@ export class PlanAgent extends Agent<Env, PlanState> {
     try {
       const watches = this.activeWatches();
       this.note("info", "watch.check", { active: watches.length });
-      for (const { item, row } of watches) {
+      // Two phases: every status is read at once (each is a slow proxied
+      // fetch of a different site), then what changed is posted in itinerary
+      // order, so the chat reads the same as it did when this was one loop.
+      const due = watches.filter(({ item, row }) => {
         if (row.failures >= 3 && row.failures % 4 !== 3) {
           this.sql`UPDATE watches SET failures = ${row.failures + 1} WHERE item_id = ${item.id}`;
-          continue; // hourly, in 15-minute ticks
+          return false; // hourly, in 15-minute ticks
         }
-        const watch = item.watch!; // activeWatches only returns items with one
-        try {
-          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+        return true;
+      });
+      const read = await Promise.allSettled(
+        due.map(async ({ item }) => {
+          const watch = item.watch!; // activeWatches only returns items with one
           if ("flight" in watch) {
             const next = await flightStatus(this.env, watch.flight.ident);
             if (!next) throw new Error("no status");
-            await this.applyWatch(item, next, diffFlight(prev, next), prev);
-          } else {
-            const next = await orderStatus(this.env, watch.order.url);
-            await this.applyWatch(item, next, diffOrder(prev, next, watch.order.shop), prev);
+            return next;
           }
+          return orderStatus(this.env, watch.order.url);
+        }),
+      );
+      for (const [i, { item, row }] of due.entries()) {
+        const watch = item.watch!;
+        const got = read[i];
+        try {
+          if (got.status === "rejected") throw got.reason;
+          const prev = row.snapshot ? JSON.parse(row.snapshot) : undefined;
+          if ("flight" in watch) await this.applyWatch(item, got.value, diffFlight(prev, got.value as FlightStatus), prev);
+          else await this.applyWatch(item, got.value, diffOrder(prev, got.value as OrderStatus, watch.order.shop), prev);
         } catch (err) {
           const failures = row.failures + 1;
           this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
@@ -1647,9 +1770,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** Read receipt, typing bubble and — once per chat — the name and photo. */
   private async acknowledge(typing: string) {
     // Each is "ok", "dry" or the error, so the run viewer shows what Linq said.
-    const read = await markRead(this.env, this.name);
+    // Typing starts before processing; receipt and contact sharing can run together.
     const firstTime = this.getMeta("contact_card_shared") !== "1";
-    const contactCard = firstTime ? await shareContactCard(this.env, this.name) : "already shared";
+    const [read, contactCard] = await Promise.all([
+      markRead(this.env, this.name),
+      firstTime ? shareContactCard(this.env, this.name) : "already shared",
+    ]);
     // A failure (no card set up yet) is tried again at the next wake.
     if (contactCard === "ok" || contactCard === "dry") this.setMeta("contact_card_shared", "1");
     const failed = [read, typing, contactCard].some((r) => !["ok", "dry", "fresh", "already shared"].includes(r));
@@ -1691,11 +1817,20 @@ export class PlanAgent extends Agent<Env, PlanState> {
   /** Prompt -> spec -> stored game -> card in the thread. RPC from /api/widget and the make_game tool. */
   async gameCreate(topic: string, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
     const spec = await generateGame(this.env, topic.slice(0, 140));
+    return this.createGame(spec, creator, creatorName);
+  }
+
+  /** Local smoke-test entry point. The caller supplies an already validated spec, so no model is involved. */
+  async devCreateGame(spec: GameSpec, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
+    return this.createGame(GameSpecZ.parse(spec), creator, creatorName);
+  }
+
+  private async createGame(spec: GameSpec, creator: string, creatorName?: string): Promise<{ id: string; title: string }> {
     const id = crypto.randomUUID().slice(0, 12);
     let g = newGame(id, spec, creator);
     if (creatorName) g = joinGame(g, creator, creatorName);
     this.saveGame(g);
-    this.note("info", "game.created", { id, title: spec.title, questions: spec.questions.length });
+    this.note("info", "game.created", { id, title: spec.title, kind: spec.kind, rounds: spec.kind === "trivia" ? spec.questions.length : spec.rounds });
     await timed("agent", "game.card", { id }, () => sendGameCard(this.env, this.name, this.name, id, spec.title, spec.topic), this.note).catch(() => undefined);
     return { id, title: spec.title };
   }
@@ -1706,15 +1841,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
     return g ? gameView(g, voter) : null;
   }
 
-  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "advance" }) {
+  async gameAct(id: string, voter: string, act: { type: "join"; name: string } | { type: "answer"; choice: number } | { type: "hit" } | { type: "stand" } | { type: "advance" }) {
     let g = this.loadGame(id);
     if (!g) return null;
     if (act.type === "join") g = joinGame(g, voter, act.name);
-    if (act.type === "answer") {
-      g = gameAnswer(g, voter, act.choice);
-      // Everyone in -> straight to the reveal; nobody waits on a host.
-      if (roundComplete(g)) g = gameAdvance(g);
-    }
+    if (act.type === "answer") g = gameAnswer(g, voter, act.choice);
+    if (act.type === "hit") g = bjHit(g, voter);
+    if (act.type === "stand") g = bjStand(g, voter);
+    // Everyone in -> straight to the reveal; nobody waits on a host.
+    if ((act.type === "answer" || act.type === "hit" || act.type === "stand") && roundComplete(g)) g = gameAdvance(g);
     if (act.type === "advance") g = gameAdvance(g);
     this.saveGame(g);
     return gameView(g, voter);
@@ -1744,10 +1879,11 @@ export class PlanAgent extends Agent<Env, PlanState> {
       this.note("error", "turn.crashed", errorFields(err));
     } finally {
       this.turnRunning = false;
-      // Clear immediately on completion or failure, before any follow-up work.
-      await this.clearTyping();
-      // After the first reply, not before: the text introduces, the card offers the shortcut.
-      await this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err)));
+      // Clear typing immediately while sharing the profile card independently.
+      await Promise.all([
+        this.clearTyping(),
+        this.offerProfileCard().catch((err) => this.note("warn", "profile_card.failed", errorFields(err))),
+      ]);
     }
   }
 
@@ -1838,7 +1974,9 @@ ${transcript}`,
     const sentThisTurn = new Set<string>();
     for (let step = 0; step < MAX_STEPS; step++) {
       let res;
-      if (!spoke) await this.typing();
+      // Refreshed alongside the model call, never ahead of it: the bubble is
+      // best effort (startTyping never throws) and the model is the long pole.
+      if (!spoke) void this.typing().catch(() => {});
       try {
         res = await traceOperation("agent.model", "gen_ai.chat", { model, profile, step: step + 1, promptChars: JSON.stringify(messages).length }, () => client.chat.completions.create({ model, messages, tools: openAiTools(), ...modelExtras(model, "tools") } as never));
       } catch (err) {
@@ -1889,23 +2027,19 @@ ${transcript}`,
           "agent",
           "tool",
           // Arguments are useful for every tool except the one carrying message text.
-          { tool: call.function.name, step: step + 1, callId: call.id, argsChars: call.function.arguments.length },
+          { tool: call.function.name, step: step + 1, callId: call.id, argsChars: call.function.arguments.length, ...(call.function.name === "send_message" ? {} : this.body(call.function.arguments, "args")) },
           () => this.runTool(call.function.name, call.function.arguments),
           this.note,
-        );
-      // Lookups the model asked for together are fetched together: two stores
-      // searched in one step should cost one wait, not two. Everything else
-      // keeps its turn in the loop below, where order is the point.
-      const early = new Map<string, Promise<string>>();
-      if (calls.filter((c) => CONCURRENT_TOOLS.has(c.function.name)).length > 1) {
-        for (const call of calls) {
-          if (!CONCURRENT_TOOLS.has(call.function.name)) continue;
-          const started = run(call);
-          // The loop can end the turn before reaching this call; awaited or not, it must not go unhandled.
-          started.catch(() => {});
-          early.set(call.id, started);
-        }
-      }
+        ).then((out) => {
+          // What the tool told the model: without it, "why did it say that" has no answer in run history.
+          if (call.function.name !== "send_message") this.note("info", "tool.result", { tool: call.function.name, callId: call.id, chars: out.length, ...this.body(out.slice(0, 600), "result") });
+          return out;
+        });
+      // Lookups the model asked for together are fetched together: flights and
+      // a hotel, or two stores, searched in one step cost one wait, not two.
+      // Everything else keeps its turn in the loop below, where order is the
+      // point. Which tools qualify, and why, is in tool-concurrency.ts.
+      const early = startConcurrent(calls, run);
 
       for (const call of calls) {
         let output: string;
@@ -1945,7 +2079,9 @@ ${transcript}`,
             // A question hands the conversation to the humans. There is nothing
             // left to do until they answer, so don't ask the model again — that
             // is exactly where it started rephrasing itself.
-            if (/\?\s*$/.test(parseToolArgs("send_message", call.function.arguments).text)) askedQuestion = true;
+            // A question anywhere in the text, not just at the end: "what dates? i'll
+            // need that first." still waits on an answer. A "?" inside a link is not one.
+            if (/\?(\s|$)/.test(parseToolArgs("send_message", call.function.arguments).text.replace(/https?:\/\/\S+/g, ""))) askedQuestion = true;
           }
         } catch (err) {
           await this.clearTyping();
@@ -2124,6 +2260,13 @@ ${transcript}`,
           this.note("warn", "research.retry_blocked", {});
           return "Research just failed and nobody has asked for anything since. Do not retry. Tell them once, in one line, that the search didn't work and ask what to change.";
         }
+        // A hotel or flight brief would run for minutes and end in "nothing
+        // found"; the tools that actually answer it are a call away.
+        const travel = travelKindOf(args.brief);
+        if (travel) {
+          this.note("info", "research.redirected", { to: travel === "flight" ? "search_flights" : "search_stays", brief: args.brief.slice(0, 120) });
+          return redirectFor(travel);
+        }
         return this.startResearch(args);
       }
 
@@ -2166,7 +2309,6 @@ ${transcript}`,
           bookingNote: undefined,
         });
 
-        // A new set of options is a moment worth a photo; votes are not.
         await this.planTicketIfNew();
         // Edit the card in place while it is still on screen; once it has
         // scrolled away, a quiet edit is invisible, so post a new one.
@@ -2183,9 +2325,6 @@ ${transcript}`,
           );
 this.rememberCardId(id);
           this.setMeta("plan_card_at", String(Date.now()));
-          // Recipients without the extension see a static card with no
-          // affordance, so spell out the tapback convention once.
-          await this.say(`react to vote:\n${tapbackLegend(this.state)}`);
         }
 
         // The nudge is tied to this ballot. Without that, the timer from an
@@ -2632,16 +2771,21 @@ this.rememberCardId(id);
       case "find_matches": {
         const { who, lookingFor, near } = parseToolArgs("find_matches", rawArgs);
         if (this.getMeta("is_group") !== "0") return "Not in a group: pairing is private. Tell them to text you directly.";
-        const person = this.participants().find((p) => this.label(p.handle) === who);
+        // A direct chat has one person in it, whatever the model called them:
+        // a label that is a little off ("Chang" for "…5178") must not end the search.
+        const everyone = this.participants();
+        const person = everyone.find((p) => this.label(p.handle) === who) ?? (everyone.length === 1 ? everyone[0] : undefined);
         if (!person) return `No participant labelled ${who}`;
         const store = peopleStore(this.env);
-        const profile = (await store.getMany([person.handle]))[person.handle];
+        // Their profile and who they have already been offered: two reads that need only the handle.
+        const [profiles, paired] = await Promise.all([store.getMany([person.handle]), store.pairedWith(person.handle)]);
+        const profile = profiles[person.handle];
         // Searching the pool means being findable in it: same consent both ways.
         if (!profile?.matchOptIn) return "They are not in the match pool themselves. Ask whether they want to be introduced to people (save_profile matchOptIn) before searching.";
         // A place they named beats where they live: "i'm visiting vancouver, anyone there?"
         const where = near || profile.area;
         const query = [lookingFor, profile.interests, where && `Based in ${where}`].filter(Boolean).join(". ");
-        const exclude = [person.handle, ...(await store.pairedWith(person.handle))];
+        const exclude = [person.handle, ...paired];
         // Vectorize understands meaning ("bouldering" finds "climbing") but takes a
         // minute or two to index a new profile, and is absent without a login; the
         // shared-word scan is instant and always there. Meaning first, then words.
@@ -2725,7 +2869,8 @@ this.rememberCardId(id);
       case "make_game": {
         const { topic } = parseToolArgs("make_game", rawArgs);
         try {
-          const made = await this.gameCreate(topic, "agent");
+          // "let's play a game" names no topic, and the model may leave it out too.
+          const made = await this.gameCreate(topic?.trim() || this.state.title || "general knowledge, a fun mix", "agent");
           return `Game card posted: "${made.title}". Tell the group to tap it, join, and play — in one short line. Do not list the questions.`;
         } catch (err) {
           this.note("warn", "game.generate_failed", errorFields(err));
@@ -2983,6 +3128,8 @@ this.rememberCardId(id);
       transcript: this.sql<Row>`SELECT direction, author, body FROM messages ORDER BY id`,
       votes: this.sql<Row>`SELECT voter, option_id, source FROM votes`,
       planPhotos: this.planPhotoIds(),
+      participants: this.participants().map((p) => p.handle),
+      area: this.getMeta("area"),
     };
   }
 
@@ -3027,6 +3174,12 @@ this.rememberCardId(id);
     return cart ? this.cartMessages(shopKey(cart.shop)).at(-1) : undefined;
   }
 
+  /** Simulator only: the latest shopping list ticket's message id. */
+  async currentListId() {
+    return this.sql<{ message_id: string }>`
+      SELECT message_id FROM tickets WHERE kind = 'list' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
+  }
+
   async currentRsvpId() {
     return this.sql<{ message_id: string }>`
       SELECT message_id FROM tickets WHERE kind = 'rsvp' AND message_id IS NOT NULL ORDER BY ts DESC LIMIT 1`[0]?.message_id;
@@ -3063,7 +3216,10 @@ this.rememberCardId(id);
     this.note("info", "nudge", { awaiting: this.state.awaiting.length });
     // Only name people whose names are known; "…5178" is not how friends talk.
     const waiting = this.state.awaiting;
-    const named = waiting.every((w) => !w.startsWith("…"));
+    // A tap on the card is nobody in particular, so with any of those in, who
+    // exactly is still out is a guess: give the count, not names.
+    const taps = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM votes WHERE voter LIKE 'web:%'`[0]?.n ?? 0;
+    const named = taps === 0 && waiting.every((w) => !w.startsWith("…"));
     await this.say(
       named
         ? `still need a vote from ${waiting.join(", ")}`
@@ -3176,8 +3332,11 @@ this.rememberCardId(id);
     }
 
     if (result.ok) {
-      await this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" });
-      if (onBallot) await this.dressChat();
+      // The dressing posts no message, so it cannot get ahead of the text in the thread.
+      await Promise.all([
+        this.say(`booked ${name}${result.confirmation ? `. confirmation: ${result.confirmation}` : ""}`, { screenEffect: "confetti" }),
+        onBallot ? this.dressChat() : undefined,
+      ]);
     } else if (handedOff) {
       await this.say(`${name}: ${result.detail}\nfinish it here: ${result.handoffUrl}`);
     } else {

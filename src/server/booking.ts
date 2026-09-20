@@ -35,8 +35,8 @@ export type PayParams = {
   checkoutUrl: string;
   payer: string;
   shipTo: ShipTo;
-  /** Refuse anything above this, whatever the page says. */
-  capCents: number;
+  /** Refuse anything above this, whatever the page says. Unset: no limit. */
+  capCents?: number;
   /** One per attempt: what stops a retry from minting a second card. */
   key: string;
 };
@@ -50,6 +50,8 @@ export type PayResult = {
   /** The store's order status page, which later says when it ships. */
   orderUrl?: string;
   detail?: string;
+  /** Why it failed, for the run log only: never shown in the chat. */
+  cause?: string;
   /** Pay was pressed but the store never confirmed: it may or may not have charged. */
   unsure?: boolean;
   shotId?: string;
@@ -134,7 +136,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       session = await openBrowser(this.env, { timeoutSeconds: 570 });
     } catch (err) {
       log("error", "pay", "browser.failed", errorFields(err));
-      return { ...base, status: "failed", detail: "couldn't start a browser to check out with" };
+      return { ...base, status: "failed", detail: "couldn't start a browser to check out with", cause: String(err instanceof Error ? err.message : err).slice(0, 300) };
     }
     let paymentId: string | undefined;
     let shotId: string | undefined;
@@ -149,7 +151,7 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
       const priced = await fillCheckout(page, params.checkoutUrl, params.shipTo, (line) => void this.live.payProgress("step", { line }));
       await this.live.payProgress("priced", { shop: params.shop, total: priced.line });
 
-      if (priced.totalCents > params.capCents) return { ...base, status: "over_cap", total: priced.line, shotId: await shoot() };
+      if (params.capCents && priced.totalCents > params.capCents) return { ...base, status: "over_cap", total: priced.line, shotId: await shoot() };
       if (!(await hasCardForm(page))) return { ...base, status: "no_card_form", total: priced.line, shotId: await shoot() };
       if (!live) return { ...base, status: "dry_run", total: priced.line, shotId: await shoot() };
 

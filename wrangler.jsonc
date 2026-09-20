@@ -73,6 +73,9 @@
     "LLM_PROFILE": "dev",
     "OPENAI_MODEL": "gpt-5.6-luna",
     "BOOKING_DRY_RUN": "true",
+    // Demo: with payments off, a thumbs up ends as a (mock) purchase instead of
+    // "dry run … nothing was charged". Remove, or turn PAYMENTS_LIVE on, to stop.
+    "PAY_MOCK": "true",
     "IMESSAGE_APP_NAME": "Whim",
     // "true" records message text into run history,
     // so /runs can show the conversation. Decisions use structured summaries.

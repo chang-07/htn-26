@@ -203,6 +203,20 @@ export class People extends DurableObject<Env> {
     return this.introsWhere(`from_handle = ?`, handle).filter((i) => i.status === "pending");
   }
 
+  /**
+   * Forgets every introduction these people were part of, so they can be
+   * matched again. Their profiles and pool membership are untouched. Returns
+   * the direct chats of everyone involved, whose pending asks are now stale.
+   */
+  async clearIntros(handles: string[]): Promise<number> {
+    let cleared = 0;
+    for (const h of handles) {
+      cleared += this.introsWhere(`from_handle = ? OR to_handle = ?`, h, h).length;
+      this.ctx.storage.sql.exec(`DELETE FROM intros WHERE from_handle = ? OR to_handle = ?`, h, h);
+    }
+    return cleared;
+  }
+
   /** Everyone this person has been paired with or offered, in either direction. */
   async pairedWith(handle: string): Promise<string[]> {
     return this.introsWhere(`from_handle = ? OR to_handle = ?`, handle, handle).map((i) => (i.from === handle ? i.to : i.from));

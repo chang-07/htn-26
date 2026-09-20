@@ -63,6 +63,8 @@ export type ResearchReport = {
 };
 
 const STEP = { retries: { limit: 1, delay: "5 seconds" as const }, timeout: "4 minutes" as const };
+/** Pages read at once through the Browserbase Fetch API, which has no tabs to share. Matches the deep budget. */
+const FETCHES = 8;
 
 export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
   private _live?: DurableObjectStub<PlanAgent>;
@@ -90,26 +92,37 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
     try {
       const jev = hasJev(this.env);
       if (!jev) await progress("jev_fallback", { reason: "AI_GATEWAY_API_KEY is not set; sources are picked by the LLM and options are unscored" });
-      const specialist = await step.do("browserbase-plan", STEP, async () => {
-        try { return await planBrowserbase(this.env, ask); }
-        catch (err) {
-          await progress("browserbase_fallback", { stage: "routing", ...errorFields(err) });
-          return { skill: null, tokens: 0 };
-        }
-      });
-      tokens += specialist.tokens;
+      // 1. Who should look, and what to search for: two model calls that need
+      //    nothing from each other, so they run together. Steps are cached by
+      //    name, so a replay after a crash still finds each one.
+      const [specialist, planned] = await Promise.all([
+        step.do("browserbase-plan", STEP, async () => {
+          try { return await planBrowserbase(this.env, ask); }
+          catch (err) {
+            await progress("browserbase_fallback", { stage: "routing", ...errorFields(err) });
+            return { skill: null, tokens: 0 };
+          }
+        }),
+        step.do("plan", STEP, async () => {
+          const r = await askJson(
+            this.env,
+            z.object({ queries: z.array(z.string()).min(1) }),
+            `You plan web research for a group organising an outing. Write ${budget.queries} web search queries that together would surface specific, bookable places. Vary the angle: one "best of" list query, one that names the constraint that matters most (group size, budget, dietary, vibe), one local-blog or reddit style query. Always include the location.`,
+            ask,
+          );
+          return { queries: r.value.queries.slice(0, budget.queries), tokens: r.tokens };
+        }),
+      ]);
+      tokens += specialist.tokens + planned.tokens;
       if (specialist.skill) await progress("browserbase_selected", { skill: specialist.skill.id });
-      // 1. What to search for.
-      const plan = await step.do("plan", STEP, async () => {
-        const r = await askJson(
-          this.env,
-          z.object({ queries: z.array(z.string()).min(1) }),
-          `You plan web research for a group organising an outing. Write ${budget.queries} web search queries that together would surface specific, bookable places. Vary the angle: one "best of" list query, one that names the constraint that matters most (group size, budget, dietary, vibe), one local-blog or reddit style query. Always include the location.`,
-          `${ask}${specialist.skill ? `\nInclude one query scoped to site:${specialist.skill.hosts[0]} for this relevant specialist: ${specialist.skill.use}` : ""}`,
-        );
-        return { queries: r.value.queries.slice(0, budget.queries), tokens: r.tokens };
-      });
-      tokens += plan.tokens;
+      // A specialist gets one query scoped to its site, in place of the last
+      // planned one: the same number of searches as before, and the same
+      // budget, but the site query no longer waits on knowing the specialist.
+      const plan = {
+        queries: specialist.skill
+          ? [...planned.queries.slice(0, Math.max(0, budget.queries - 1)), `${ask} site:${specialist.skill.hosts[0]}`]
+          : planned.queries,
+      };
       await progress("planned", { queries: plan.queries });
 
       // 2. Prefer Search API: no browser session needed for discovery.
@@ -201,7 +214,10 @@ export class ResearchWorkflow extends AgentWorkflow<PlanAgent, ResearchParams> {
         try {
           // A tab per page, each followed straight away by its own extraction,
           // so the model is reading page one while the browser loads page two.
-          const pages = await pooled(picked.urls, TABS, async (url) => {
+          // Without a browser there are no tabs to time each other out, so a
+          // deep run's whole page budget is fetched in one wave (FETCHES was
+          // probed live at 8 concurrent Fetch calls: no throttling).
+          const pages = await pooled(picked.urls, session ? TABS : FETCHES, async (url) => {
             try {
               const hit = found.hits.find((h) => h.url === url) ?? { url, title: url, snippet: "" };
               let page;

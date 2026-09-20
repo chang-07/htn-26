@@ -1,0 +1,68 @@
+name: Plan
+options:
+  bundleIdPrefix: com.lukalavric
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: B2F6TWN8SZ
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "1.0"
+targets:
+  Plan:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lukalavric.plan
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Whim
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: PlanMessages
+        embed: true
+  PlanPreviews:
+    type: application
+    platform: iOS
+    sources:
+      - PreviewApp
+      - path: MessagesExtension
+        excludes:
+          - "MessagesViewController.swift"
+          - "Fonts"
+          - "Assets.xcassets"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lukalavric.plan.previews
+        GENERATE_INFOPLIST_FILE: YES
+        SUPPORTS_MACCATALYST: YES
+        TARGETED_DEVICE_FAMILY: "1,2,6"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  PlanMessages:
+    type: app-extension.messages
+    platform: iOS
+    sources: [MessagesExtension]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lukalavric.plan.MessagesExtension
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Whim
+        ASSETCATALOG_COMPILER_APPICON_NAME: iMessage App Icon
+    info:
+      path: MessagesExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Whim
+        UIAppFonts:
+          - Archivo-Variable.ttf
+          - IBMPlexMono-Regular.ttf
+          - IBMPlexMono-Medium.ttf
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.message-payload-provider
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).MessagesViewController
+    dependencies:
+      - sdk: Messages.framework

@@ -55,8 +55,10 @@ const loadFonts = () =>
 
 export async function renderTicket(t: Ticket): Promise<Response> {
   const done = t.tone === "done";
-  const ink = done ? "#f0ece2" : "#241f17";
-  const ground = done ? "#1f5f4f" : "#efe7d6";
+  // Whim palette: white card, near-black ink, brand green; done flips green.
+  const ink = done ? "#f4fbf8" : "#1a1c1a";
+  const ground = done ? "#179b6b" : "#ffffff";
+  const accent = done ? "#f4fbf8" : "#179b6b";
   // Characters that fit one row of the body at 38px mono.
   const room = t.photoUrl ? 24 : 38;
 
@@ -93,7 +95,8 @@ export async function renderTicket(t: Ticket): Promise<Response> {
   <div style="display:flex;width:${W}px;height:${H}px;background:${ground};color:${ink};font-family:'IBM Plex Mono';">
     ${t.photoUrl ? `<img src="${esc(t.photoUrl)}" width="${PHOTO}" height="${H}" style="object-fit:cover;" />` : ""}
     <div style="display:flex;flex-direction:column;flex:1;padding:50px 40px 54px 54px;">
-      <div style="display:flex;">
+      <div style="display:flex;align-items:center;">
+        <div style="display:flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:14px;background:${done ? "#f4fbf8" : "#179b6b"};color:${done ? "#179b6b" : "#ffffff"};font-family:'Archivo';font-weight:800;font-size:32px;margin-right:20px;">W</div>
         <div style="display:flex;flex:1;">${meta(t.metaLeft)}</div>
         ${t.metaRight ? meta(t.metaRight) : ""}
       </div>
@@ -106,7 +109,7 @@ export async function renderTicket(t: Ticket): Promise<Response> {
     </div>
     <div style="display:flex;flex-direction:column;width:7px;height:${H}px;margin-top:-12px;opacity:0.32;">${dot.repeat(27)}</div>
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:${STUB}px;">
-      <div style="display:flex;font-family:'Archivo';font-weight:800;font-size:${bigSize}px;line-height:1;">${esc(t.stub.big)}</div>
+      <div style="display:flex;font-family:'Archivo';font-weight:800;font-size:${bigSize}px;line-height:1;color:${accent};">${esc(t.stub.big)}</div>
       <div style="display:flex;flex-wrap:wrap;justify-content:center;width:${STUB - 40}px;margin-top:16px;font-size:26px;line-height:1.3;letter-spacing:3px;opacity:0.6;text-align:center;">${esc(clip(t.stub.label, 12).toUpperCase())}</div>
     </div>
   </div>`;
@@ -160,7 +163,7 @@ export async function renderPlanIcon(emoji: string, venue: string): Promise<Resp
 
 const STATUS_META: Record<PlanState["status"], string> = {
   idle: "Whim",
-  voting: "React to vote",
+  voting: "Tap to vote",
   booking: "Booking…",
   booked: "Confirmed",
   handoff: "Yours to finish",

@@ -20,6 +20,7 @@ PlanAgent  (Durable Object, one per chat)          src/server/agent.ts
    ├─ public state ──WebSocket──► vote page (useAgent)   src/client/
    ├─ schedule(): batches bursts of texts into one turn; nudges non-voters
    ├─ LLM tool loop (OpenAI, or a free dev provider)     src/server/llm.ts
+   │     │  lookups asked for in one step run together   src/server/tool-concurrency.ts
    │     ├─ propose_plan · get_votes
    │     ├─ research ──► ResearchWorkflow (durable, minutes-long)
    │     │                 └─ Browserbase: search, read pages   src/server/browser.ts
@@ -58,6 +59,17 @@ the model.
 npm run dev      # terminal 1 — the Worker and the pages, on http://localhost:5173
 npm run llm      # terminal 2 — only for the "Claude plan" row below
 ```
+
+Game checks:
+
+```sh
+npm run test:games    # deterministic Blackjack engine checks; no model or deploy
+npm run eval:games    # live game-generation prompts; run npm run dev first
+```
+
+`eval:games` scores the selected game type and playable contract rather than
+the model's exact wording. It creates simulator chats only, so it neither
+deploys nor sends a real message.
 
 ### Where the model comes from
 
@@ -200,10 +212,11 @@ curl -X POST localhost:5173/api/dev/location -H 'content-type: application/json'
 
 ### Presence — read receipts, typing, a name and a face
 
-When a message wakes the agent it marks the chat read and raises the typing
-bubble at once (`presence` in the logs), seconds before the model answers. The
-bubble is refreshed through long turns and dropped if the turn ends in silence.
-A successful booking lands with confetti.
+When a message wakes the agent it marks the chat read, raises the typing bubble
+and (the first time) offers its contact card, all at once (`presence` in the
+logs), seconds before the model answers. The bubble is refreshed alongside each
+model call through a long turn, never ahead of it, and dropped if the turn ends
+in silence. A successful booking lands with confetti.
 
 The name and photo are a Linq contact card, set once per number:
 
@@ -386,6 +399,12 @@ navigation, so a run is bounded. `DEPTH` in `research.ts` is the whole budget:
 links in the report are copied from per-page extractions, never from the
 ranking step's retelling.
 
+Nothing in a run waits that need not: choosing a site specialist and planning
+the queries are two model calls made together, the searches go out together,
+and every selected page is fetched and extracted in one wave (four at a time
+when a browser session is open, since tabs time each other out; the whole
+budget at once through the Fetch API, which has no tabs).
+
 With `AI_GATEWAY_API_KEY` set, research uses Jev scoring through Vercel AI Gateway; without it, the LLM
 picks which results to read and extracted options go unscored (`research.jev_fallback` in the run log). Jev scores each search
 result's metadata for relevance to the brief, and returns confidence in that
@@ -518,7 +537,7 @@ code — `startPay` in `agent.ts`, the `pay` branch of `BookingWorkflow`, and
 2. **Price it.** A browser opens the store's checkout and fills contact and
    shipping by rote (every Shopify checkout has the same field names, so no
    model and no tokens). The store prices shipping and tax; the real total is
-   read off the page. Over `PAY_CAP_CENTS` (default 6000) → stop.
+   read off the page. Over `PAY_CAP_CENTS`, when one is set (there is no limit by default) → stop.
 3. **Mint a card.** `payments.create` for exactly that total at exactly that
    merchant, with an idempotency key per attempt. If Linq wants the person to
    add a card or approve with their passkey, a link card is sent once and the

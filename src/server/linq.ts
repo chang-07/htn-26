@@ -1,6 +1,6 @@
 import { tracedFetch } from "./telemetry";
 import LinqAPIV3 from "@linqapp/sdk";
-import { SLOT_EMOJI, cartsOf, shopKey, type PlanState } from "../types";
+import { cartsOf, shopKey, type PlanState } from "../types";
 import { errorFields, log, short } from "./log";
 
 export function linqClient(env: Env) {
@@ -115,10 +115,6 @@ export function cartCardPart(env: Env, agentName: string, plan: PlanState, shop?
         : cartImageUrl(env, agentName, plan.version, cart.shop),
     },
   };
-}
-
-export function tapbackLegend(plan: PlanState) {
-  return plan.options.map((o, i) => `${SLOT_EMOJI[i]} ${o.title}`).join("\n");
 }
 
 /**
@@ -345,7 +341,12 @@ export async function sendGameCard(env: Env, chatId: string, agentName: string, 
         app: { name: env.IMESSAGE_APP_NAME, team_id: env.IMESSAGE_TEAM_ID, bundle_id: env.IMESSAGE_BUNDLE_ID },
         url,
         fallback_text: "Play the game",
-        layout: { caption: title.slice(0, 64), subcaption: topic.slice(0, 120), trailing_caption: "PLAY" },
+        layout: {
+          caption: title.slice(0, 64),
+          subcaption: topic.slice(0, 120),
+          trailing_caption: "PLAY",
+          image_url: `${env.PUBLIC_BASE_URL}/card/${encodeURIComponent(agentName)}?kind=game&id=${gameId}`,
+        },
       }],
     },
   });
@@ -370,6 +371,7 @@ function musicPart(env: Env, agentName: string, trackCount: number) {
       caption: "Group playlist",
       subcaption: trackCount ? `${trackCount} track${trackCount === 1 ? "" : "s"}` : "name a song to add it",
       trailing_caption: "▶",
+      image_url: `${env.PUBLIC_BASE_URL}/card/${encodeURIComponent(agentName)}?kind=music&v=${trackCount}`,
     },
   };
 }
