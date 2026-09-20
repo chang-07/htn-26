@@ -37,7 +37,7 @@ export const ResearchWorkflow: typeof ResearchWorkflowBase = Sentry.instrumentWo
 import { RunHub as RunHubBase } from "./runs";
 export type RunHub = RunHubBase;
 export const RunHub: typeof RunHubBase = Sentry.instrumentAgentWithSentry(sentryOptions, RunHubBase);
-import { People as PeopleBase } from "./people";
+import { People as PeopleBase, people as peopleStore } from "./people";
 export type People = PeopleBase;
 export const People: typeof PeopleBase = Sentry.instrumentDurableObjectWithSentry(sentryOptions, PeopleBase);
 import { handleProfile } from "./profile";
@@ -458,6 +458,13 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
   }
   if (url.pathname === "/api/dev/seedcart") {
     await agent.devSeedCart(String(body.shop), String(body.total ?? "$10.00"));
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/api/dev/intro") {
+    // An accepted introduction between two people, without the pool: {"from":"+1…","to":"+1…"}. GET ?handle= lists who they are paired with.
+    const store = peopleStore(env);
+    if (request.method === "GET") return Response.json({ paired: await store.pairedWith(String(url.searchParams.get("handle"))) });
+    await store.createIntro({ id: crypto.randomUUID(), from: String(body.from), fromChat: "dev", to: String(body.to), common: [], status: "accepted", created: Date.now() });
     return Response.json({ ok: true });
   }
   if (url.pathname === "/api/dev/payfinished") {

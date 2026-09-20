@@ -234,6 +234,19 @@ await check("/reset wipes the plan, carts and transcript but keeps the people an
   expect(!(await logs(c)).includes("turn.start"), "the model was woken by /reset");
 });
 
+await check("/reset forgets the introductions of the people in the chat, so they can be matched again", async () => {
+  const c = chat("resetintro");
+  const [a, b] = [`+1555${Date.now() % 10000000}`.padEnd(12, "1"), `+1555${Date.now() % 10000000}`.padEnd(12, "2")];
+  for (const from of [a, b]) await post("/api/dev/message", { chat: c, from, text: "hey", group: true });
+  await post("/api/dev/intro", { from: a, to: b });
+  const before = await (await get(`/api/dev/intro?handle=${encodeURIComponent(a)}`)).json();
+  expect(before.paired.includes(b), "the seeded introduction was not recorded");
+  await post("/api/dev/message", { chat: c, from: a, text: "/reset", group: true });
+  await sleep(500);
+  const after = await (await get(`/api/dev/intro?handle=${encodeURIComponent(a)}`)).json();
+  expect(after.paired.length === 0, `still paired with ${JSON.stringify(after.paired)} after /reset`);
+});
+
 console.log("\npaying (guards only: no browser, no wallet, no store)");
 await check("a thumbs up on a cart from someone with no wallet starts nothing", async () => {
   const c = chat("payguard");
