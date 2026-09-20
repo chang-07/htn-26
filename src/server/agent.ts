@@ -345,6 +345,15 @@ export class PlanAgent extends Agent<Env, PlanState> {
   // Called over RPC by the webhook Worker. These return quickly: the slow
   // agent turn is handed to the scheduler so Linq gets its 200 immediately.
 
+  /** Preserve the website greeting so a reply such as a name has context. */
+  recordSignupWelcome(phone: string, text: string) {
+    if (this.getMeta("signup_welcome_recorded") === "1") return;
+    this.setMeta("is_group", "0");
+    this.sql`INSERT OR IGNORE INTO participants (handle) VALUES (${phone})`;
+    this.sql`INSERT INTO messages (direction, body, ts) VALUES ('out', ${text}, ${Date.now()})`;
+    this.setMeta("signup_welcome_recorded", "1");
+  }
+
   async ingestMessage(msg: {
     linqId: string;
     from: string;

@@ -3,17 +3,13 @@ import type { EventDocument } from "../shared/events";
 import { api, type Account } from "./account-api";
 import { type DashboardState, type SavedWidget, type Friend } from "./dashboard-state";
 import "./Dashboard.css";
-import { ExamplePlanDetails, EventPlanDetails } from "./PlanDetails";
+import { EventPlanDetails } from "./PlanDetails";
 import { WidgetFlipCard } from "./WidgetFlipCard";
 import { EventFlipCard } from "./EventFlipCard";
 
 type Tab = "Plans" | "Widgets" | "Friends" | "Settings";
 type Modal = { type: "widget"; widget?: SavedWidget } | { type: "friend"; friend?: Friend } | null;
 const TABS: Tab[] = ["Plans", "Widgets", "Friends", "Settings"];
-const DEMOS = [
-  { id: "game-night", title: "Friday game night", group: "The usual crew", label: "Hangout", date: "Sep 25", icon: "", color: "mint" },
-  { id: "concert", title: "Calvin Harris at Ushuaïa", group: "Summer trip", label: "Tickets", date: "Sep 25", icon: "♫", color: "peach" },
-];
 function field(form: FormData, name: string) { return String(form.get(name) ?? "").trim(); }
 function readTab(): Tab { const value = location.hash.slice(1); return TABS.find(t => t.toLowerCase() === value) ?? "Plans"; }
 
@@ -22,7 +18,7 @@ function Dialog({ title, onClose, children, wide = false }: { title: string; onC
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
   return <dialog className={`dash-dialog${wide ? " plan-dialog" : ""}`} aria-labelledby="dashboard-dialog-title" ref={ref} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget) onClose(); }}><div className="dash-dialog-head"><h2 id="dashboard-dialog-title">{title}</h2><button aria-label="Close dialog" onClick={onClose} className="dash-icon-button">×</button></div>{children}</dialog>;
 }
-export function Dashboard({ initialData, initialRevision, account, onSignOut }: { initialData: DashboardState; initialRevision: number; account: Account; onSignOut: () => void }) {
+export function Dashboard({ initialData, initialRevision, initialNotice = "", account, onSignOut }: { initialData: DashboardState; initialRevision: number; initialNotice?: string; account: Account; onSignOut: () => void }) {
   const [tab, setTab] = useState<Tab>(readTab);
   const [data, setData] = useState(initialData);
   const revision = useRef(initialRevision);
@@ -33,10 +29,9 @@ export function Dashboard({ initialData, initialRevision, account, onSignOut }: 
   const [events, setEvents] = useState<EventDocument[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsError, setEventsError] = useState("");
-  const [examples, setExamples] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [modal, setModal] = useState<Modal>(null);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(initialNotice);
   const [storageError, setStorageError] = useState("");
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -102,7 +97,6 @@ export function Dashboard({ initialData, initialRevision, account, onSignOut }: 
   const matches = (value: string) => value.toLowerCase().includes(search.toLowerCase());
   const widgets = data.widgets.filter(w => matches(w.title + " " + w.question));
   const friends = data.friends.filter(f => matches(f.name));
-  const samples = DEMOS.filter(p => matches(p.title + " " + p.group));
   return <div className="dashboard">
     <header className="dash-header"><a className="dash-logo" href="/">whim<span>✳</span></a><button className="dash-avatar" onClick={() => navigate("Settings")} aria-label="Account settings">{data.account.name.trim().charAt(0).toUpperCase() || "You"}</button></header>
     <div className="dash-layout">
@@ -116,8 +110,7 @@ export function Dashboard({ initialData, initialRevision, account, onSignOut }: 
         {eventsLoading && <p role="status">Loading your plans…</p>}
         <div className="dash-plan-list">{events.filter(event => matches(event.title + " " + (event.location || ""))).map(event => <EventFlipCard key={event.id} title={event.title} subtitle={[event.location, event.startsAt ? new Date(event.startsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: event.timeZone }) : "From your iMessage group"].filter(Boolean).join(" · ")} label={event.status.charAt(0).toUpperCase() + event.status.slice(1)} image={event.coverUrl} accent="#a7efd2"><EventPlanDetails event={event} /></EventFlipCard>)}
         {!eventsLoading && !eventsError && !events.some(event => matches(event.title + " " + (event.location || ""))) && <div className="dash-empty"><h2>{search ? "No matching plans" : "Your next plan goes here."}</h2><p>{search ? "Try another search." : "Ask Whim to plan something in your iMessage group. It’ll appear here automatically."}</p></div>}
-        {examples && samples.map(plan => <EventFlipCard key={plan.id} title={plan.title} subtitle={`${plan.date} · ${plan.group}`} label="Example plan" accent="#c6b8ff" image={plan.id === "concert" ? "/images/20240628_Ushuaia_Calvin_Harris_0049_6000x4000px_-scaled.jpg" : "/images/rooftop-friends.png"}><ExamplePlanDetails id={plan.id} /></EventFlipCard>)}</div>
-        <button className="dash-text-button" style={{ marginTop: 24 }} onClick={() => setExamples(value => !value)}>{examples ? "Hide examples" : "View example plans"}</button>
+        </div>
       </>}
       {tab === "Widgets" && <div className="dash-widget-grid widget-flip-grid">{widgets.map(w => <WidgetFlipCard key={JSON.stringify(w)} widget={w} onEdit={() => open({ type: "widget", widget: w })} />)}{!widgets.length && <div className="dash-empty"><h2>No widgets found</h2><p>Create one or try another search.</p></div>}</div>}
       {tab === "Friends" && <><p className="dash-help">Your notes for planning together. These don’t change anyone else’s account.</p><div className="dash-friend-list">{friends.map(f => <button key={f.id} className="dash-friend" onClick={() => open({ type: "friend", friend: f })}><div><h3>{f.name}</h3><p>{f.food || "No food preferences added"}</p></div><span>{f.budget}</span><small>Edit</small></button>)}{!friends.length && <div className="dash-empty"><h2>{search ? "No matching friends" : "Who do you make plans with?"}</h2><p>Add a friend’s name and preferences to keep them handy.</p></div>}</div></>}

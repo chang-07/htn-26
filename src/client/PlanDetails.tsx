@@ -7,37 +7,6 @@ import { eventView, type PlanView } from "./event-view";
 import "./PlanDetails.css";
 
 const safeUrl = (url?: string) => { try { const parsed = new URL(url || ""); return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : undefined; } catch { return undefined; } };
-const EXAMPLE_PLANS: Record<string, PlanView> = {
-  "game-night": {
-    title: "Friday game night", subtitle: "Sep 25 · 8 people · Toronto", example: true,
-    schedule: [{ day: "Friday", date: "Sep 25", events: [
-      { time: "7:00 pm", title: "Everyone arrives", note: "Bring your favourite game" },
-      { time: "7:30 pm", title: "Pizza, then teams", note: "Food order ready to review" },
-      { time: "8:00 pm", title: "Let the games begin", note: "A few rounds of whatever wins the vote" },
-    ] }],
-    items: [
-      { id: "food", category: "Food", provider: "DoorDash", title: "Pizza for the group", detail: "4 pizzas · Vegetarian option included", status: "Ready to order", price: "Est. CA$92", notes: ["Review the order and delivery address before checkout.", "Example only. No food has been ordered."], url: "https://www.doordash.com/", linkLabel: "Open DoorDash" },
-      { id: "ride", category: "Ride", provider: "Uber", title: "A ride home", detail: "Saved for after the games", status: "Saved", notes: ["Request a ride when you’re ready. Nothing is scheduled."], url: "https://m.uber.com/", linkLabel: "Open Uber" },
-    ],
-    research: [
-      { provider: "DoorDash", title: "Pizza for eight", detail: "Compared group portions and vegetarian options.", result: "Order ready to review" },
-      { provider: "Game ideas", title: "Games for a bigger group", detail: "Looked for easy party games with short rounds.", result: "Three ideas saved" },
-    ],
-  },
-  concert: {
-    title: "Calvin Harris at Ushuaïa", subtitle: "Sep 25 · 4 friends · Ibiza", example: true,
-    schedule: [{ day: "Friday", date: "Sep 25", events: [{ time: "6:00 pm", title: "Meet up before the show", note: "Get everyone together" }, { time: "Evening", title: "Calvin Harris at Ushuaïa", note: "Check the venue’s final entry details" }, { time: "After", title: "Head home together", note: "Request a ride when everyone is ready" }] }],
-    items: [
-      { id: "tickets", category: "Tickets", provider: "Ushuaïa", title: "Calvin Harris", detail: "Sep 25 · 4 general admission tickets", status: "Booked", price: "€360", notes: ["Four sample tickets for your group.", "Example confirmation: DEMO-TICKETS-01.", "This is a fictional booking preview, not a valid ticket or event listing."], url: "https://www.theushuaiaexperience.com/", linkLabel: "Open venue website" },
-      { id: "ride", category: "Ride", provider: "Uber", title: "Ride home after the show", detail: "4 riders · Pickup after the show", status: "Searched", notes: ["Transport option researched for the group.", "No driver assigned or pickup scheduled. Check local availability before requesting."], url: "https://m.uber.com/", linkLabel: "Open Uber" },
-    ],
-    research: [
-      { provider: "Ushuaïa", title: "Tickets for the group", detail: "Reviewed general admission for four people.", result: "Example tickets selected" },
-      { provider: "Uber", title: "Getting home after the show", detail: "Looked into transport after the show.", result: "No ride requested" },
-    ],
-  },
-};
-
 function serviceBrand(provider: string) {
   const name = provider.toLowerCase();
   if (name.includes("doordash")) return { logo: "doordash", tone: "coral" };
@@ -77,7 +46,6 @@ function PlanContent({ plan, voteLink }: { plan: PlanView; voteLink?: string }) 
     {voteLink && tab === "Plan" && <a className="plan-vote-link" href={voteLink}>Group vote</a>}
   </div>;
 }
-export function ExamplePlanDetails({ id }: { id: string }) { return <PlanContent plan={EXAMPLE_PLANS[id] ?? EXAMPLE_PLANS["game-night"]} />; }
 
 export function EventPlanDetails({ event }: { event: EventDocument }) { return <PlanContent plan={eventView(event)} />; }
 export function liveView(state: PlanState): PlanView { return eventView(state.event ?? eventFromPlan(state, "", "legacy")); }

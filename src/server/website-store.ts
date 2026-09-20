@@ -54,10 +54,11 @@ export class WebsiteStore {
     this.sql.exec(`UPDATE challenges SET attempts=attempts+1 WHERE id = ?`, id);
     if (digest !== c.hash) return null;
     this.sql.exec(`DELETE FROM challenges WHERE id = ?`, id);
-    this.sql.exec(`INSERT OR IGNORE INTO accounts (id,phone) VALUES (?,?)`, crypto.randomUUID(), c.phone);
+    const newId = crypto.randomUUID();
+    this.sql.exec(`INSERT OR IGNORE INTO accounts (id,phone) VALUES (?,?)`, newId, c.phone);
     const account = this.rows<WebsiteAccount>(`SELECT id,phone FROM accounts WHERE phone = ?`, c.phone)[0];
     this.sql.exec(`INSERT INTO sessions VALUES (?,?,?)`, sessionHash, account.id, now + SESSION_TTL);
-    return { account, session };
+    return { account, session, isNewAccount: account.id === newId };
   }
   async account(session: string, now = Date.now()) {
     if (!/^[a-f0-9]{64}$/.test(session)) return null;

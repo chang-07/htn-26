@@ -24,7 +24,7 @@ async function body(request: Request) {
   const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   return JSON.parse(new TextDecoder().decode(bytes));
 }
-export async function websiteRequest(request: Request, db: WebsiteBackend, sendCode: (phone: string, code: string) => Promise<void>) {
+export async function websiteRequest(request: Request, db: WebsiteBackend, sendCode: (phone: string, code: string) => Promise<void>, sendWelcome?: (phone: string) => Promise<void>) {
   const url = new URL(request.url), path = url.pathname, method = request.method;
   const session = request.headers.get("cookie")?.split(";").map(v => v.trim()).find(v => v.startsWith(cookieName(url) + "="))?.slice(cookieName(url).length + 1) ?? "";
   if (!["GET", "HEAD"].includes(method) && (request.headers.get("origin") !== url.origin || request.headers.get("sec-fetch-site") === "cross-site")) return json({ error: "Request origin does not match." }, 403);
@@ -42,7 +42,12 @@ export async function websiteRequest(request: Request, db: WebsiteBackend, sendC
       const verified = await db.verify(input.id, input.code);
       if (!verified) return json({ error: "That code is incorrect or expired. Request a new one if needed." }, 401);
       if (session) await db.logout(session);
-      return json({ account: verified.account }, 200, { "set-cookie": sessionCookie(url, verified.session, 30 * 86400) });
+      let welcome: "sent" | "failed" | undefined;
+      if (verified.isNewAccount && sendWelcome) {
+        try { await sendWelcome(verified.account.phone); welcome = "sent"; }
+        catch { welcome = "failed"; }
+      }
+      return json({ account: verified.account, welcome }, 200, { "set-cookie": sessionCookie(url, verified.session, 30 * 86400) });
     }
     if (path === "/api/account/logout" && method === "POST") { await db.logout(session); return json({ ok: true }, 200, { "set-cookie": sessionCookie(url, "", 0) }); }
     const account = await db.account(session);

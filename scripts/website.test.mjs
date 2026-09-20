@@ -93,3 +93,34 @@ test('failed message delivery cancels the code and exposes no provider errors',a
  const {store,db}=fixture();const response=await websiteRequest(request('/api/account/code','POST',{phone}),backend(store),async()=>{throw new Error('provider secret');});
  assert.equal(response.status,503); assert.doesNotMatch(await response.text(),/provider secret/); assert.equal(db.prepare('SELECT count(*) n FROM challenges').get().n,0);
 });
+
+test('welcome is sent only after first successful verification, never on replay or returning sign-in', async () => {
+ const {store}=fixture(), db=backend(store), welcomes=[];
+ const send=async()=>{}, welcome=async number=>{welcomes.push(number);};
+ const challenge=await store.challenge(phone,'signup');
+ const verify=code=>websiteRequest(request('/api/account/verify','POST',{id:challenge.id,code}),db,send,welcome);
+ const wrong=challenge.code==='000000'?'111111':'000000';
+ assert.equal((await verify(wrong)).status,401);
+ assert.deepEqual(welcomes,[]);
+ const responses=await Promise.all([verify(challenge.code),verify(challenge.code)]);
+ assert.deepEqual(responses.map(r=>r.status).sort(),[200,401]);
+ assert.equal((await responses.find(r=>r.status===200).json()).welcome,'sent');
+ assert.deepEqual(welcomes,[phone]);
+ const next=await store.challenge(phone,'return');
+ const returning=await websiteRequest(request('/api/account/verify','POST',{id:next.id,code:next.code}),db,send,welcome);
+ assert.equal(returning.status,200);
+ assert.equal((await returning.json()).welcome,undefined);
+ assert.deepEqual(welcomes,[phone]);
+});
+
+test('welcome delivery failure preserves login and returns a safe status for the dashboard', async () => {
+ const {store}=fixture(), db=backend(store);
+ const challenge=await store.challenge(phone,'signup');
+ const response=await websiteRequest(request('/api/account/verify','POST',{id:challenge.id,code:challenge.code}),db,async()=>{},async()=>{throw new Error('provider secret');});
+ assert.equal(response.status,200);
+ const body=await response.json();
+ assert.equal(body.welcome,'failed');
+ assert.doesNotMatch(JSON.stringify(body),/provider secret/);
+ const session=response.headers.get('set-cookie').match(/=([^;]+)/)[1];
+ assert.equal((await store.account(session)).id,body.account.id);
+});
