@@ -213,6 +213,27 @@ await check("a misspelt \"remove my paymente\" is still handled in code, never b
   expect(!text.includes("turn.start"), "the model was left to answer a payment removal");
 });
 
+console.log("\nreset");
+await check("/reset wipes the plan, carts and transcript but keeps the people and the area", async () => {
+  const c = chat("reset");
+  await post("/api/dev/message", { chat: c, from: "+15550006661", text: "hey", group: true });
+  await post("/api/dev/message", { chat: c, from: "+15550006662", text: "yo", group: true });
+  await tool(c, "remember_area", { area: "Waterloo" });
+  await tool(c, "propose_plan", PLAN);
+  await post("/api/dev/seedcart", { chat: c, shop: "example-store.com", total: "$12.00" });
+  await post("/api/dev/react", { chat: c, from: "+15550006661", reaction: "love" });
+  await post("/api/dev/message", { chat: c, from: "+15550006661", text: "/reset", group: true });
+  await sleep(500);
+  const d = await dump(c);
+  expect(d.state.status === "idle" && d.state.options.length === 0, `plan survived: ${d.state.status}, ${d.state.options.length} options`);
+  expect((d.state.carts ?? []).length === 0, "a cart survived");
+  expect(d.votes.length === 0, `${d.votes.length} votes survived`);
+  expect(d.transcript.length <= 1, `${d.transcript.length} messages survived`);
+  expect(d.participants.length === 2, `${d.participants.length} participants kept, wanted 2`);
+  expect(d.area === "Waterloo", `area is ${JSON.stringify(d.area)}`);
+  expect(!(await logs(c)).includes("turn.start"), "the model was woken by /reset");
+});
+
 console.log("\npaying (guards only: no browser, no wallet, no store)");
 await check("a thumbs up on a cart from someone with no wallet starts nothing", async () => {
   const c = chat("payguard");
