@@ -745,6 +745,16 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
   if (kindParam === "game" && url.searchParams.get("id")) {
     const v = await agent.gameFetch(url.searchParams.get("id")!, "");
     if (!v) return new Response("Not found", { status: 404 });
+    const g = v as typeof v & { kind?: string; surface?: string; visual?: { accent?: string } };
+    const tint = { coral: "#ff7a59", violet: "#8b5cf6", mint: "#179b6b" }[g.visual?.accent ?? ""] ?? "#179b6b";
+    const tiles =
+      g.kind === "blackjack"
+        ? [{ big: "♠", small: "Ace" }, { big: "♥", small: "King" }, { big: "♣", small: "Seven" }]
+        : g.kind === "trivia"
+          ? [{ big: "A" }, { big: "B", small: "?" }, { big: "C" }]
+          : g.surface === "tap_dodge"
+            ? [{ big: "⚡" }, { big: "◆" }, { big: "✳" }]
+            : [{ big: "✦" }, { big: "✳" }, { big: "★" }];
     const ticket: Ticket = {
       tone: v.phase === "done" ? "done" : "open",
       metaLeft: "Game",
@@ -752,6 +762,7 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
       title: v.title,
       rows: [{ text: v.topic }, { text: `${v.players.length} playing` }],
       stub: { big: v.phase === "done" ? "GG" : "▶", label: v.phase === "done" ? "Final" : "Play" },
+      art: { tiles, tint },
     };
     return new Response((await (await renderTicket(ticket)).arrayBuffer()), { headers: { "content-type": "image/png", "cache-control": "no-store" } });
   }

@@ -23,6 +23,8 @@ export type Ticket = {
   /** Initials drawn as discs above the title. */
   faces?: string[];
   photoUrl?: string;
+  /** Fanned glyph tiles filling the body's empty space (game cards). */
+  art?: { tiles: { big: string; small?: string }[]; tint: string };
 };
 
 const W = 1200;
@@ -86,6 +88,23 @@ export async function renderTicket(t: Ticket): Promise<Response> {
     )
     .join("");
 
+  // Fanned tiles: rotated mini-cards in the accent color, like a dealt hand.
+  const art = t.art
+    ? t.art.tiles
+        .slice(0, 3)
+        .map((tile, i, all) => {
+          const spin = (i - (all.length - 1) / 2) * 10;
+          return `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:170px;height:230px;margin:0 -14px;
+      border-radius:22px;background:#ffffff;border:3px solid ${t.art!.tint};box-shadow:0 10px 24px rgba(0,0,0,0.14);
+      transform:rotate(${spin}deg) translateY(${Math.abs(spin) * 1.6}px);color:${t.art!.tint};">
+      <div style="display:flex;font-family:'Archivo';font-weight:800;font-size:92px;line-height:1;">${esc(tile.big)}</div>
+      ${tile.small ? `<div style="display:flex;margin-top:10px;font-size:30px;letter-spacing:3px;opacity:0.7;">${esc(clip(tile.small, 8).toUpperCase())}</div>` : ""}
+    </div>`;
+        })
+        .join("")
+    : "";
+
   // Satori has no gradient backgrounds, so the perforation is a column of dots.
   const dot = `<div style="display:flex;width:7px;height:7px;border-radius:4px;margin-top:23px;background:${ink};"></div>`;
   const titleSize = t.title.length > 22 || t.photoUrl ? 66 : 78;
@@ -101,7 +120,7 @@ export async function renderTicket(t: Ticket): Promise<Response> {
         ${t.metaRight ? meta(t.metaRight) : ""}
       </div>
       ${faces ? `<div style="display:flex;margin-top:26px;">${faces}</div>` : ""}
-      <div style="display:flex;flex:1;"></div>
+      <div style="display:flex;flex:1;align-items:center;justify-content:center;">${art}</div>
       <div style="display:flex;font-family:'Archivo';font-weight:800;font-size:${titleSize}px;line-height:1;letter-spacing:-2px;">
         ${esc(clip(t.title, t.photoUrl ? 26 : 38))}
       </div>
