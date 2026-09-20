@@ -16,9 +16,11 @@ struct HomeView: View {
     let onRoute: (HomeRoute) -> Void
 
     var body: some View {
+        GeometryReader { geo in
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 WhimHeader(context: "", chipText: chat != nil ? "Connected" : nil, showTile: true)
+                Spacer(minLength: 0).frame(maxHeight: 150)
                 Text("Plan, play, shop —\nright in the chat.")
                     .font(.system(.title3, design: .rounded).weight(.bold))
                     .fixedSize(horizontal: false, vertical: true)
@@ -45,24 +47,35 @@ struct HomeView: View {
                 }
 
                 quick("Infinite camera runner", icon: "figure.run") { onRoute(.runner) }
+                Spacer(minLength: 0)
             }
             .padding(16)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
+        }
+        // The site's ticket-spark: a big rotated asterisk cropped by the edge.
+        .overlay(alignment: .bottomTrailing) {
+            Text("✳︎")
+                .font(.system(size: 170, weight: .heavy))
+                .foregroundStyle(Whim.coral.opacity(0.14))
+                .rotationEffect(.degrees(12))
+                .offset(x: 48, y: 56)
+                .allowsHitTesting(false)
         }
         .background(Whim.paper)
         .whimPage()
+        }
     }
 
     private func quick(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                Image(systemName: icon).font(.body)
-                Text(title).font(.caption.weight(.semibold))
+                Image(systemName: icon).font(.body).foregroundStyle(Whim.coral)
+                Text(title).font(.caption.weight(.semibold)).foregroundStyle(Whim.ink)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .foregroundStyle(.primary)
+            .background(.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Whim.ink.opacity(0.08), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

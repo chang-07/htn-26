@@ -116,9 +116,10 @@ struct InfiniteRunnerView: View {
             if presentation.isTranscript { compact }
             else { expanded }
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Whim.paper)
         .whimPage()
-        .onAppear { tracker.start() }
+        // Camera starts on the explicit Start tap, not on appear: presenting
+        // the TCC prompt while the drawer is compact kills the extension.
         .onDisappear { stopRun(); tracker.stop() }
         .onChange(of: tracker.jumpToken) { _ in jump() }
     }
@@ -191,6 +192,7 @@ struct InfiniteRunnerView: View {
     }
 
     private func startRun() {
+        tracker.start()
         stopRun()
         score = 0
         runnerY = 0

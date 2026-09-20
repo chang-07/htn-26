@@ -118,6 +118,9 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                 guard let self else { return }
                 switch route {
                 case .runner:
+                    // Full sheet first: the camera permission prompt cannot
+                    // present over the compact drawer.
+                    if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
                     self.host(AnyView(InfiniteRunnerView(presentation: self.presentation)))
                 case .plan:
                     guard let known = self.recallChat() else { return }
