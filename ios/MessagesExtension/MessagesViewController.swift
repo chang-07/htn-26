@@ -69,9 +69,20 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     }
 
     // Without this, Messages hands the transcript bubble its huge default
-    // height and the card content floats in dead space.
+    // height and the card content floats in dead space. Each widget kind
+    // declares its own bubble height; present(url:) keeps this current.
+    // Messages sizes a bubble once, at insert — old bubbles never resize.
+    private var transcriptHeight: CGFloat = 240
+
     override func contentSizeThatFits(_ size: CGSize) -> CGSize {
-        CGSize(width: size.width, height: min(size.height, 240))
+        CGSize(width: size.width, height: min(size.height, transcriptHeight))
+    }
+
+    private func transcriptHeight(for path: String) -> CGFloat {
+        if path.hasPrefix("/game/") { return 250 }   // ticket art + tap-to-play row
+        if path.hasPrefix("/music/") { return 230 }
+        if path.hasPrefix("/runner") { return 250 }
+        return 240                                    // plan ticket, cart, everything else
     }
 
     override func didSelect(_ message: MSMessage, conversation: MSConversation) {
@@ -116,6 +127,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     // MARK: - Routing
 
     private func present(url: URL?) {
+        if let path = url?.path { transcriptHeight = transcriptHeight(for: path) }
         // Drawer-open, no card: the native home — never the website.
         guard let target = url else {
             let known = recallChat()
