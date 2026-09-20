@@ -68,6 +68,12 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         syncPresentation()
     }
 
+    // Without this, Messages hands the transcript bubble its huge default
+    // height and the card content floats in dead space.
+    override func contentSizeThatFits(_ size: CGSize) -> CGSize {
+        CGSize(width: size.width, height: min(size.height, 310))
+    }
+
     override func didSelect(_ message: MSMessage, conversation: MSConversation) {
         super.didSelect(message, conversation: conversation)
         convKey = Self.key(for: conversation)

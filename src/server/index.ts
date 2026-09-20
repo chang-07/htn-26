@@ -803,8 +803,9 @@ async function handleCard(url: URL, env: Env, ctx: ExecutionContext): Promise<Re
         : g.kind === "trivia"
           ? [{ big: "A" }, { big: "B", small: "?" }, { big: "C" }]
           : g.surface === "tap_dodge"
-            ? [{ big: "⚡" }, { big: "◆" }, { big: "✳" }]
-            : [{ big: "✦" }, { big: "✳" }, { big: "★" }];
+            ? [{ big: "⚡" }, { big: "✳", small: "tap" }, { big: "⚡" }]
+            // Archivo has no ✦/★/◆ glyphs — they render as tofu boxes. Digits always draw.
+            : [{ big: "1" }, { big: "2", small: "?" }, { big: "3" }];
     const ticket: Ticket = {
       tone: v.phase === "done" ? "done" : "open",
       metaLeft: "Game",

@@ -878,11 +878,11 @@ struct GameComposerView: View {
     }
 
     private func create() async {
-        await send(["prompt": prompt, "voter": voter])
+        await send(["prompt": prompt, "voter": voter, "name": UIDevice.current.name])
     }
 
     private func choose(_ surface: String, promptId: String) async {
-        await send(["promptId": promptId, "surface": surface, "voter": voter])
+        await send(["promptId": promptId, "surface": surface, "voter": voter, "name": UIDevice.current.name])
     }
 
     private func send(_ payload: [String: Any]) async {

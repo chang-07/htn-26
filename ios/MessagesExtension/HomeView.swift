@@ -166,7 +166,7 @@ private struct RecentGamesView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Recent games", systemImage: "gamecontroller.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(games) { game in
+                    ForEach(games.prefix(3)) { game in
                         Button { onOpen(game.id) } label: {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
