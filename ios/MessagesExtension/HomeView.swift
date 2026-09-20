@@ -162,7 +162,11 @@ private struct RecentGamesView: View {
 
     var body: some View {
         Group {
-            if !games.isEmpty {
+            if games.isEmpty {
+                // A real (zero-size) view: .task never fires on EmptyView, and
+                // the first fetch must run while the shelf is still empty.
+                Color.clear.frame(height: 0)
+            } else {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Recent games", systemImage: "gamecontroller.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
