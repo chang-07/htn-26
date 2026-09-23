@@ -264,7 +264,7 @@ struct TriviaGameView: View {
         GeometryReader { geo in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil, chipTint: g.isProcedural ? gameTint(g) : Whim.green)
+                    WhimHeader(context: g.topic, chipText: g.phase == "lobby" ? "Lobby" : nil, chipTint: g.isProcedural ? gameTint(g) : Whim.mintInk)
 
                     Spacer(minLength: 0)
                     Text(g.title).font(.system(.title3, design: .rounded).weight(.bold))
@@ -493,7 +493,7 @@ struct TriviaGameView: View {
     private func tapDodgeScene(_ config: GameView_.TapDodge) -> some View {
         GeometryReader { geo in
             ZStack {
-                LinearGradient(colors: [Whim.greenDeep, Whim.green.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                LinearGradient(colors: [Whim.mintInk, Whim.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
                 let count = config.durationMs / config.obstacleIntervalMs + 1
                 ForEach(0..<count, id: \.self) { index in
                     let spawn = index * config.obstacleIntervalMs
@@ -742,7 +742,7 @@ struct TriviaGameView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Whim.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Whim.mintInk.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 

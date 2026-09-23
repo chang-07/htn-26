@@ -106,7 +106,7 @@ struct AskWhimView: View {
             if sent {
                 HStack {
                     Label("Whim's on it — watch the chat", systemImage: "checkmark.seal.fill")
-                        .font(.subheadline.weight(.medium)).foregroundStyle(Whim.green)
+                        .font(.subheadline.weight(.medium)).foregroundStyle(Whim.mintInk)
                     Spacer()
                     Button("Ask another") { sent = false }
                         .font(.caption.weight(.semibold))

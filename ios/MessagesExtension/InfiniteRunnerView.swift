@@ -571,10 +571,10 @@ struct InfiniteRunnerView: View {
     /// A capsule cactus, ink like the dino game's.
     private var cactus: some View {
         ZStack(alignment: .bottom) {
-            Capsule().fill(Whim.greenDeep).frame(width: 14, height: obstacleHeight)
-            Capsule().fill(Whim.greenDeep).frame(width: 10, height: obstacleHeight * 0.45)
+            Capsule().fill(Whim.cactus).frame(width: 14, height: obstacleHeight)
+            Capsule().fill(Whim.cactus).frame(width: 10, height: obstacleHeight * 0.45)
                 .offset(x: -11, y: -obstacleHeight * 0.3)
-            Capsule().fill(Whim.greenDeep).frame(width: 10, height: obstacleHeight * 0.38)
+            Capsule().fill(Whim.cactus).frame(width: 10, height: obstacleHeight * 0.38)
                 .offset(x: 11, y: -obstacleHeight * 0.42)
         }
     }

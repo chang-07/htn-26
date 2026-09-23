@@ -12,12 +12,11 @@ enum Whim {
     static let mint = Color(red: 0x84 / 255, green: 0xEF / 255, blue: 0xC4 / 255)
     static let mintInk = Color(red: 0x15 / 255, green: 0x3C / 255, blue: 0x30 / 255)
     static let orange = Color(red: 0xFF / 255, green: 0x75 / 255, blue: 0x3F / 255)
-    /// Brand green (the ticket PNGs' W tile).
-    static let green = Color(red: 0x17 / 255, green: 0x9B / 255, blue: 0x6B / 255)
-    static let greenDeep = Color(red: 0x0E / 255, green: 0x6F / 255, blue: 0x4C / 255)
+    /// Illustration colour only (cactus art), matching `cactus` in src/theme.ts. Never a UI accent.
+    static let cactus = Color(red: 0x1F / 255, green: 0x5F / 255, blue: 0x4F / 255)
 
     static var tileGradient: LinearGradient {
-        LinearGradient(colors: [green, greenDeep], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [mintInk, mint], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 }
 
@@ -25,7 +24,7 @@ enum Whim {
 struct WhimHeader: View {
     let context: String
     var chipText: String? = nil
-    var chipTint: Color = Whim.green
+    var chipTint: Color = Whim.mintInk
     /// Apple's bubble chrome already shows the app icon and name, so the tile
     /// stays off in cards and on only where there is no chrome (Home, gallery).
     var showTile = false
@@ -90,7 +89,7 @@ struct ProgressDots: View {
 
             ForEach(0..<max(total, 1), id: \.self) { i in
                 Circle()
-                    .fill(i < current ? Whim.green : Color(uiColor: .systemFill))
+                    .fill(i < current ? Whim.mintInk : Color(uiColor: .systemFill))
                     .frame(width: 6, height: 6)
                     .scaleEffect(i == current - 1 ? 1.35 : 1)
             }
