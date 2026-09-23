@@ -617,11 +617,11 @@ with:
 - [ ] **Step 4: Verify no stale hex remains in docs**
 
 ```bash
-grep -rn '#efe7d6\|#241f17\|#f0ece2' docs/ src/ ios/ ; echo "matches above: expect none"
-grep -n '#1f5f4f' docs/ src/theme.ts
+grep -n '#efe7d6\|#241f17\|#f0ece2' docs/card-design.md docs/widget-rubric.md ; echo "matches above: expect none"
+grep -n '#1f5f4f' docs/card-design.md docs/widget-rubric.md src/theme.ts
 ```
 
-Expected: no matches for the first three. Exactly one match for `#1f5f4f`, in `src/theme.ts` as `cactus`.
+Expected: no matches in the two docs. Exactly one match for `#1f5f4f`, in `src/theme.ts` as `cactus`. The pre-theme mockups `docs/card-mockups.html` and `docs/card-system-mockups.html` keep their historical values on purpose, and this plan and its spec quote the old values as the things to replace; none of those is in scope.
 
 - [ ] **Step 5: Commit**
 
