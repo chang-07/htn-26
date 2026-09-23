@@ -8,7 +8,7 @@
     { "idiom": "universal", "platform": "ios", "size": "27x20", "scale": "3x", "filename": "msg-27x20@3x.png" },
     { "idiom": "universal", "platform": "ios", "size": "32x24", "scale": "2x", "filename": "msg-32x24@2x.png" },
     { "idiom": "universal", "platform": "ios", "size": "32x24", "scale": "3x", "filename": "msg-32x24@3x.png" },
-    { "idiom": "ios-marketing", "size": "1024x768", "scale": "1x", "filename": "msg-1024x768.png" }
+    { "idiom": "ios-marketing", "platform": "ios", "size": "1024x768", "scale": "1x", "filename": "msg-1024x768.png" }
   ],
   "info": { "author": "xcode", "version": 1 }
 }

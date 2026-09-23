@@ -75,7 +75,7 @@
 		5C132D8197CAD203D8A30CDC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		5C63A7C1B9D04438B0101560 /* ProfileForms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileForms.swift; sourceTree = "<group>"; };
 		63EEA57580ADB04559CB8A53 /* IBMPlexMono-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "IBMPlexMono-Medium.ttf"; sourceTree = "<group>"; };
-		7A2B64242AC333DBF39EACCA /* PlanMessages.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = PlanMessages.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		7A2B64242AC333DBF39EACCA /* PlanMessages.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PlanMessages.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		7C597BBBEEF00DB17DBC3E9A /* MessagesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesViewController.swift; sourceTree = "<group>"; };
 		861BCBD2F49B8913FF3704E6 /* PreviewFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewFixtures.swift; sourceTree = "<group>"; };
 		9A59574FF08050F7117C3875 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -84,7 +84,7 @@
 		A1C2E9E73CC2FCA7626DCAC6 /* IBMPlexMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "IBMPlexMono-Regular.ttf"; sourceTree = "<group>"; };
 		A433EE38873FD0D221D41274 /* GameViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameViews.swift; sourceTree = "<group>"; };
 		AE56E0178199437B77F83EC5 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		CB5AA7DE83D35B08D8F09F6C /* Plan.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Plan.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CB5AA7DE83D35B08D8F09F6C /* Plan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Plan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D9D57D0505820A21CE1A0564 /* TicketCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketCardView.swift; sourceTree = "<group>"; };
 		F55E2EC104399805CA5F9BD4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F5E751C5101CF59D480485EA /* InfiniteRunnerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfiniteRunnerView.swift; sourceTree = "<group>"; };
@@ -459,7 +459,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.plan;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.whim;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -556,7 +556,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.plan.MessagesExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.whim.MessagesExtension;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -593,7 +593,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.plan.MessagesExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.whim.MessagesExtension;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -612,7 +612,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.plan;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lukalavric.whim;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = 1;
 			};

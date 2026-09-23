@@ -61,14 +61,18 @@ struct HomeView: View {
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .topLeading)
         }
-        // The site's ticket-spark: a big rotated asterisk cropped by the edge.
+        // Keep the oversized ticket-spark in the full sheet only. In the
+        // compact drawer it competes with the home controls and feels like
+        // it's floating over the content.
         .overlay(alignment: .bottomTrailing) {
-            Text("✳︎")
-                .font(.system(size: 170, weight: .heavy))
-                .foregroundStyle(Whim.coral.opacity(0.14))
-                .rotationEffect(.degrees(12))
-                .offset(x: 48, y: 56)
-                .allowsHitTesting(false)
+            if presentation.isExpanded {
+                Text("✳︎")
+                    .font(.system(size: 170, weight: .heavy))
+                    .foregroundStyle(Whim.coral.opacity(0.14))
+                    .rotationEffect(.degrees(12))
+                    .offset(x: 48, y: 56)
+                    .allowsHitTesting(false)
+            }
         }
         .background(Whim.paper)
         .whimPage()
