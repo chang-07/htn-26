@@ -34,6 +34,7 @@ import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { actProceduralGame, isProceduralGame, newProceduralGame, viewProceduralGame, type ProceduralAction, type ProceduralGameState } from "./procedural-game";
 import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameSurface, type PendingRoute } from "./game-routing";
+import { shouldBuildWebGame } from "./game-web-runtime";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
@@ -1870,9 +1871,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
       }
     }
     const route = await classifyGamePrompt(this.env, prompt);
-    // Boundary mode: a game we can't run natively gets BUILT — a generated
-    // single-file web game behind a card link, instead of a refusal.
-    if (route.status === "copy_risk") return this.gameWebCreate(prompt);
+    // Generated web games: named/board games and explicit multiplayer asks.
+    if (shouldBuildWebGame(prompt, route)) return this.gameWebCreate(prompt);
     if (route.status !== "accepted") return this.pendingGamePrompt(prompt, route);
     return this.createProceduralGame(prompt, route, creator, creatorName);
   }
@@ -1899,13 +1899,22 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   private async buildWebGame(id: string, prompt: string) {
     const { client, model } = llmFor(this.env);
-    const stateUrl = `/game-web/${encodeURIComponent(this.name)}/${id}/state`;
     const res = await client.chat.completions.create({
       model,
       messages: [
         {
           role: "system",
-          content: `You build complete, playable, single-file HTML5 games. Output ONLY the HTML document — no markdown fences, no commentary. Hard rules: everything inline (CSS and JS), no external resources of any kind, mobile-first for a 390px-wide phone with touch controls, a <title> naming the game, clear how-to-play text on screen, and a real end state that names the winner with a play-again button. Make it look polished: bold colors, big touch targets. Layout rules that games break most: every card, tile or piece gets an explicit width AND height (cards at least 48x68px) plus its label always visible as text — never an empty element that can collapse; test mentally that stacked or fanned elements stay readable at 390px. If turn-based play across friends' phones genuinely fits, you may persist JSON state: GET ${stateUrl} returns {"revision":n,"state":any}; PUT ${stateUrl} with JSON body {"expectedRevision":n,"state":any} — a 409 means re-GET and retry. Otherwise build it fully local for pass-and-play on one phone.`,
+          content: `You build complete, playable, single-file HTML5 games for a group iMessage chat. Output ONLY the HTML document — no markdown fences, no commentary.
+
+MULTIPLAYER (required unless the game is strictly solo like solitaire):
+A \`window.WHIM\` runtime is already injected. You MUST use it for any game where friends compete or take turns on their own phones:
+- await WHIM.ready() on load — joins the lobby with WHIM.me as this player's name
+- WHIM.players() — everyone who opened the game in this chat
+- WHIM.get() / WHIM.game() — read shared state; WHIM.setGame(obj) — save full game state after every move
+- WHIM.onRemote(fn) — re-render when someone else moves (polling is already running)
+Store turn order, board, scores, and winner inside WHIM.setGame({ ... }). Show a lobby listing connected players before start when turn-based. Highlight whose turn it is. End with a clear winner using player names from WHIM.players().
+
+Hard rules: everything inline (CSS and JS), no external resources, mobile-first 390px touch UI, <title> naming the game, on-screen how-to-play, play-again button. Polished: bold colors, big touch targets. Layout: every card/tile/piece has explicit width AND height (cards ≥48×68px) with visible labels — never empty collapsible elements.`,
         },
         { role: "user", content: `Build this game: ${prompt}` },
       ],

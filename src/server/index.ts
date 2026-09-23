@@ -27,6 +27,7 @@ import { flightStatus } from "./sources/flight-status";
 import { orderStatus } from "./sources/order-status";
 import type { FlightStatus } from "./sources/types";
 import { GAME_SURFACES, type GameSurface } from "./game-routing";
+import { injectWhimMultiplayer } from "./game-web-runtime";
 import { ACCENT_PALETTE } from "../theme";
 
 /** Bump when the generated card design changes so R2 cannot serve an old palette forever. */
@@ -127,7 +128,7 @@ export default Sentry.withSentry(sentryOptions, {
       if (!sub && request.method === "GET") {
         const html = await agent.gameWebFetch(id);
         if (!html) return new Response("Not found", { status: 404 });
-        return new Response(html, {
+        return new Response(injectWhimMultiplayer(html), {
           headers: {
             "content-type": "text/html; charset=utf-8",
             // sandbox (without allow-same-origin) gives the page a null
