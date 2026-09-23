@@ -33,7 +33,8 @@ import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { actProceduralGame, isProceduralGame, newProceduralGame, viewProceduralGame, type ProceduralAction, type ProceduralGameState } from "./procedural-game";
-import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameSurface, type PendingRoute } from "./game-routing";
+import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameRoute, type GameSurface, type PendingRoute } from "./game-routing";
+import { requiresMultiplayerRuntime, shouldBuildWebGame } from "./game-web-runtime";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
@@ -1613,7 +1614,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
           const failures = row.failures + 1;
           this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
           this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
-          if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+          if (failures === 3) await this.say(`i can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
         }
       }
     } finally {
@@ -1870,9 +1871,8 @@ export class PlanAgent extends Agent<Env, PlanState> {
       }
     }
     const route = await classifyGamePrompt(this.env, prompt);
-    // Boundary mode: a game we can't run natively gets BUILT — a generated
-    // single-file web game behind a card link, instead of a refusal.
-    if (route.status === "copy_risk") return this.gameWebCreate(prompt);
+    // Generated web games: named/board games and explicit multiplayer asks.
+    if (shouldBuildWebGame(prompt, route)) return this.gameWebCreate(prompt, route);
     if (route.status !== "accepted") return this.pendingGamePrompt(prompt, route);
     return this.createProceduralGame(prompt, route, creator, creatorName);
   }
@@ -1885,13 +1885,14 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * referees nothing — shared play goes through the dumb revisioned state
    * blob, and anything with real stakes stays on the fixed engines.
    */
-  async gameWebCreate(prompt: string): Promise<GameCreateResponse> {
+  async gameWebCreate(prompt: string, route: GameRoute): Promise<GameCreateResponse> {
     const id = crypto.randomUUID().slice(0, 12);
     const title = prompt.trim().slice(0, 48);
+    this.note("info", "game_web.routed", { id, route: route.status, confidence: route.confidence });
     this.ctx.waitUntil(
       this.buildWebGame(id, prompt).catch(async (err) => {
         this.note("warn", "game_web.failed", errorFields(err));
-        await this.say("that game build fizzled — give me the prompt once more and I'll take another run at it").catch(() => undefined);
+        await this.say("that game didn't build. send the prompt again and i'll retry").catch(() => undefined);
       }),
     );
     return { status: "created", id, title, route: { status: "accepted", surface: "choice_rounds", confidence: 1, decisionVersion: 1 } };
@@ -1899,25 +1900,64 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   private async buildWebGame(id: string, prompt: string) {
     const { client, model } = llmFor(this.env);
-    const stateUrl = `/game-web/${encodeURIComponent(this.name)}/${id}/state`;
-    const res = await client.chat.completions.create({
-      model,
-      messages: [
+    const system = `You build complete, playable, single-file HTML5 games for a group iMessage chat. Output ONLY the HTML document — no markdown fences, no commentary.
+
+MULTIPLAYER (required unless the game is strictly solo like solitaire):
+A \`window.WHIM\` runtime is already injected. You MUST use it for any game where friends compete or take turns on their own phones:
+- await WHIM.ready() on load — joins the lobby with WHIM.me as this player's name
+- WHIM.players() — players recently active in this game
+- WHIM.myId() — this player's stable id; compare ids for turn ownership and scores, never names (two players can share a name)
+- WHIM.get() / WHIM.game() — read shared state; WHIM.updateGame(reducer) — atomically update shared game state after every move
+- WHIM.onRemote(fn) — fires whenever shared state changes, including your own saves; re-render from it, never write from it (polling is already running)
+Keep the reducer pure: it receives the latest game state and this player, returns the next state, and is safely re-run if another phone writes at the same time. Re-check the turn owner inside the reducer and return undefined when this move is no longer valid. Never replace shared game state using a snapshot captured before the tap. Store turn order, board, scores, and winner inside WHIM.game(). Show a lobby listing currently connected players before start when turn-based. Highlight whose turn it is. End with a clear winner using player names from WHIM.players().
+
+Hard rules: everything inline (CSS and JS), no external resources, mobile-first 390px touch UI, <title> naming the game, on-screen how-to-play, play-again button. Polished: bold colors, big touch targets. Layout: every card/tile/piece has explicit width AND height (cards ≥48×68px) with visible labels — never empty collapsible elements.`;
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system" as const, content: system },
+      { role: "user" as const, content: `Build this game: ${prompt}` },
+    ];
+    const generate = () => client.chat.completions.create({ model, messages });
+    const asHtml = (content: string) => content.trim().replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
+    const hasMultiplayerWiring = (html: string) =>
+      /\bWHIM\s*\.\s*ready\s*\(/i.test(html) &&
+      /\bWHIM\s*\.\s*updateGame\s*\(/i.test(html) &&
+      /\bWHIM\s*\.\s*onRemote\s*\(/i.test(html);
+
+    let res = await generate();
+    let html = asHtml(res.choices[0]?.message?.content ?? "");
+    const needsMultiplayer = requiresMultiplayerRuntime(prompt);
+    if ((!/<html[\s>]/i.test(html) || (needsMultiplayer && !hasMultiplayerWiring(html))) && messages.length === 2) {
+      messages.push(
+        { role: "assistant", content: html || "(The previous response was empty.)" },
         {
-          role: "system",
-          content: `You build complete, playable, single-file HTML5 games. Output ONLY the HTML document — no markdown fences, no commentary. Hard rules: everything inline (CSS and JS), no external resources of any kind, mobile-first for a 390px-wide phone with touch controls, a <title> naming the game, clear how-to-play text on screen, and a real end state that names the winner with a play-again button. Make it look polished: bold colors, big touch targets. Layout rules that games break most: every card, tile or piece gets an explicit width AND height (cards at least 48x68px) plus its label always visible as text — never an empty element that can collapse; test mentally that stacked or fanned elements stay readable at 390px. If turn-based play across friends' phones genuinely fits, you may persist JSON state: GET ${stateUrl} returns {"revision":n,"state":any}; PUT ${stateUrl} with JSON body {"expectedRevision":n,"state":any} — a 409 means re-GET and retry. Otherwise build it fully local for pass-and-play on one phone.`,
+          role: "user",
+          content: "Rewrite the complete HTML game. The previous version cannot be accepted because it either was not a full HTML document or omitted multiplayer wiring. This game's multiplayer code must call await WHIM.ready(), use WHIM.updateGame(current => next) for moves, and subscribe with WHIM.onRemote(render). Return only the corrected complete HTML document.",
         },
-        { role: "user", content: `Build this game: ${prompt}` },
-      ],
-    });
-    let html = (res.choices[0]?.message?.content ?? "").trim();
-    html = html.replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
+      );
+      res = await generate();
+      html = asHtml(res.choices[0]?.message?.content ?? "");
+    }
     if (!/<html[\s>]/i.test(html)) throw new Error("The generator returned no HTML document");
+    if (needsMultiplayer && !hasMultiplayerWiring(html)) throw new Error("The generator omitted required multiplayer state handling");
+    const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
+    this.storeWebGame(id, html, title);
+    await sendWebGameCard(this.env, this.name, this.name, id, title).catch(() => undefined);
+  }
+
+  /** Writes a generated web game and its empty state. Shared by the builder and the dev seed. */
+  private storeWebGame(id: string, html: string, title: string) {
     this.setMeta(`game_web:${id}`, html);
     this.setMeta(`game_web_state:${id}`, JSON.stringify({ revision: 0, state: null }));
-    const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
+    this.setMeta(`game_web_meta:${id}`, JSON.stringify({ title, ts: Date.now() }));
     this.note("info", "game_web.created", { id, title, bytes: html.length });
-    await sendWebGameCard(this.env, this.name, this.name, id, title).catch(() => undefined);
+  }
+
+  /** Local smoke-test entry point: plants an HTML game with no model call and no card. */
+  async devCreateWebGame(html: string, title?: string): Promise<{ id: string; title: string }> {
+    const id = crypto.randomUUID().slice(0, 12);
+    const name = (title ?? html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? "dev web game").trim();
+    this.storeWebGame(id, html, name);
+    return { id, title: name };
   }
 
   async gameWebFetch(id: string): Promise<string | null> {
@@ -1931,8 +1971,12 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** Compare-and-swap only — this referees concurrency, never rules. */
   async gameWebPutState(id: string, expectedRevision: number, state: unknown): Promise<{ ok: boolean; revision: number; state: unknown } | null> {
-    const current = await this.gameWebState(id);
-    if (!current) return null;
+    // Keep the read/check/write synchronous inside the Durable Object. An
+    // await between reading and setting metadata lets two requests both pass
+    // the revision check and overwrite one another.
+    const raw = this.getMeta(`game_web_state:${id}`);
+    if (!raw) return null;
+    const current = JSON.parse(raw) as { revision: number; state: unknown };
     if (current.revision !== expectedRevision) return { ok: false, ...current };
     const next = { revision: current.revision + 1, state };
     this.setMeta(`game_web_state:${id}`, JSON.stringify(next));
@@ -2003,7 +2047,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   /** Titles and status only — questions, answers and choices never leave here. */
   async gamesList() {
-    return this.sql<{ json: string; ts: number }>`SELECT json, ts FROM games ORDER BY ts DESC LIMIT 8`
+    const native = this.sql<{ json: string; ts: number }>`SELECT json, ts FROM games ORDER BY ts DESC LIMIT 8`
       .map((row) => {
         const g = JSON.parse(row.json) as StoredGame;
         return {
@@ -2015,6 +2059,24 @@ export class PlanAgent extends Agent<Env, PlanState> {
           ts: row.ts,
         };
       });
+    // Sandbox games live in meta, not the games table. A blank value is a
+    // cleared key and is skipped; a missing state row lists as an empty lobby.
+    const web = this.sql<{ key: string; value: string }>`SELECT key, value FROM meta WHERE key LIKE 'game_web_meta:%' AND value != ''`
+      .map((row) => {
+        const id = row.key.slice("game_web_meta:".length);
+        const meta = JSON.parse(row.value) as { title: string; ts: number };
+        const raw = this.getMeta(`game_web_state:${id}`);
+        const state = raw ? (JSON.parse(raw) as { state: { players?: unknown[]; game?: unknown } | null }).state : null;
+        return {
+          id,
+          title: meta.title,
+          surface: "web",
+          phase: state?.game ? "play" : "lobby",
+          players: state?.players?.length ?? 0,
+          ts: meta.ts,
+        };
+      });
+    return [...native, ...web].sort((a, b) => b.ts - a.ts).slice(0, 8);
   }
 
   async gameAct(id: string, voter: string, act: GameAction) {
@@ -3076,7 +3138,7 @@ this.rememberCardId(id);
       case "add_song": {
         const { title, artist, who } = parseToolArgs("add_song", rawArgs);
         const found = await searchTrack(title, artist);
-        if (!found) return `iTunes has nothing for "${title}"${artist ? ` by ${artist}` : ""}. Ask for another spelling or a different song.`;
+        if (!found) return `Apple Music has no close match for "${title}"${artist ? ` by ${artist}` : ""}. Ask for another spelling or a different song.`;
         const playlist = [...(this.state.playlist ?? [])];
         const key = (t: { title: string; artist: string }) => `${t.title}|${t.artist}`.toLowerCase();
         if (playlist.some((t) => key(t) === key(found))) return `${found.title} — ${found.artist} is already on the playlist (${playlist.length} tracks).`;
@@ -3462,7 +3524,7 @@ this.rememberCardId(id);
       this.setMeta("booking_running", "");
       this.setMeta("booking_for", "");
       if (this.state.status === "booking") this.publish({ status: "failed", bookingNote: "the booking run crashed" });
-      await this.say("that didn't work on my end, sorry. something broke while I was on the booking site.");
+      await this.say("that didn't work on my end. something broke on the booking site, sorry");
     }
   }
 

@@ -39,9 +39,14 @@ struct GalleryView: View {
             Screen(id: "Playlist · sheet", bubble: false) { AnyView(PlaylistView(store: fixturePlanStore(fxPlan), presentation: fxSheet)) },
             Screen(id: "Home · linked", bubble: false) { AnyView(HomeView(base: URL(string: "https://preview.invalid")!, chat: "preview", presentation: fxSheet, onRoute: { _ in })) },
             Screen(id: "Runner · sheet", bubble: false) { AnyView(InfiniteRunnerView(presentation: fxSheet)) },
+            Screen(id: "Runner · won", bubble: true) {
+                AnyView(InfiniteRunnerView(presentation: fxTranscript, challengeScore: 10, result: "won", postedScore: 14, versusScore: 10))
+            },
+            Screen(id: "Runner · lost", bubble: true) {
+                AnyView(InfiniteRunnerView(presentation: fxTranscript, challengeScore: 10, result: "lost", postedScore: 7, versusScore: 10))
+            },
             Screen(id: "Runner · card", bubble: false) {
-                // The exact pipeline the challenge card uses: view -> UIImage.
-                let banner = RunnerCardBanner(big: "👑 23", label: "NEW CHAMP", face: nil, crowned: true)
+                let banner = RunnerCardBanner(score: 14, versus: 10, face: nil, outcome: .won)
                 let renderer = ImageRenderer(content: banner)
                 renderer.scale = 3
                 return AnyView(VStack(spacing: 12) {

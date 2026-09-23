@@ -31,9 +31,11 @@ Two states, one system. State is carried by the ground colour.
 
 |  | Vote | Booked |
 |---|---|---|
-| Ground | `#efe7d6` cream | `#1f5f4f` deep green |
-| Ink | `#241f17` | `#f0ece2` |
+| Ground | `#faf9f6` paper | `#84efc4` teal |
+| Ink | `#282827` | `#153c30` |
 | Perforation | ink @ 32% | ink @ 30% |
+
+Values are `PALETTE` in `src/theme.ts`; `card.ts`, `Landing.css` and `DesignSystem.swift` read from or match it.
 
 - **Display face** — Archivo 800. Headline 23px/1.0, `-0.02em`, max-width 195px.
   Stub numeral 20px.

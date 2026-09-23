@@ -39,6 +39,10 @@ simulator chat:
 curl -X POST localhost:5173/api/dev/message \
   -H 'content-type: application/json' \
   -d '{"chat":"demo","from":"+15550001111","text":"dinner friday? ramen downtown"}'
+
+# plant a generated web game without a model; the id serves at /game-web/demo/<id>
+curl -X POST localhost:5173/api/dev/seedwebgame -H 'content-type: application/json' \
+  -d @scripts/fixtures/web-game.json
 ```
 
 Leaving `DEV_LLM_*` blank falls back to OpenAI and uses credits. Research also

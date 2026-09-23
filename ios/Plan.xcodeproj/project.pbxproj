@@ -20,6 +20,7 @@
 		802301215DD27CF5F2C90F65 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F55E2EC104399805CA5F9BD4 /* Assets.xcassets */; };
 		84EC9698698BA987B66DEED0 /* SlotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1D084253C9B1CB087165AE /* SlotsView.swift */; };
 		889AB4A7CDDDC41643CFF780 /* SlotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1D084253C9B1CB087165AE /* SlotsView.swift */; };
+		8926F48D9CB13106D5C7E55A /* kerenel_Cards_seperated in Resources */ = {isa = PBXBuildFile; fileRef = F8D4DCC9EA9B7171C75BF902 /* kerenel_Cards_seperated */; };
 		8B07DA674165113B6AA85715 /* PreviewFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 861BCBD2F49B8913FF3704E6 /* PreviewFixtures.swift */; };
 		991132861A5BBD4E281F4CAC /* TicketView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F84881092D54FF0B3D601532 /* TicketView.swift */; };
 		993730DA6BCADDB7AE33509E /* PlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229BFC90036DADFD7BBEDD43 /* PlanStore.swift */; };
@@ -27,6 +28,7 @@
 		AF2AE26753738FA7199A5760 /* TicketCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9D57D0505820A21CE1A0564 /* TicketCardView.swift */; };
 		B22BCF342027A7ED7473F3AC /* TicketView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F84881092D54FF0B3D601532 /* TicketView.swift */; };
 		BDACDA44990827FE0E83296A /* InfiniteRunnerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E751C5101CF59D480485EA /* InfiniteRunnerView.swift */; };
+		C28EB0DEFF329220016B912D /* kerenel_Cards_seperated in Resources */ = {isa = PBXBuildFile; fileRef = F8D4DCC9EA9B7171C75BF902 /* kerenel_Cards_seperated */; };
 		CE67827E6F2C76A2BB6875FF /* CardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03CC3603AF8E3BFCA250312 /* CardsView.swift */; };
 		CEA957459B457CC8DFAA9951 /* MessagesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C597BBBEEF00DB17DBC3E9A /* MessagesViewController.swift */; };
 		D2CA1AA063BB3186D354B6AD /* IBMPlexMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A1C2E9E73CC2FCA7626DCAC6 /* IBMPlexMono-Regular.ttf */; };
@@ -87,6 +89,7 @@
 		F55E2EC104399805CA5F9BD4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F5E751C5101CF59D480485EA /* InfiniteRunnerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfiniteRunnerView.swift; sourceTree = "<group>"; };
 		F84881092D54FF0B3D601532 /* TicketView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketView.swift; sourceTree = "<group>"; };
+		F8D4DCC9EA9B7171C75BF902 /* kerenel_Cards_seperated */ = {isa = PBXFileReference; lastKnownFileType = folder; name = kerenel_Cards_seperated; path = ../public/images/kerenel_Cards_seperated; sourceTree = SOURCE_ROOT; };
 		FAF7C986ECFF65C0B7E409E4 /* PlanApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanApp.swift; sourceTree = "<group>"; };
 		FDFF33A36BB3B09E5F8CB141 /* Messages.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Messages.framework; path = System/Library/Frameworks/Messages.framework; sourceTree = SDKROOT; };
 		FF1D084253C9B1CB087165AE /* SlotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlotsView.swift; sourceTree = "<group>"; };
@@ -107,6 +110,7 @@
 		176BD542A89C4A26FF4C60B5 = {
 			isa = PBXGroup;
 			children = (
+				F8D4DCC9EA9B7171C75BF902 /* kerenel_Cards_seperated */,
 				997CE4923E3084BFAFC13D0D /* App */,
 				543F6E09E02CD6DCFD0714E4 /* MessagesExtension */,
 				6C89FECFCCDB43496AC6B19F /* PreviewApp */,
@@ -190,6 +194,7 @@
 			buildConfigurationList = C1D67C8431E34F487BE300D4 /* Build configuration list for PBXNativeTarget "PlanPreviews" */;
 			buildPhases = (
 				3D5747D23F802A2633BB9E87 /* Sources */,
+				21E6D9D9BDCA403BF0792B01 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -286,6 +291,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		21E6D9D9BDCA403BF0792B01 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C28EB0DEFF329220016B912D /* kerenel_Cards_seperated in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C226483D0509681A08D44DDD /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -302,6 +315,7 @@
 				802301215DD27CF5F2C90F65 /* Assets.xcassets in Resources */,
 				E4815C9AF4DB9017D8D45FC8 /* IBMPlexMono-Medium.ttf in Resources */,
 				D2CA1AA063BB3186D354B6AD /* IBMPlexMono-Regular.ttf in Resources */,
+				8926F48D9CB13106D5C7E55A /* kerenel_Cards_seperated in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

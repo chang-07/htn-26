@@ -304,7 +304,7 @@ const descriptions: Record<ToolName, string> = {
   answer_intro:
     "Record this person's yes or no to the pending introduction shown in your context. Call it FIRST, before send_message. On yes a group chat is opened for the two of them.",
   add_song:
-    "Add a song someone named to the group playlist. It is looked up on iTunes, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
+    "Add a song someone named to the group playlist. It is matched against Apple's music catalog, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
   show_playlist:
     "Post (or repost) the playlist card so the group can open the player. Use when someone asks to see or play the playlist and there is no card in recent view.",
   search_flights:
@@ -320,7 +320,7 @@ const descriptions: Record<ToolName, string> = {
   confirm_item:
     "When a person says they booked or paid for an itinerary stop, mark it confirmed. With price and paidBy it also logs the expense so the invoice splits it.",
   make_game:
-    "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
+    "Generate a game and post its card. Call it for any ask to play a game, with or without a topic. The router picks a quick-choice group game, a one-thumb dodge game, or a generated web game; a named board game or a multiplayer ask becomes a web game. Takes ~10 seconds; the card handles joining and playing. Never recite questions or rules in chat.",
 };
 
 /** Built once per isolate: the schemas never change, and this ran before every model call. */

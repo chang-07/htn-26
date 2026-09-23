@@ -39,8 +39,8 @@ let fxPlan = PlanState(
         CartLine(title: "Signature Assortment", quantity: 1, price: "$32.00", imageUrl: nil),
     ], paidBy: nil)],
     playlist: [
-        Track(title: "Mr. Brightside", artist: "The Killers", artUrl: nil, previewUrl: "https://example.com/p.m4a", addedBy: "Luka"),
-        Track(title: "Kryptonite", artist: "3 Doors Down", artUrl: nil, previewUrl: nil, addedBy: "chang"),
+        Track(title: "Mr. Brightside", artist: "The Killers", artUrl: nil, previewUrl: "https://example.com/p.m4a", appleMusicUrl: nil, addedBy: "Luka"),
+        Track(title: "Kryptonite", artist: "3 Doors Down", artUrl: nil, previewUrl: nil, appleMusicUrl: nil, addedBy: "chang"),
     ]
 )
 

@@ -15,7 +15,7 @@ visible height) and the expanded sheet.
 ### R1 — Design-language fidelity (25)
 Source of truth: `src/theme.ts` header comment, `docs/card-design.md`.
 
-- [5] Only the two grounds exist: cream `#efe7d6` open, green `#1f5f4f` done.
+- [5] Only the two grounds exist: paper `#faf9f6` open, teal `#84efc4` done, per `PALETTE` in `src/theme.ts`.
   State is carried by the ground flip, never by a badge.
 - [5] Type system intact: Archivo 800 for titles/stub figures, IBM Plex Mono for
   everything else, spaced small caps for labels.

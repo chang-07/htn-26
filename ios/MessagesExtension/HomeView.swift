@@ -6,6 +6,7 @@ import SwiftUI
 enum HomeRoute {
     case plan, cart, playlist, runner, slots
     case game(String)
+    case webGame(String)
 }
 
 struct HomeView: View {
@@ -53,7 +54,7 @@ struct HomeView: View {
                     quick("Face slots — who pays?", icon: "dollarsign.circle.fill") { onRoute(.slots) }
                 }
                 if let chat {
-                    RecentGamesView(base: base, chat: chat) { onRoute(.game($0)) }
+                    RecentGamesView(base: base, chat: chat) { id, web in onRoute(web ? .webGame(id) : .game(id)) }
                 }
                 Spacer(minLength: 0)
             }
@@ -105,7 +106,7 @@ struct AskWhimView: View {
             if sent {
                 HStack {
                     Label("Whim's on it — watch the chat", systemImage: "checkmark.seal.fill")
-                        .font(.subheadline.weight(.medium)).foregroundStyle(Whim.green)
+                        .font(.subheadline.weight(.medium)).foregroundStyle(Whim.mintInk)
                     Spacer()
                     Button("Ask another") { sent = false }
                         .font(.caption.weight(.semibold))
@@ -134,7 +135,7 @@ struct AskWhimView: View {
         req.httpMethod = "POST"
         req.timeoutInterval = 15
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": prompt, "name": UIDevice.current.name])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": prompt, "name": Player.name])
         if let (_, resp) = try? await URLSession.shared.data(for: req),
            (resp as? HTTPURLResponse)?.statusCode == 200 {
             prompt = ""
@@ -147,7 +148,7 @@ struct AskWhimView: View {
 private struct RecentGamesView: View {
     let base: URL
     let chat: String
-    let onOpen: (String) -> Void
+    let onOpen: (String, Bool) -> Void
 
     private struct GameSummary: Decodable, Identifiable {
         let id: String
@@ -171,7 +172,7 @@ private struct RecentGamesView: View {
                     Label("Recent games", systemImage: "gamecontroller.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(games.prefix(3)) { game in
-                        Button { onOpen(game.id) } label: {
+                        Button { onOpen(game.id, game.surface == "web") } label: {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(game.title)
