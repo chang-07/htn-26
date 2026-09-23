@@ -54,7 +54,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     /// Runs `then` once a display name exists. Asks the first time, on the
     /// expanded sheet, because an alert cannot present over the compact drawer.
     private func withPlayerName(then: @escaping () -> Void) {
-        if Player.hasName { then(); return }
+        if Player.hasName || viewIfLoaded?.window == nil { then(); return }
         if presentationStyle != .expanded { requestPresentationStyle(.expanded) }
         let alert = UIAlertController(title: "What should the group call you?", message: nil, preferredStyle: .alert)
         alert.addTextField { $0.placeholder = "Your name"; $0.autocapitalizationType = .words }
