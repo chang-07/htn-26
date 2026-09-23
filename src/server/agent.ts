@@ -1923,11 +1923,24 @@ Hard rules: everything inline (CSS and JS), no external resources, mobile-first 
     let html = (res.choices[0]?.message?.content ?? "").trim();
     html = html.replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
     if (!/<html[\s>]/i.test(html)) throw new Error("The generator returned no HTML document");
+    const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
+    this.storeWebGame(id, html, title);
+    await sendWebGameCard(this.env, this.name, this.name, id, title).catch(() => undefined);
+  }
+
+  /** Writes a generated web game and its empty state. Shared by the builder and the dev seed. */
+  private storeWebGame(id: string, html: string, title: string) {
     this.setMeta(`game_web:${id}`, html);
     this.setMeta(`game_web_state:${id}`, JSON.stringify({ revision: 0, state: null }));
-    const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
     this.note("info", "game_web.created", { id, title, bytes: html.length });
-    await sendWebGameCard(this.env, this.name, this.name, id, title).catch(() => undefined);
+  }
+
+  /** Local smoke-test entry point: plants an HTML game with no model call and no card. */
+  async devCreateWebGame(html: string, title?: string): Promise<{ id: string; title: string }> {
+    const id = crypto.randomUUID().slice(0, 12);
+    const name = (title ?? html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? "dev web game").trim();
+    this.storeWebGame(id, html, name);
+    return { id, title: name };
   }
 
   async gameWebFetch(id: string): Promise<string | null> {

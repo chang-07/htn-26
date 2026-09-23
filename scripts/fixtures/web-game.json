@@ -1,0 +1,5 @@
+{
+  "chat": "demo",
+  "title": "Seeded lobby",
+  "html": "<html><head><title>Seeded lobby</title></head><body><h1 id=who>joining</h1><script>(async()=>{const s=await WHIM.ready();document.getElementById('who').textContent=WHIM.players().map(p=>p.name).join(', ');WHIM.onRemote(st=>{document.getElementById('who').textContent=st.players.map(p=>p.name).join(', ')});})();</script></body></html>"
+}

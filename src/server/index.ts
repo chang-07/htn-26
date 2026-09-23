@@ -575,6 +575,11 @@ async function handleDev(request: Request, url: URL, env: Env): Promise<Response
     if (!spec || typeof spec !== "object") return new Response("spec is required", { status: 400 });
     return Response.json(await agent.devCreateGame(spec as Parameters<PlanAgentClass["devCreateGame"]>[0], voter, body.name));
   }
+  if (url.pathname === "/api/dev/seedwebgame") {
+    const html = body.html;
+    if (typeof html !== "string" || !/<html[\s>]/i.test(html)) return new Response("html with an <html> tag is required", { status: 400 });
+    return Response.json(await agent.devCreateWebGame(html, typeof body.title === "string" ? body.title : undefined));
+  }
   if (url.pathname === "/api/dev/tool") {
     const { tool, args } = body as unknown as { tool: string; args?: unknown };
     return Response.json({ result: await agent.devRunTool(tool, args) });
