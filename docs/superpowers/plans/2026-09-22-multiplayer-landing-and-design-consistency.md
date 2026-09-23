@@ -1100,6 +1100,14 @@ git log --oneline main..feature/multiplayer-landing
 
 shows ten commits. `git status --short` is empty. `npm test` reports `fail 0`. The PlanPreviews build succeeds. `curl localhost:5173/api/widget/demo/games` lists a `web` row.
 
+## Needs a Cloudflare login first
+
+`npm run dev` could not start on the machine this plan ran on. The `PEOPLE_INDEX` Vectorize binding in `wrangler.jsonc` is `remote: true`, which needs a cloud preview session, and `wrangler whoami` showed the Hack Western account (`2080c38e…`) rather than the account this Worker deploys to (`f8f3d57a…`). Tasks 3 and 4 were therefore committed on typecheck, `npm test` and the Swift build alone; their HTTP checks did not run. After `wrangler logout && wrangler login` into the right account:
+
+1. `npm run runs:migrate` if the local D1 has never been created, then `npm run dev` in a second terminal.
+2. Run Task 3, Step 5 top to bottom. Every command has its expected output beside it.
+3. Run Task 4, Step 4: seed the web game, seed the trivia game, read the shelf.
+
 ## Still needs a phone
 
 None of the above verifies inside real Messages. Before filming, cable each phone, run `./ios/install-phone.sh`, then on each phone:
