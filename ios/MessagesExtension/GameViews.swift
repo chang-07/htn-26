@@ -216,7 +216,7 @@ struct TriviaGameView: View {
         switch g.visual?.accent {
         case "coral": return Whim.coral
         case "violet": return .purple
-        case "mint": return Whim.green
+        case "mint": return Whim.mint
         default: return .accentColor
         }
     }
