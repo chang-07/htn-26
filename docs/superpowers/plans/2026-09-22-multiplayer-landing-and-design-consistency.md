@@ -1102,4 +1102,9 @@ shows ten commits. `git status --short` is empty. `npm test` reports `fail 0`. T
 
 ## Still needs a phone
 
-None of the above verifies inside real Messages. Before filming, cable a phone, run `./ios/install-phone.sh`, and check with two devices in one chat: a web game card opens expanded, both names appear in the lobby, a move on one phone shows on the other within about two seconds, and the recent-games shelf lists it.
+None of the above verifies inside real Messages. Before filming, cable each phone, run `./ios/install-phone.sh`, then on each phone:
+
+1. Open any web-game card, dismiss the extension, and open it again. The first open runs straight through with the name "iPhone" so the sheet is never blank; the second open is from a live view, so the "What should the group call you?" alert appears. Save a name. This is a one-time step per phone.
+2. Generate fresh game cards for the test. A card created before commit `3f91fff` holds lobby entries keyed by display name and will show a ghost player that never takes a turn.
+
+Then with two devices in one chat: a web game card opens expanded, both saved names appear in the lobby, a move on one phone shows on the other within about two seconds, and the recent-games shelf lists it.
