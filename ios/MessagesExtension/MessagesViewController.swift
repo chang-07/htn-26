@@ -178,6 +178,10 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                     guard let known = self.recallChat() else { return }
                     if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
                     self.present(url: known.base.appendingPathComponent("game/\(known.chat)/\(id)"))
+                case .webGame(let id):
+                    guard let known = self.recallChat() else { return }
+                    if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
+                    self.present(url: known.base.appendingPathComponent("game-web/\(known.chat)/\(id)"))
                 }
             })))
             return

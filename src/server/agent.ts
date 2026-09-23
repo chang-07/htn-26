@@ -1932,6 +1932,7 @@ Hard rules: everything inline (CSS and JS), no external resources, mobile-first 
   private storeWebGame(id: string, html: string, title: string) {
     this.setMeta(`game_web:${id}`, html);
     this.setMeta(`game_web_state:${id}`, JSON.stringify({ revision: 0, state: null }));
+    this.setMeta(`game_web_meta:${id}`, JSON.stringify({ title, ts: Date.now() }));
     this.note("info", "game_web.created", { id, title, bytes: html.length });
   }
 
@@ -2026,7 +2027,7 @@ Hard rules: everything inline (CSS and JS), no external resources, mobile-first 
 
   /** Titles and status only — questions, answers and choices never leave here. */
   async gamesList() {
-    return this.sql<{ json: string; ts: number }>`SELECT json, ts FROM games ORDER BY ts DESC LIMIT 8`
+    const native = this.sql<{ json: string; ts: number }>`SELECT json, ts FROM games ORDER BY ts DESC LIMIT 8`
       .map((row) => {
         const g = JSON.parse(row.json) as StoredGame;
         return {
@@ -2038,6 +2039,24 @@ Hard rules: everything inline (CSS and JS), no external resources, mobile-first 
           ts: row.ts,
         };
       });
+    // Sandbox games live in meta, not the games table. A blank value is a
+    // cleared key and is skipped; a missing state row lists as an empty lobby.
+    const web = this.sql<{ key: string; value: string }>`SELECT key, value FROM meta WHERE key LIKE 'game_web_meta:%' AND value != ''`
+      .map((row) => {
+        const id = row.key.slice("game_web_meta:".length);
+        const meta = JSON.parse(row.value) as { title: string; ts: number };
+        const raw = this.getMeta(`game_web_state:${id}`);
+        const state = raw ? (JSON.parse(raw) as { state: { players?: unknown[]; game?: unknown } | null }).state : null;
+        return {
+          id,
+          title: meta.title,
+          surface: "web",
+          phase: state?.game ? "play" : "lobby",
+          players: state?.players?.length ?? 0,
+          ts: meta.ts,
+        };
+      });
+    return [...native, ...web].sort((a, b) => b.ts - a.ts).slice(0, 8);
   }
 
   async gameAct(id: string, voter: string, act: GameAction) {

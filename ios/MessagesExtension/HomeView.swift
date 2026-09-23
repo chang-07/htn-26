@@ -6,6 +6,7 @@ import SwiftUI
 enum HomeRoute {
     case plan, cart, playlist, runner, slots
     case game(String)
+    case webGame(String)
 }
 
 struct HomeView: View {
@@ -53,7 +54,7 @@ struct HomeView: View {
                     quick("Face slots — who pays?", icon: "dollarsign.circle.fill") { onRoute(.slots) }
                 }
                 if let chat {
-                    RecentGamesView(base: base, chat: chat) { onRoute(.game($0)) }
+                    RecentGamesView(base: base, chat: chat) { id, web in onRoute(web ? .webGame(id) : .game(id)) }
                 }
                 Spacer(minLength: 0)
             }
@@ -147,7 +148,7 @@ struct AskWhimView: View {
 private struct RecentGamesView: View {
     let base: URL
     let chat: String
-    let onOpen: (String) -> Void
+    let onOpen: (String, Bool) -> Void
 
     private struct GameSummary: Decodable, Identifiable {
         let id: String
@@ -171,7 +172,7 @@ private struct RecentGamesView: View {
                     Label("Recent games", systemImage: "gamecontroller.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(games.prefix(3)) { game in
-                        Button { onOpen(game.id) } label: {
+                        Button { onOpen(game.id, game.surface == "web") } label: {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(game.title)
