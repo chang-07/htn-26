@@ -1892,7 +1892,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     this.ctx.waitUntil(
       this.buildWebGame(id, prompt).catch(async (err) => {
         this.note("warn", "game_web.failed", errorFields(err));
-        await this.say("that game build fizzled — give me the prompt once more and I'll take another run at it").catch(() => undefined);
+        await this.say("that game didn't build. send the prompt again and i'll retry").catch(() => undefined);
       }),
     );
     return { status: "created", id, title, route: { status: "accepted", surface: "choice_rounds", confidence: 1, decisionVersion: 1 } };
@@ -3505,7 +3505,7 @@ this.rememberCardId(id);
       this.setMeta("booking_running", "");
       this.setMeta("booking_for", "");
       if (this.state.status === "booking") this.publish({ status: "failed", bookingNote: "the booking run crashed" });
-      await this.say("that didn't work on my end, sorry. something broke while I was on the booking site.");
+      await this.say("that didn't work on my end. something broke on the booking site, sorry");
     }
   }
 
