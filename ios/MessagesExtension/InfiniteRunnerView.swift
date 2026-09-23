@@ -316,6 +316,10 @@ struct InfiniteRunnerView: View {
     var postedScore: Int? = nil
     /// The score this run was trying to beat, when it is a win/loss post.
     var versusScore: Int? = nil
+    /// The sender's display name, from the card URL.
+    var senderName: String? = nil
+    /// Whether this phone sent the card; only then is the local avatar the right face.
+    var isMine: Bool = true
     /// Sends a score card into the conversation (host wires it up): a fresh
     /// challenge, or — when a challenge score is given — a win/loss result.
     var onChallenge: ((Int, Int?) -> Void)? = nil
@@ -358,7 +362,7 @@ struct InfiniteRunnerView: View {
                 RunnerResultWidget(
                     score: postedScore ?? challengeScore ?? 0,
                     versus: versusScore,
-                    face: avatar,
+                    face: isMine ? avatar : nil,
                     outcome: outcome)
             } else {
                 VStack(alignment: .leading, spacing: 8) {

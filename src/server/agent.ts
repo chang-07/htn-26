@@ -1910,6 +1910,7 @@ MULTIPLAYER (required unless the game is strictly solo like solitaire):
 A \`window.WHIM\` runtime is already injected. You MUST use it for any game where friends compete or take turns on their own phones:
 - await WHIM.ready() on load — joins the lobby with WHIM.me as this player's name
 - WHIM.players() — everyone who opened the game in this chat
+- WHIM.myId() — this player's stable id; compare ids for turn ownership and scores, never names (two players can share a name)
 - WHIM.get() / WHIM.game() — read shared state; WHIM.setGame(obj) — save full game state after every move
 - WHIM.onRemote(fn) — re-render when someone else moves (polling is already running)
 Store turn order, board, scores, and winner inside WHIM.setGame({ ... }). Show a lobby listing connected players before start when turn-based. Highlight whose turn it is. End with a clear winner using player names from WHIM.players().

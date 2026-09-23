@@ -3,15 +3,18 @@ export const WHIM_MULTIPLAYER_RUNTIME = String.raw`
 (function () {
   var params = new URLSearchParams(location.search);
   var me = (params.get("player") || "Player").slice(0, 32);
+  var pid = (params.get("pid") || "").replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 16);
   var statePath = location.pathname.replace(/\/$/, "") + "/state";
   var cached = { revision: 0, state: null };
   var listeners = [];
   var pollMs = 1200;
 
   function idFor(name) {
+    if (pid) return pid;
     var s = String(name).replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
     return s.slice(0, 10) || ("p" + Math.random().toString(36).slice(2, 8));
   }
+  var myId = idFor(me);
 
   async function pull() {
     var res = await fetch(statePath, { cache: "no-store" });
@@ -42,9 +45,9 @@ export const WHIM_MULTIPLAYER_RUNTIME = String.raw`
 
   function ensurePlayer(state) {
     var players = state.players.slice();
-    var mine = players.find(function (p) { return p.name === me; });
+    var mine = players.find(function (p) { return p.id === myId; });
     if (!mine) {
-      mine = { id: idFor(me), name: me, joinedAt: Date.now() };
+      mine = { id: myId, name: me, joinedAt: Date.now() };
       players.push(mine);
     }
     state.players = players;
@@ -74,12 +77,12 @@ export const WHIM_MULTIPLAYER_RUNTIME = String.raw`
 
   window.WHIM = {
     me: me,
-    myId: function () { return idFor(me); },
+    myId: function () { return myId; },
     ready: async function () {
       var cur = await pull();
       cached = cur;
       var state = baseState(cur.state);
-      if (!state.players.some(function (p) { return p.name === me; })) {
+      if (!state.players.some(function (p) { return p.id === myId; })) {
         state = await save(function (s) { ensurePlayer(s); });
       }
       return state;

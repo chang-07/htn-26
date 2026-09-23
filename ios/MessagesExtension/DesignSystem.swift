@@ -126,3 +126,27 @@ extension View {
             .environment(\.colorScheme, .light)
     }
 }
+
+/// Who this phone is, for lobbies and cards. iOS 16 returns "iPhone" for the
+/// device name without a restricted entitlement, so the name is asked once
+/// and stored; the id is the vendor identifier, stable per install.
+enum Player {
+    static let nameKey = "whim.player.name"
+
+    static var hasName: Bool {
+        guard let stored = UserDefaults.standard.string(forKey: nameKey) else { return false }
+        return !stored.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    static var name: String {
+        if hasName, let stored = UserDefaults.standard.string(forKey: nameKey) {
+            return stored.trimmingCharacters(in: .whitespaces)
+        }
+        return UIDevice.current.name
+    }
+
+    static var id: String {
+        let raw = UIDevice.current.identifierForVendor?.uuidString ?? "anon"
+        return String(raw.lowercased().filter { $0.isLetter || $0.isNumber }.prefix(8))
+    }
+}

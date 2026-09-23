@@ -42,3 +42,10 @@ test("runtime reads the player from the query and caps it at 32 characters", () 
   assert.match(WHIM_MULTIPLAYER_RUNTIME, /params\.get\("player"\)/);
   assert.match(WHIM_MULTIPLAYER_RUNTIME, /\.slice\(0, 32\)/);
 });
+
+test("runtime keys the lobby on a stable id, using pid when the phone supplies one", () => {
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /params\.get\("pid"\)/);
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /var myId = idFor\(me\)/);
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /p\.id === myId/);
+  assert.doesNotMatch(WHIM_MULTIPLAYER_RUNTIME, /p\.name === me/);
+});
