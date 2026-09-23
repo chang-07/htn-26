@@ -135,7 +135,7 @@ struct AskWhimView: View {
         req.httpMethod = "POST"
         req.timeoutInterval = 15
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": prompt, "name": UIDevice.current.name])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": prompt, "name": Player.name])
         if let (_, resp) = try? await URLSession.shared.data(for: req),
            (resp as? HTTPURLResponse)?.statusCode == 200 {
             prompt = ""
