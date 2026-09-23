@@ -37,7 +37,7 @@ struct GalleryView: View {
             Screen(id: "Cart · sheet", bubble: false) { AnyView(CartListView(store: fixturePlanStore(fxPlan), presentation: fxSheet, focusShop: "levainbakery.com", onCheckout: { _ in })) },
             Screen(id: "Cart · bubble", bubble: true) { AnyView(CartListView(store: fixturePlanStore(fxPlan), presentation: fxTranscript, focusShop: "levainbakery.com", onCheckout: { _ in })) },
             Screen(id: "Playlist · sheet", bubble: false) { AnyView(PlaylistView(store: fixturePlanStore(fxPlan), presentation: fxSheet)) },
-            Screen(id: "Home · linked", bubble: false) { AnyView(HomeView(base: URL(string: "https://preview.invalid")!, chat: "preview", presentation: fxSheet, onRoute: { _ in })) },
+            Screen(id: "Home · linked", bubble: false) { AnyView(HomeView(base: URL(string: "https://preview.invalid")!, chat: "preview", presentation: fxSheet, onLink: { _ in }, onRoute: { _ in })) },
             Screen(id: "Runner · sheet", bubble: false) { AnyView(InfiniteRunnerView(presentation: fxSheet)) },
             Screen(id: "Runner · won", bubble: true) {
                 AnyView(InfiniteRunnerView(presentation: fxTranscript, challengeScore: 10, result: "won", postedScore: 14, versusScore: 10))

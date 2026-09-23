@@ -111,6 +111,6 @@ let fxBlackjackReveal = GameView_(
 }
 #Preview("Playlist — sheet") { PlaylistView(store: fixturePlanStore(fxPlan), presentation: fxSheet) }
 #Preview("Home — linked") {
-    HomeView(base: URL(string: "https://preview.invalid")!, chat: "preview", presentation: fxSheet, onRoute: { _ in })
+    HomeView(base: URL(string: "https://preview.invalid")!, chat: "preview", presentation: fxSheet, onLink: { _ in }, onRoute: { _ in })
 }
 #endif

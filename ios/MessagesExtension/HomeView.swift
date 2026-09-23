@@ -15,6 +15,8 @@ struct HomeView: View {
     /// extension learns which Linq chat this thread is).
     let chat: String?
     @ObservedObject var presentation: PresentationInfo
+    /// A pairing code was claimed: the chat id to link this conversation to.
+    let onLink: (String) -> Void
     let onRoute: (HomeRoute) -> Void
 
     var body: some View {
@@ -40,9 +42,10 @@ struct HomeView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Not linked to this chat yet", systemImage: "link")
                             .font(.subheadline.weight(.semibold))
-                        Text("Tap any Whim card in this conversation once and the app links up. No card yet? Text the planner and ask for anything — a plan, a game, a playlist.")
+                        Text("Text \"/link\" in the chat and Whim replies with a code — type it here. (Tapping any Whim card links too.)")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        PairCodeField(base: base, onLink: onLink)
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -91,6 +94,57 @@ struct HomeView: View {
             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Whim.ink.opacity(0.08), lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// The card-free link: claims a "/link" code from the worker and hands back
+/// the chat id it stands for.
+private struct PairCodeField: View {
+    let base: URL
+    let onLink: (String) -> Void
+    @State private var code = ""
+    @State private var checking = false
+    @State private var failed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                TextField("Code from Whim", text: $code)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .disabled(checking)
+                Button {
+                    Task { await claim() }
+                } label: {
+                    if checking { ProgressView() } else { Text("Link") }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(checking || code.trimmingCharacters(in: .whitespaces).count < 4)
+            }
+            if failed {
+                Text("That code didn’t work — text \"/link\" again for a fresh one.")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func claim() async {
+        checking = true
+        failed = false
+        defer { checking = false }
+        let clean = code.trimmingCharacters(in: .whitespaces).uppercased()
+        var req = URLRequest(url: base.appendingPathComponent("api/pair/\(clean)"))
+        req.timeoutInterval = 10
+        struct Paired: Decodable { let chat: String }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let paired = try? JSONDecoder().decode(Paired.self, from: data) else {
+            failed = true
+            return
+        }
+        onLink(paired.chat)
     }
 }
 
