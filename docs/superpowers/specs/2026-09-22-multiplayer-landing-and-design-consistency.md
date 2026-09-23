@@ -79,9 +79,11 @@ Fix the two docs; touch no rendering code for this.
 web. `theme.ts` states accents are pink and teal only, and provides `cactus`
 (`#1f5f4f`) as an illustration-only colour. Mapping: text and chip tints to
 `mintInk`; fills and gradients to `mintInk` and `mint`; the runner's cactus
-obstacles to a new `Whim.cactus` matching `theme.ts`. The `"mint"` visual
-token in `GameViews.swift` currently returns `Whim.green`; it returns
-`Whim.mint`.
+obstacles to a new `Whim.cactus` matching `theme.ts`. The `"mint"` visual token
+in `GameViews.swift` returned `Whim.green`; it now returns `Whim.mintInk`,
+because `gameTint` feeds text and icon foregrounds and light mint on paper is
+unreadable. Task 8's rule that chip tints are mint ink applies to this token
+too.
 
 **The `make_game` tool description describes the router.** It still reads
 "Generate a trivia game", written before the surface router and the sandbox

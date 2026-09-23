@@ -1098,7 +1098,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 git log --oneline main..feature/multiplayer-landing
 ```
 
-shows ten commits. `git status --short` is empty. `npm test` reports `fail 0`. The PlanPreviews build succeeds. `curl localhost:5173/api/widget/demo/games` lists a `web` row.
+shows one commit per task (Task 11 included) plus the docs commits that record rulings; nineteen at the time of the final review, plus the fix wave. `git status --short` is empty. `npm test` reports `fail 0`. The PlanPreviews build succeeds. `curl localhost:5173/api/widget/demo/games` lists a `web` row.
 
 ## Needs a Cloudflare login first
 
@@ -1112,7 +1112,8 @@ shows ten commits. `git status --short` is empty. `npm test` reports `fail 0`. T
 
 None of the above verifies inside real Messages. Before filming, cable each phone, run `./ios/install-phone.sh`, then on each phone:
 
-1. Open any web-game card, dismiss the extension, and open it again. The first open runs straight through with the name "iPhone" so the sheet is never blank; the second open is from a live view, so the "What should the group call you?" alert appears. Save a name. This is a one-time step per phone.
+1. Open any web-game card, dismiss the extension, and open it again. The first open runs straight through with the name "iPhone" so the sheet is never blank; the second open is from a live view, so the "What should the group call you?" alert appears. Save a name. This is a one-time step per phone. If the alert does not appear on the second open either, `withPlayerName` in `MessagesViewController.swift` needs the stash-and-drain shape: when the view is not presentable, store the continuation in a `private var pendingNameAsk: (() -> Void)?` and drain it in `didTransition(to:)` once the style is expanded.
 2. Generate fresh game cards for the test. A card created before commit `3f91fff` holds lobby entries keyed by display name and will show a ghost player that never takes a turn.
+3. Run the `PlanPreviews` scheme for Mac Catalyst in Xcode and walk the gallery. Check five things: lobby chips and progress dots read as dark teal on paper; a procedural game whose accent is mint has a readable chip; the hidden card back is a dark-to-light gradient; the TapDodge obstacles still separate from the light end of their backdrop; the runner's obstacles are the deep cactus green.
 
 Then with two devices in one chat: a web game card opens expanded, both saved names appear in the lobby, a move on one phone shows on the other within about two seconds, and the recent-games shelf lists it.
