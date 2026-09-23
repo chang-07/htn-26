@@ -320,7 +320,7 @@ const descriptions: Record<ToolName, string> = {
   confirm_item:
     "When a person says they booked or paid for an itinerary stop, mark it confirmed. With price and paidBy it also logs the expense so the invoice splits it.",
   make_game:
-    "Generate a trivia game and post its card. Call it for any ask to play a game, with or without a topic. Takes ~10 seconds; the card handles joining and playing. Never recite the questions in chat.",
+    "Generate a game and post its card. Call it for any ask to play a game, with or without a topic. The router picks a quick-choice group game, a one-thumb dodge game, or a generated web game; a named board game or a multiplayer ask becomes a web game. Takes ~10 seconds; the card handles joining and playing. Never recite questions or rules in chat.",
 };
 
 /** Built once per isolate: the schemas never change, and this ran before every model call. */
