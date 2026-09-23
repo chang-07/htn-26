@@ -1614,7 +1614,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
           const failures = row.failures + 1;
           this.sql`UPDATE watches SET failures = ${failures}, checked = ${Date.now()} WHERE item_id = ${item.id}`;
           this.note("warn", "watch.failed", { id: item.id, failures, ...errorFields(err) });
-          if (failures === 3) await this.say(`I can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
+          if (failures === 3) await this.say(`i can't reach ${"flight" in watch ? "FlightAware" : watch.order.shop} for ${item.title} right now${item.url ? `: ${item.url}` : ""}`);
         }
       }
     } finally {
