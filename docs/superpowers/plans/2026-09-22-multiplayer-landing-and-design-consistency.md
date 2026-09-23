@@ -863,6 +863,233 @@ drifted.
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
+### Task 11: A phone is one player, named once
+
+Added 2026-09-22 after Task 2's review. Both of that review's Important findings share one root cause: since iOS 16, `UIDevice.current.name` returns the model string ("iPhone") unless the app holds the `com.apple.developer.device-information.user-assigned-device-name` entitlement, which this project does not have and cannot get before the demo. Every phone therefore joins a web-game lobby as `?player=iPhone`; the runtime's lobby dedupes by name, so two phones collapse into one player and multiplayer does not work on real devices. The runner card says "iPhone won", and its transcript poster renders the viewer's own avatar on every phone because the URL carries no sender identity.
+
+This task runs immediately after Task 2, before Task 3, because the spec's goal is proven multiplayer and nothing in Tasks 3 to 10 depends on it.
+
+**Files:**
+- Modify: `ios/MessagesExtension/DesignSystem.swift` (append a `Player` enum at the end of the file)
+- Modify: `ios/MessagesExtension/MessagesViewController.swift` (the `/game-web/` branch, the `/runner` branch, `sendRunnerChallenge`, plus one new helper method)
+- Modify: `ios/MessagesExtension/InfiniteRunnerView.swift` (two new parameters on `InfiniteRunnerView`, one line in `compact`)
+- Modify: `src/server/game-web-runtime.ts` (`idFor`, a new `myId`, `ensurePlayer`, `ready`, `WHIM.myId`)
+- Modify: `src/server/agent.ts` (one line added to the generator prompt inside `buildWebGame`)
+- Modify: `scripts/game-web-runtime.test.mjs` (one new test)
+
+**Interfaces:**
+- Produces: `Player.name: String`, `Player.id: String`, `Player.hasName: Bool` in Swift, from `DesignSystem.swift`. Query params on `/game-web/` URLs: `player` (display name) and `pid` (stable id). Query params on `/runner` card URLs: `who` (sender's display name) and `by` (sender's `Player.id`). In the runtime, `WHIM.myId()` returns the `pid` when the URL carries one.
+
+- [ ] **Step 1: See the defect in the source**
+
+```bash
+grep -n 'UIDevice.current.name' ios/MessagesExtension/MessagesViewController.swift
+grep -n 'p.name === me' src/server/game-web-runtime.ts
+```
+
+Expected: two matches in Swift (the `/game-web/` branch and `sendRunnerChallenge`); two matches in the runtime (`ensurePlayer` and `ready`).
+
+- [ ] **Step 2: The identity helper**
+
+Append to the end of `ios/MessagesExtension/DesignSystem.swift`:
+
+```swift
+/// Who this phone is, for lobbies and cards. iOS 16 returns "iPhone" for the
+/// device name without a restricted entitlement, so the name is asked once
+/// and stored; the id is the vendor identifier, stable per install.
+enum Player {
+    static let nameKey = "whim.player.name"
+
+    static var hasName: Bool {
+        guard let stored = UserDefaults.standard.string(forKey: nameKey) else { return false }
+        return !stored.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    static var name: String {
+        if hasName, let stored = UserDefaults.standard.string(forKey: nameKey) {
+            return stored.trimmingCharacters(in: .whitespaces)
+        }
+        return UIDevice.current.name
+    }
+
+    static var id: String {
+        let raw = UIDevice.current.identifierForVendor?.uuidString ?? "anon"
+        return String(raw.lowercased().filter { $0.isLetter || $0.isNumber }.prefix(8))
+    }
+}
+```
+
+- [ ] **Step 3: Ask once, at the moment identity matters**
+
+In `ios/MessagesExtension/MessagesViewController.swift`, add this method to the class (next to `expandFromTranscript` is fine):
+
+```swift
+    /// Runs `then` once a display name exists. Asks the first time, on the
+    /// expanded sheet, because an alert cannot present over the compact drawer.
+    private func withPlayerName(then: @escaping () -> Void) {
+        if Player.hasName { then(); return }
+        if presentationStyle != .expanded { requestPresentationStyle(.expanded) }
+        let alert = UIAlertController(title: "What should the group call you?", message: nil, preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Your name"; $0.autocapitalizationType = .words }
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
+            let typed = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            if !typed.isEmpty { UserDefaults.standard.set(typed, forKey: Player.nameKey) }
+            then()
+        })
+        alert.addAction(UIAlertAction(title: "Not now", style: .cancel) { _ in then() })
+        present(alert, animated: true)
+    }
+```
+
+- [ ] **Step 4: Web games carry the name and a stable id**
+
+In the `/game-web/` branch of `present(url:)`, replace the block from `var playURL = target` through `showWeb(playURL)` with:
+
+```swift
+            withPlayerName { [weak self] in
+                guard let self else { return }
+                var playURL = target
+                if var comps = URLComponents(url: target, resolvingAgainstBaseURL: false) {
+                    var items = (comps.queryItems ?? []).filter { $0.name != "player" && $0.name != "pid" }
+                    items.append(URLQueryItem(name: "player", value: Player.name))
+                    items.append(URLQueryItem(name: "pid", value: Player.id))
+                    comps.queryItems = items
+                    playURL = comps.url ?? target
+                }
+                self.showWeb(playURL)
+            }
+```
+
+- [ ] **Step 5: Runner cards carry the sender**
+
+In `sendRunnerChallenge`, change `let who = UIDevice.current.name` to `let who = Player.name`, and add two items to the `items` array right after the `result` item:
+
+```swift
+            URLQueryItem(name: "who", value: who),
+            URLQueryItem(name: "by", value: Player.id),
+```
+
+Then wrap the whole body of `sendRunnerChallenge` (from `guard let conversation` through `requestPresentationStyle(.compact)`) in `withPlayerName { [weak self] in guard let self else { return } ... }` so the name is asked before the first card is ever sent.
+
+In the `/runner` branch of `present(url:)`, read the two new params and pass them through:
+
+```swift
+            let who = comps?.queryItems?.first(where: { $0.name == "who" })?.value
+            let by = comps?.queryItems?.first(where: { $0.name == "by" })?.value
+            host(AnyView(InfiniteRunnerView(presentation: presentation, challengeScore: target, result: result, postedScore: run, versusScore: vs, senderName: who, isMine: by == nil || by == Player.id, onChallenge: { [weak self] score, challenge in
+                self?.sendRunnerChallenge(score, against: challenge)
+            })))
+```
+
+- [ ] **Step 6: The poster shows the sender's face only on the sender's phone**
+
+In `ios/MessagesExtension/InfiniteRunnerView.swift`, add two stored properties to `InfiniteRunnerView` next to `versusScore`:
+
+```swift
+    /// The sender's display name, from the card URL.
+    var senderName: String? = nil
+    /// Whether this phone sent the card; only then is the local avatar the right face.
+    var isMine: Bool = true
+```
+
+In `compact`, change `face: avatar` on the `RunnerResultWidget` call to:
+
+```swift
+                    face: isMine ? avatar : nil,
+```
+
+`senderName` is carried for the next task that wants it; this task changes no widget text.
+
+- [ ] **Step 7: The runtime keys the lobby on the id**
+
+In `src/server/game-web-runtime.ts`, inside the runtime string, replace:
+
+```js
+  var me = (params.get("player") || "Player").slice(0, 32);
+```
+
+with:
+
+```js
+  var me = (params.get("player") || "Player").slice(0, 32);
+  var pid = (params.get("pid") || "").replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 16);
+```
+
+Replace the `idFor` function with:
+
+```js
+  function idFor(name) {
+    if (pid) return pid;
+    var s = String(name).replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
+    return s.slice(0, 10) || ("p" + Math.random().toString(36).slice(2, 8));
+  }
+  var myId = idFor(me);
+```
+
+In `ensurePlayer`, change the lookup and the new-entry id:
+
+```js
+    var mine = players.find(function (p) { return p.id === myId; });
+    if (!mine) {
+      mine = { id: myId, name: me, joinedAt: Date.now() };
+      players.push(mine);
+    }
+```
+
+In `ready`, change `!state.players.some(function (p) { return p.name === me; })` to `!state.players.some(function (p) { return p.id === myId; })`.
+
+Change `myId: function () { return idFor(me); },` to `myId: function () { return myId; },`.
+
+- [ ] **Step 8: Tell the generator to compare ids, not names**
+
+In `src/server/agent.ts`, inside `buildWebGame`'s system prompt, directly after the line `- WHIM.players() — everyone who opened the game in this chat`, add:
+
+```
+- WHIM.myId() — this player's stable id; compare ids for turn ownership and scores, never names (two players can share a name)
+```
+
+- [ ] **Step 9: Test the runtime change in the file's existing style**
+
+Append to `scripts/game-web-runtime.test.mjs`:
+
+```js
+test("runtime keys the lobby on a stable id, using pid when the phone supplies one", () => {
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /params\.get\("pid"\)/);
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /var myId = idFor\(me\)/);
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /p\.id === myId/);
+  assert.doesNotMatch(WHIM_MULTIPLAYER_RUNTIME, /p\.name === me/);
+});
+```
+
+- [ ] **Step 10: Verify everything**
+
+```bash
+grep -c 'UIDevice.current.name' ios/MessagesExtension/MessagesViewController.swift
+grep -n 'p.name === me' src/server/game-web-runtime.ts; echo "matches above: expect none"
+npm run typecheck; echo "typecheck exit=$?"
+npm test 2>&1 | grep -E '^ℹ (tests|pass|fail)'
+cd ios && xcodebuild -project Plan.xcodeproj -scheme PlanPreviews -destination 'generic/platform=iOS' -derivedDataPath build-preview CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E 'error:|BUILD'; cd ..
+```
+
+Expected: `0`, no matches, exit 0, `tests 183` / `fail 0`, `** BUILD SUCCEEDED **`.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add ios/MessagesExtension/DesignSystem.swift ios/MessagesExtension/MessagesViewController.swift ios/MessagesExtension/InfiniteRunnerView.swift src/server/game-web-runtime.ts src/server/agent.ts scripts/game-web-runtime.test.mjs
+git commit -m "fix(games): a phone is one player, named once
+
+iOS 16 returns \"iPhone\" for the device name without a restricted
+entitlement, so every phone joined a lobby as the same player and the
+runtime, which keyed on name, merged them. The extension now asks for a
+name the first time it matters and stores it; web-game URLs carry that
+name plus a stable vendor id, and the lobby keys on the id. Runner cards
+carry the sender too, so the poster shows the local avatar only on the
+phone that sent it.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
 ---
 
 ## Done when
