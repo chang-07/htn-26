@@ -19,7 +19,7 @@ func fixtureGameStore(_ g: GameView_) -> GameStore {
 }
 
 let fxTranscript = { () -> PresentationInfo in let p = PresentationInfo(); p.isTranscript = true; return p }()
-let fxSheet = { () -> PresentationInfo in let p = PresentationInfo(); p.isTranscript = false; return p }()
+let fxSheet = { () -> PresentationInfo in let p = PresentationInfo(); p.isTranscript = false; p.isExpanded = true; return p }()
 
 let fxPlan = PlanState(
     title: "Next week at 6:00 PM",

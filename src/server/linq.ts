@@ -256,6 +256,7 @@ export async function sendLinkCard(
     log("info", "linq", "dry.link_card", { chat: short(chatId), title: card.title, url: card.url.replace(/\/p\/[0-9a-f]+/, "/p/<token>") });
     return `dry-${crypto.randomUUID().slice(0, 8)}`;
   }
+  log("info", "linq", "card.out", { chat: short(chatId), kind: "link", url: card.url.replace(/\/p\/[0-9a-f]+/, "/p/<token>") });
   // With our own extension configured, link cards ride it too: same tap-to-open,
   // but rendered as our app — and, unlike link experiences, legal in group chats.
   if (hasAppIdentity(env)) {
@@ -304,12 +305,14 @@ export async function sendTicketCard(
     log("info", "linq", "dry.ticket_card", { chat: short(chatId), ticket: ticketId, title: t.title });
     return `dry-ticket-${ticketId}`;
   }
+  const ticketUrl = `${env.PUBLIC_BASE_URL}/ticket/${encodeURIComponent(agentName)}/${ticketId}`;
+  log("info", "linq", "card.out", { chat: short(chatId), kind: "ticket", url: ticketUrl });
   const res = await linqClient(env).chats.messages.send(chatId, {
     message: {
       parts: [{
         type: "imessage_app" as const,
         app: { name: env.IMESSAGE_APP_NAME, team_id: env.IMESSAGE_TEAM_ID, bundle_id: env.IMESSAGE_BUNDLE_ID },
-        url: `${env.PUBLIC_BASE_URL}/ticket/${encodeURIComponent(agentName)}/${ticketId}`,
+        url: ticketUrl,
         // Static: dates or addresses in the body would demote the card to text.
         fallback_text: "Open the card",
         layout: {
@@ -334,6 +337,7 @@ export async function sendGameCard(env: Env, chatId: string, agentName: string, 
   if (!hasAppIdentity(env)) {
     return sendLinkCard(env, chatId, { title: title.slice(0, 64), subtitle: topic.slice(0, 120), button: "Play", url });
   }
+  log("info", "linq", "card.out", { chat: short(chatId), kind: "game", url });
   const res = await linqClient(env).chats.messages.send(chatId, {
     message: {
       parts: [{
@@ -363,6 +367,7 @@ export async function sendWebGameCard(env: Env, chatId: string, agentName: strin
   if (!hasAppIdentity(env)) {
     return sendLinkCard(env, chatId, { title: title.slice(0, 64), subtitle: "Built just now from your prompt", button: "Play", url });
   }
+  log("info", "linq", "card.out", { chat: short(chatId), kind: "web-game", url });
   const res = await linqClient(env).chats.messages.send(chatId, {
     message: {
       parts: [{
@@ -808,6 +813,9 @@ export async function sendCard(
     return kind === "cart" && shop ? `dry-cart-${shopKey(shop)}` : `dry-${kind}`;
   }
   const linq = linqClient(env);
+  // The URL is frozen into the message at send time; log it so a card minted
+  // with a bad PUBLIC_BASE_URL is diagnosable from the run trace.
+  log("info", "linq", "card.out", { chat: short(chatId), kind, url: part.url });
 
   // No Messages extension of our own: render through Linq's, as an experience.
   if (!hasAppIdentity(env)) return sendExperienceCard(env, chatId, part, kind);

@@ -2,6 +2,7 @@ import UIKit
 import Messages
 import SwiftUI
 import WebKit
+import OSLog
 
 /// Hybrid shell. Plan, cart and playlist URLs render native SwiftUI; token'd
 /// forms (profile, address) and anything else load in a web view. The card's
@@ -30,12 +31,53 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
 
     private let spinner = UIActivityIndicatorView(style: .medium)
 
+    /// Root views are swapped, not pushed — this is the only way back to the
+    /// native home from a routed view (ticket, playlist, game, web checkout).
+    private lazy var backButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        let symbol = UIImage.SymbolConfiguration(pointSize: 30, weight: .semibold)
+            .applying(UIImage.SymbolConfiguration(paletteColors: [UIColor(Whim.paper), UIColor(Whim.ink)]))
+        config.image = UIImage(systemName: "chevron.backward.circle.fill", withConfiguration: symbol)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        let button = UIButton(configuration: config)
+        button.addTarget(self, action: #selector(goHome), for: .touchUpInside)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.isHidden = true
+        return button
+    }()
+
+    @objc private func goHome() {
+        present(url: nil)
+    }
+
+    /// True while the native home is the hosted root.
+    private var isHome = false
+
+    /// Hidden on the home itself and in the transcript bubble, where any
+    /// control would swallow the tap Messages needs to expand the card.
+    /// While visible, its row is carved out of the safe area so hosted
+    /// content lays out below it instead of sliding underneath.
+    private func updateBackButton() {
+        view.bringSubviewToFront(backButton)
+        backButton.isHidden = isHome || presentationStyle == .transcript
+        additionalSafeAreaInsets.top = backButton.isHidden ? 0 : 60
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
         view.addGestureRecognizer(expandTap)
+        view.addSubview(backButton)
+        NSLayoutConstraint.activate([
+            // Raw top, not the safe-area guide: updateBackButton() grows the
+            // safe area to push content below the button, never the button.
+            // 14+14 puts the circle's center on the sheet's ~40pt top-left
+            // corner-radius arc center, so it reads as anchored to the curve.
+            backButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 9),
+        ])
     }
 
     /// Live-layout contract: Messages does nothing when the inline bubble is
@@ -82,6 +124,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     override func didTransition(to presentationStyle: MSMessagesAppPresentationStyle) {
         super.didTransition(to: presentationStyle)
         syncPresentation()
+        if presentationStyle == .compact, sheetOnly { present(url: nil) }
     }
 
     // Without this, Messages hands the transcript bubble its huge default
@@ -114,10 +157,12 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     private func syncPresentation() {
         let transcript = presentationStyle == .transcript
         presentation.isTranscript = transcript
+        presentation.isExpanded = presentationStyle == .expanded
         // Touches stay ON: the inline tap is ours to handle (expandTap).
         view.isUserInteractionEnabled = true
         hosting?.view.isUserInteractionEnabled = true
         expandTap.isEnabled = transcript
+        updateBackButton()
     }
 
     // MARK: - Conversation -> chat memory
@@ -143,7 +188,16 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     // MARK: - Routing
 
     private func present(url: URL?) {
+        var url = url
+        // Server cards have arrived scheme-less ("host/p/x") after env edits;
+        // URL(string:) then puts the host in the path and every route misses.
+        if let u = url, u.scheme == nil {
+            url = URL(string: "https://" + u.absoluteString) ?? u
+        }
+        Logger(subsystem: "com.lukalavric.whim", category: "route")
+            .info("present url: \(url?.absoluteString ?? "drawer home", privacy: .public)")
         if let path = url?.path { transcriptHeight = transcriptHeight(for: path) }
+        isHome = url == nil
         // Drawer-open, no card: the native home — never the website.
         guard let target = url else {
             let known = recallChat()
@@ -154,15 +208,17 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                 case .runner:
                     // Full sheet first: the camera permission prompt cannot
                     // present over the compact drawer.
+                    self.isHome = false
                     if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
                     self.host(AnyView(InfiniteRunnerView(presentation: self.presentation, onChallenge: { [weak self] score, challenge in
                         self?.sendRunnerChallenge(score, against: challenge)
-                    })))
+                    })), sheetOnly: true)
                 case .slots:
+                    self.isHome = false
                     if self.presentationStyle == .compact { self.requestPresentationStyle(.expanded) }
                     self.host(AnyView(SlotsView(presentation: self.presentation, onShare: { [weak self] face, name in
                         self?.sendSlotsResult(face: face, name: name)
-                    })))
+                    })), sheetOnly: true)
                 case .plan:
                     guard let known = self.recallChat() else { return }
                     self.present(url: known.base.appendingPathComponent("w/\(known.chat)"))
@@ -187,7 +243,10 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             return
         }
         let comps = URLComponents(url: target, resolvingAgainstBaseURL: false)
-        let path = target.path
+        // A trailing slash on the server's base URL makes paths arrive as
+        // "//w/…", which silently demotes every card to the web view.
+        var path = target.path
+        while path.hasPrefix("//") { path.removeFirst() }
 
         if path.hasPrefix("/w/"), let chat = chatId(from: path, prefix: "/w/") {
             rememberChat(base: baseURL(of: target), chat: chat)
@@ -244,6 +303,16 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             }
             return
         }
+        // /slots: a generated face-slots result card — reopen the native
+        // slot machine when the message bubble is tapped.
+        if path == "/slots" || path.hasPrefix("/slots/") {
+            if presentationStyle == .compact { requestPresentationStyle(.expanded) }
+            host(AnyView(SlotsView(presentation: presentation, onShare: { [weak self] face, name in
+                self?.sendSlotsResult(face: face, name: name)
+            })), sheetOnly: true)
+            return
+        }
+
         // /runner: a Camera Runner challenge card — open the game with the
         // score to beat.
         if path.hasPrefix("/runner") {
@@ -255,7 +324,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             let by = comps?.queryItems?.first(where: { $0.name == "by" })?.value
             host(AnyView(InfiniteRunnerView(presentation: presentation, challengeScore: target, result: result, postedScore: run, versusScore: vs, senderName: who, isMine: by == nil || by == Player.id, onChallenge: { [weak self] score, challenge in
                 self?.sendRunnerChallenge(score, against: challenge)
-            })))
+            })), sheetOnly: true)
             return
         }
         // /p/<token> and /p/<token>/ship: the token'd forms, native.
@@ -302,7 +371,11 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         return fresh
     }
 
-    private func host(_ root: AnyView) {
+    /// The hosted view has no compact-drawer layout (runner, slots).
+    private var sheetOnly = false
+
+    private func host(_ root: AnyView, sheetOnly: Bool = false) {
+        self.sheetOnly = sheetOnly
         webView.removeFromSuperview()
         spinner.removeFromSuperview()
         if let hosting {
@@ -321,6 +394,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             ])
             host.didMove(toParent: self)
         }
+        updateBackButton()
     }
 
     /// Puts a score card in the input field; the person hits send. A fresh
@@ -376,6 +450,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             message.layout = layout
             message.summaryText = layout.caption
             conversation.insert(message)
+            self.present(url: nil)
             self.requestPresentationStyle(.compact)
         }
     }
@@ -394,6 +469,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         message.layout = layout
         message.summaryText = "Face slots verdict"
         conversation.insert(message)
+        present(url: nil)
         requestPresentationStyle(.compact)
     }
 
@@ -409,7 +485,8 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             view.addSubview(webView)
             view.addSubview(spinner)
             NSLayoutConstraint.activate([
-                webView.topAnchor.constraint(equalTo: view.topAnchor),
+                // Safe-area top: drops below the back button when it shows.
+                webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
                 webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -421,6 +498,8 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
             spinner.startAnimating()
             webView.load(URLRequest(url: url))
         }
+        isHome = false
+        updateBackButton()
     }
 
     // MARK: - WKNavigationDelegate
@@ -431,6 +510,25 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         spinner.stopAnimating()
+        showLoadFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        spinner.stopAnimating()
+        showLoadFailure(error)
+    }
+
+    /// A failed page is a dead end with no message otherwise: name the URL so
+    /// a bad card link is diagnosable on the phone itself.
+    private func showLoadFailure(_ error: Error) {
+        let failing = (error as NSError).userInfo[NSURLErrorFailingURLStringErrorKey] as? String
+            ?? webView.url?.absoluteString ?? "unknown URL"
+        Logger(subsystem: "com.lukalavric.whim", category: "route")
+            .error("web load failed: \(failing, privacy: .public) — \(error.localizedDescription, privacy: .public)")
+        webView.loadHTMLString(
+            "<body style=\"font: -apple-system-body; padding: 24px; word-break: break-all\">"
+            + "<h3>Couldn’t load</h3><p><code>\(failing)</code></p><p>\(error.localizedDescription)</p></body>",
+            baseURL: nil)
     }
 }
 

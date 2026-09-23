@@ -4,6 +4,8 @@ import SwiftUI
 final class PresentationInfo: ObservableObject {
     /// True when rendering inline in the transcript bubble (no room, no scroll).
     @Published var isTranscript = true
+    /// True only for the full-height Messages extension sheet.
+    @Published var isExpanded = false
 }
 
 /// The plan card, in the system design language — the same family as Linq's
@@ -64,9 +66,10 @@ struct TicketView: View {
         VStack(alignment: .leading, spacing: 10) {
             // No context label: the Messages chrome overlaps the sheet's top
             // left, so the word there just gets covered by the app logo.
-            WhimHeader(context: "", chipText: statusLabel, chipTint: statusTint)
+            WhimHeader(context: "", chipText: statusLabel, chipTint: statusTint,
+                       chipVisible: presentation.isTranscript)
             Text(plan.title.isEmpty ? "No plan yet" : plan.title)
-                .font(.system(.title3, design: .rounded).weight(.bold))
+                .font(.system(presentation.isTranscript ? .title2 : .title3, design: .rounded).weight(.bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             if !plan.options.isEmpty {
@@ -100,33 +103,34 @@ struct TicketView: View {
             if !plan.options.isEmpty {
                 Divider()
                 ForEach(plan.options.prefix(2)) { option in
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
                         Image(systemName: plan.chosenOptionId == option.id ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(plan.chosenOptionId == option.id ? .green : Color(uiColor: .tertiaryLabel))
-                            .font(.body)
+                            .font(.title3)
                         Text(option.title)
-                            .font(.subheadline.weight(.medium))
+                            .font(.body.weight(.semibold))
                             .lineLimit(1)
                         Spacer(minLength: 6)
                         voteBadge(plan.counts[option.id] ?? 0)
                     }
                 }
+                Spacer(minLength: 0)
                 HStack {
                     if plan.options.count > 2 {
                         Text("+\(plan.options.count - 2) more")
-                            .font(.footnote)
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     if plan.status == "voting" {
                         Label("Tap to vote", systemImage: "hand.tap")
-                            .font(.footnote.weight(.semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Color.accentColor)
                     }
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 

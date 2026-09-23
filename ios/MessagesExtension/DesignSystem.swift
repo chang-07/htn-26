@@ -25,6 +25,9 @@ struct WhimHeader: View {
     let context: String
     var chipText: String? = nil
     var chipTint: Color = Whim.mintInk
+    /// Chips only render where opted in — transcript bubbles, which have no
+    /// back button. Sheets keep their corners clear for it.
+    var chipVisible = false
     /// Apple's bubble chrome already shows the app icon and name, so the tile
     /// stays off in cards and on only where there is no chrome (Home, gallery).
     var showTile = false
@@ -41,11 +44,10 @@ struct WhimHeader: View {
                         .baselineOffset(5)
                 }
             }
-            Text(context)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
             Spacer()
-            if let chipText {
+            // No context label: the tiny corner text never sat well against
+            // the back button. `context` stays accepted for call-site compat.
+            if chipVisible, let chipText {
                 Text(chipText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(chipTint)

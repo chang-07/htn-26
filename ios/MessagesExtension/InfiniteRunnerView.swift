@@ -6,6 +6,11 @@ import Vision
 /// Fixed, on-device camera game. Hand pinches become jumps; tapping is a
 /// fallback so it remains playable if camera permission is declined.
 final class HandRunnerTracker: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    /// One session for the process. Re-entering the runner (back button) with
+    /// per-view trackers raced a dying session against a starting one on two
+    /// queues — the camera came up interrupted: black pip, no pinches.
+    static let shared = HandRunnerTracker()
+
     let session = AVCaptureSession()
     @Published private(set) var jumpToken = 0
     @Published private(set) var cameraDenied = false
@@ -304,6 +309,36 @@ struct RunnerCardBanner: View {
     }
 }
 
+/// The live score belongs to the playfield, not the navigation chrome.
+struct RunnerScoreHUD: View {
+    let score: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("SCORE")
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .kerning(1.1)
+                .foregroundStyle(Whim.ink.opacity(0.6))
+            Text("\(score)")
+                .font(.system(size: 22, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Whim.ink)
+                .contentTransition(.numericText())
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(
+            Whim.paper.opacity(0.96),
+            in: Capsule()
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(Whim.ink.opacity(0.1), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
+    }
+}
+
 /// A deliberately fixed game, not a generated surface: pinch in the camera
 /// to jump an endless obstacle course, with a normal tap fallback.
 struct InfiniteRunnerView: View {
@@ -323,7 +358,7 @@ struct InfiniteRunnerView: View {
     /// Sends a score card into the conversation (host wires it up): a fresh
     /// challenge, or — when a challenge score is given — a win/loss result.
     var onChallenge: ((Int, Int?) -> Void)? = nil
-    @StateObject private var tracker = HandRunnerTracker()
+    @ObservedObject private var tracker = HandRunnerTracker.shared
     @State private var score = 0
     @State private var runnerY: CGFloat = 0
     @State private var verticalSpeed: CGFloat = 0
@@ -367,7 +402,7 @@ struct InfiniteRunnerView: View {
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     WhimHeader(context: "Camera runner", chipText: running ? "Live" : "Ready",
-                               chipTint: running ? .green : .secondary)
+                               chipTint: running ? .green : .secondary, chipVisible: true)
                     Text("Pinch to jump. Run forever.")
                         .font(.system(.title3, design: .rounded).weight(.bold))
                     HStack {
@@ -476,6 +511,7 @@ struct InfiniteRunnerView: View {
                 }
             }
             .frame(height: 330)
+            .padding(.top, 24)
             Text("Fit your face in the oval, then snap.")
                 .font(.footnote).foregroundStyle(.secondary)
             HStack(spacing: 8) {
@@ -493,11 +529,6 @@ struct InfiniteRunnerView: View {
 
     private var gameView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Pinch jump").font(.system(.title3, design: .rounded).weight(.bold))
-                Spacer()
-                Text("\(score)").font(.system(.title2, design: .rounded).weight(.bold)).monospacedDigit()
-            }
             runnerScene
             if gameOver {
                 let beatChallenge = challengeScore.map { score > $0 } ?? false
@@ -508,7 +539,7 @@ struct InfiniteRunnerView: View {
                         .buttonStyle(PillButtonStyle(prominent: false))
                     Button("Run again") { startRun() }.buttonStyle(PillButtonStyle(prominent: onChallenge == nil))
                     if let onChallenge, score > 0 {
-                        Button(challengeScore == nil ? "Challenge the chat" : (beatChallenge ? "Send win" : "Send loss")) {
+                        Button(challengeScore == nil ? "Challenge chat" : (beatChallenge ? "Send win" : "Send loss")) {
                             onChallenge(score, challengeScore)
                         }
                         .buttonStyle(PillButtonStyle())
@@ -520,6 +551,7 @@ struct InfiniteRunnerView: View {
                 Button("Jump") { jump() }.buttonStyle(PillButtonStyle(prominent: false))
             }
         }
+        .padding(.top, 28)
     }
 
     /// The chrome-dino look on brand paper: ink ground, capsule cacti, and
@@ -529,6 +561,9 @@ struct InfiniteRunnerView: View {
         GeometryReader { geo in
             ZStack(alignment: .bottomLeading) {
                 Whim.paper
+                RunnerScoreHUD(score: score)
+                    .padding(.top, 14)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 // Clouds, dino-game sparse.
                 Image(systemName: "cloud.fill").font(.system(size: 22)).foregroundStyle(Whim.ink.opacity(0.08))
                     .offset(x: geo.size.width * 0.25, y: -geo.size.height + 46)
@@ -561,22 +596,26 @@ struct InfiniteRunnerView: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
         }
-        .frame(height: 250)
+        .frame(height: 320)
         .background(Whim.paper)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Whim.ink.opacity(0.1), lineWidth: 1))
         .onTapGesture { jump() }
     }
 
-    /// A capsule cactus, ink like the dino game's.
+    /// A saguaro in the brand green: one silhouette with elbow arms, a
+    /// side-lit gradient, ribs, and a fine outline. Same footprint as the
+    /// old capsule stack, so collisions are unchanged.
     private var cactus: some View {
-        ZStack(alignment: .bottom) {
-            Capsule().fill(Whim.cactus).frame(width: 14, height: obstacleHeight)
-            Capsule().fill(Whim.cactus).frame(width: 10, height: obstacleHeight * 0.45)
-                .offset(x: -11, y: -obstacleHeight * 0.3)
-            Capsule().fill(Whim.cactus).frame(width: 10, height: obstacleHeight * 0.38)
-                .offset(x: 11, y: -obstacleHeight * 0.42)
-        }
+        let shade = Color(red: 0x14 / 255, green: 0x45 / 255, blue: 0x39 / 255)
+        let sunlit = Color(red: 0x35 / 255, green: 0x80 / 255, blue: 0x6A / 255)
+        return SaguaroShape()
+            .fill(LinearGradient(colors: [sunlit, Whim.cactus, shade],
+                                 startPoint: .leading, endPoint: .trailing))
+            .overlay(SaguaroRibs().stroke(shade.opacity(0.5), lineWidth: 0.75))
+            .overlay(SaguaroShape().stroke(shade.opacity(0.85), lineWidth: 1))
+            .frame(width: 34, height: obstacleHeight)
+            .shadow(color: .black.opacity(0.1), radius: 1.5, y: 1)
     }
 
     private func startRun() {
@@ -635,5 +674,65 @@ struct InfiniteRunnerView: View {
     private func stopRun() {
         timer?.invalidate()
         timer = nil
+    }
+}
+
+/// Trunk and arm boxes shared by the silhouette and the ribs, so the two
+/// overlays can never drift apart.
+private enum SaguaroGeometry {
+    static func trunk(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.width * 0.34, y: 0, width: rect.width * 0.32, height: rect.height)
+    }
+    static func arms(_ rect: CGRect) -> [CGRect] {
+        [CGRect(x: rect.width * 0.02, y: rect.height * 0.30,
+                width: rect.width * 0.24, height: rect.height * 0.34),
+         CGRect(x: rect.width * 0.74, y: rect.height * 0.16,
+                width: rect.width * 0.24, height: rect.height * 0.36)]
+    }
+}
+
+/// One true-union silhouette — round-topped trunk plus elbow arms — so the
+/// outline stroke follows the outer edge only, with no seams at the joints.
+private struct SaguaroShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let trunk = SaguaroGeometry.trunk(rect)
+        let r = trunk.width / 2
+        // Rounded top, square bottom: the cactus is planted, not floating.
+        var trunkPath = Path()
+        trunkPath.move(to: CGPoint(x: trunk.minX, y: trunk.maxY))
+        trunkPath.addLine(to: CGPoint(x: trunk.minX, y: trunk.minY + r))
+        trunkPath.addArc(center: CGPoint(x: trunk.midX, y: trunk.minY + r), radius: r,
+                         startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+        trunkPath.addLine(to: CGPoint(x: trunk.maxX, y: trunk.maxY))
+        trunkPath.closeSubpath()
+        var silhouette = trunkPath.cgPath
+        for arm in SaguaroGeometry.arms(rect) {
+            silhouette = silhouette.union(Path(roundedRect: arm, cornerRadius: arm.width / 2).cgPath)
+            let connector = CGRect(x: min(arm.midX, trunk.midX),
+                                   y: arm.maxY - arm.width,
+                                   width: abs(trunk.midX - arm.midX),
+                                   height: arm.width)
+            silhouette = silhouette.union(Path(connector).cgPath)
+        }
+        return Path(silhouette)
+    }
+}
+
+/// The vertical pleats a real saguaro has: light lines down the trunk and
+/// each arm, stroked over the fill.
+private struct SaguaroRibs: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let trunk = SaguaroGeometry.trunk(rect)
+        for fraction in [0.28, 0.5, 0.72] {
+            let x = trunk.minX + trunk.width * fraction
+            p.move(to: CGPoint(x: x, y: trunk.minY + trunk.width * 0.6))
+            p.addLine(to: CGPoint(x: x, y: trunk.maxY))
+        }
+        for arm in SaguaroGeometry.arms(rect) {
+            p.move(to: CGPoint(x: arm.midX, y: arm.minY + arm.width * 0.6))
+            p.addLine(to: CGPoint(x: arm.midX, y: arm.maxY - arm.width))
+        }
+        return p
     }
 }
