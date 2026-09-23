@@ -1913,7 +1913,7 @@ A \`window.WHIM\` runtime is already injected. You MUST use it for any game wher
 - WHIM.players() — everyone who opened the game in this chat
 - WHIM.myId() — this player's stable id; compare ids for turn ownership and scores, never names (two players can share a name)
 - WHIM.get() / WHIM.game() — read shared state; WHIM.setGame(obj) — save full game state after every move
-- WHIM.onRemote(fn) — re-render when someone else moves (polling is already running)
+- WHIM.onRemote(fn) — fires whenever shared state changes, including your own saves; re-render from it, never write from it (polling is already running)
 Store turn order, board, scores, and winner inside WHIM.setGame({ ... }). Show a lobby listing connected players before start when turn-based. Highlight whose turn it is. End with a clear winner using player names from WHIM.players().
 
 Hard rules: everything inline (CSS and JS), no external resources, mobile-first 390px touch UI, <title> naming the game, on-screen how-to-play, play-again button. Polished: bold colors, big touch targets. Layout: every card/tile/piece has explicit width AND height (cards ≥48×68px) with visible labels — never empty collapsible elements.`,
