@@ -296,7 +296,7 @@ Expected: a 12-character id.
 
 ```bash
 curl -s -D - localhost:5173/game-web/demo/$ID -o /tmp/served.html | grep -iE '^(HTTP|content-security-policy|cross-origin-opener)'
-grep -c 'window.WHIM' /tmp/served.html
+grep -c 'window.WHIM.startPolling' /tmp/served.html
 grep -c '<script>' /tmp/served.html
 ```
 
