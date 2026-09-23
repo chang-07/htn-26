@@ -82,6 +82,7 @@ export class People extends DurableObject<Env> {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS profiles (handle TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, handle TEXT UNIQUE NOT NULL)`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS intros (id TEXT PRIMARY KEY, from_handle TEXT NOT NULL, to_handle TEXT NOT NULL, json TEXT NOT NULL)`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairings (code TEXT PRIMARY KEY, chat TEXT NOT NULL, expires INTEGER NOT NULL)`);
   }
 
   private read(handle: string): Profile | null {
@@ -139,6 +140,35 @@ export class People extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`DELETE FROM tokens WHERE handle = ?`, handle);
     this.ctx.storage.sql.exec(`DELETE FROM intros WHERE from_handle = ? OR to_handle = ?`, handle, handle);
     await removeProfile(this.env, handle).catch(() => {}); // the pool is best-effort; the profile is gone either way
+  }
+
+  // ---------------------------------------------------------------- pairing
+  // A short-lived code that hands the iMessage drawer its chat id without a
+  // card tap ("/link" in the chat mints it; the drawer claims it once). Lives
+  // here because codes must resolve before the claimer knows which chat it is.
+
+  async pairCreate(chat: string): Promise<string> {
+    // No ambiguous glyphs (0/O, 1/I/L): the code is read off one phone screen
+    // and typed into another.
+    const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    const code = Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+    this.ctx.storage.sql.exec(`DELETE FROM pairings WHERE expires < ?`, Date.now());
+    this.ctx.storage.sql.exec(
+      `INSERT INTO pairings (code, chat, expires) VALUES (?, ?, ?) ON CONFLICT(code) DO UPDATE SET chat = excluded.chat, expires = excluded.expires`,
+      code,
+      chat,
+      Date.now() + 10 * 60_000,
+    );
+    return code;
+  }
+
+  /** Single use: the first claim burns the code, hit or miss. */
+  async pairClaim(code: string): Promise<string | null> {
+    const row = this.ctx.storage.sql
+      .exec<{ chat: string; expires: number }>(`SELECT chat, expires FROM pairings WHERE code = ?`, code)
+      .toArray()[0];
+    this.ctx.storage.sql.exec(`DELETE FROM pairings WHERE code = ?`, code);
+    return row && row.expires > Date.now() ? row.chat : null;
   }
 
   // ----------------------------------------------------------------- intros

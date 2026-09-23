@@ -8,6 +8,7 @@ import type {
   ReactionAddedWebhookEvent,
 } from "@linqapp/sdk/resources/webhooks";
 import { linqClient } from "./linq";
+import { people } from "./people";
 import type { PlanAgent as PlanAgentClass } from "./agent";
 import { fillCheckout, hasCardForm, typeCard } from "./checkout";
 import { openBrowser, readPage, searchWeb } from "./browser";
@@ -146,6 +147,18 @@ export default Sentry.withSentry(sentryOptions, {
         });
       }
       return new Response("Not found", { status: 404 });
+    }
+
+    // The drawer's card-free link: claims a code the agent texted ("/link"),
+    // returning the chat id it stands for. Single use and short-lived, so a
+    // guessed code is worthless and a leaked one goes stale in minutes.
+    if (url.pathname.startsWith("/api/pair/") && request.method === "GET") {
+      const code = decodeURIComponent(url.pathname.slice("/api/pair/".length)).trim().toUpperCase();
+      if (!code) return new Response("Not found", { status: 404 });
+      const chat = await people(env).pairClaim(code);
+      return chat
+        ? Response.json({ chat }, { headers: { "cache-control": "no-store" } })
+        : new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
     }
 
     // The native iMessage widget: plain HTTP where the web page uses the

@@ -194,15 +194,21 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         if let u = url, u.scheme == nil {
             url = URL(string: "https://" + u.absoluteString) ?? u
         }
+        // .error, not .info: info-level lines die with the appex process and
+        // never reach a collected log archive — this one must survive.
         Logger(subsystem: "com.lukalavric.whim", category: "route")
-            .info("present url: \(url?.absoluteString ?? "drawer home", privacy: .public)")
+            .error("present url: \(url?.absoluteString ?? "drawer home", privacy: .public)")
         if let path = url?.path { transcriptHeight = transcriptHeight(for: path) }
         isHome = url == nil
         // Drawer-open, no card: the native home — never the website.
         guard let target = url else {
             let known = recallChat()
             let base = known?.base ?? homeURL
-            host(AnyView(HomeView(base: base, chat: known?.chat, presentation: presentation, onRoute: { [weak self] route in
+            host(AnyView(HomeView(base: base, chat: known?.chat, presentation: presentation, onLink: { [weak self] chat in
+                guard let self else { return }
+                self.rememberChat(base: base, chat: chat)
+                self.present(url: nil)
+            }, onRoute: { [weak self] route in
                 guard let self else { return }
                 switch route {
                 case .runner:
@@ -474,6 +480,8 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     }
 
     private func showWeb(_ url: URL) {
+        Logger(subsystem: "com.lukalavric.whim", category: "route")
+            .error("showWeb url: \(url.absoluteString, privacy: .public)")
         store?.stop()
         hosting?.willMove(toParent: nil)
         hosting?.view.removeFromSuperview()

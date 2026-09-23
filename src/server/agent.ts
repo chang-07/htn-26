@@ -423,6 +423,13 @@ export class PlanAgent extends Agent<Env, PlanState> {
       await this.say("reset. fresh start, and i still know who you are");
       return;
     }
+    // "/link" (or "link the app"): mint a drawer pairing code. Hard intercept
+    // like /reset — linking must work even when card taps or the model don't.
+    if (/^\s*(@\S+\s+)?(\/link|link( the)?( whim)? app)\s*$/i.test(msg.text)) {
+      const code = await peopleStore(this.env).pairCreate(this.name);
+      await this.say(`drawer code: ${code} — open Whim in the iMessage app strip and type it in. good for 10 minutes`);
+      return;
+    }
     if (await this.handlePayText(msg)) return;
 
     if (wake === "answer") {
