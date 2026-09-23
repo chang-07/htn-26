@@ -204,37 +204,103 @@ struct FaceRunnerSprite: View {
     }
 }
 
-/// The challenge card's picture: a slice of the dino course with the sender's
-/// runner and a giant score. Rendered to a UIImage for MSMessageTemplateLayout.
-struct RunnerCardBanner: View {
-    let big: String
-    let label: String
+/// Win, loss, or challenge poster. Same view in the transcript bubble and
+/// as the MSMessage image — the outcome is the picture, not a caption.
+struct RunnerResultWidget: View {
+    enum Outcome { case challenge, won, lost }
+    let score: Int
+    var versus: Int? = nil
     let face: UIImage?
-    var crowned = false
+    let outcome: Outcome
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
             Whim.paper
-            Text("✳︎").font(.system(size: 130, weight: .heavy))
-                .foregroundStyle(Whim.coral.opacity(0.16))
-                .rotationEffect(.degrees(12)).offset(x: 120, y: 40)
-            VStack(alignment: .trailing, spacing: 0) {
-                Text(big).font(.system(size: 54, weight: .heavy, design: .rounded)).foregroundStyle(Whim.ink)
-                Text(label).font(.system(size: 12, weight: .heavy)).kerning(2.5).foregroundStyle(Whim.coral)
+            Text("✳︎").font(.system(size: 140, weight: .heavy))
+                .foregroundStyle(tint.opacity(0.18))
+                .rotationEffect(.degrees(14))
+                .offset(x: 110, y: 36)
+            VStack(spacing: 8) {
+                mark
+                faceBadge
+                Text(headline)
+                    .font(.system(size: 34, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Whim.ink)
+                Text(line)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(tint)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 26).padding(.bottom, 108)
-            Rectangle().fill(Whim.ink.opacity(0.75)).frame(height: 3).padding(.bottom, 34)
-            ZStack(alignment: .bottom) {
-                Capsule().fill(Whim.greenDeep).frame(width: 12, height: 52)
-                Capsule().fill(Whim.greenDeep).frame(width: 8, height: 24).offset(x: -9, y: -16)
-                Capsule().fill(Whim.greenDeep).frame(width: 8, height: 20).offset(x: 9, y: -22)
-            }
-            .offset(x: 262, y: -36)
-            FaceRunnerSprite(face: face, phase: 1.1, airborne: false, crowned: crowned)
-                .offset(x: 44, y: -40)
+            .padding(.horizontal, 16)
         }
-        .frame(width: 340, height: 210)
+    }
+
+    private var tint: Color { outcome == .lost ? Whim.ink.opacity(0.55) : Whim.coral }
+
+    private var headline: String {
+        switch outcome {
+        case .won: return "WON"
+        case .lost: return "LOST"
+        case .challenge: return "BEAT THIS"
+        }
+    }
+
+    private var line: String {
+        switch outcome {
+        case .won:
+            if let versus { return "\(score) beats \(versus)" }
+            return "\(score)"
+        case .lost:
+            if let versus { return "\(score) didn't beat \(versus)" }
+            return "\(score)"
+        case .challenge:
+            return "\(score) to beat"
+        }
+    }
+
+    @ViewBuilder
+    private var mark: some View {
+        switch outcome {
+        case .won:
+            Text("👑").font(.system(size: 56))
+        case .lost:
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 52, weight: .bold))
+                .foregroundStyle(Whim.coral)
+        case .challenge:
+            Image(systemName: "flag.checkered")
+                .font(.system(size: 36, weight: .bold))
+                .foregroundStyle(Whim.coral)
+        }
+    }
+
+    private var faceBadge: some View {
+        ZStack {
+            if let face {
+                Image(uiImage: face).resizable().scaledToFill()
+                    .frame(width: 72, height: 72).clipShape(Circle())
+            } else {
+                Circle().fill(Whim.ink).frame(width: 72, height: 72)
+                    .overlay(Image(systemName: "figure.run").font(.title).foregroundStyle(.white))
+            }
+            Circle().strokeBorder(outcome == .won ? Whim.coral : Whim.ink.opacity(0.2), lineWidth: 3)
+                .frame(width: 72, height: 72)
+            if outcome == .lost {
+                Circle().fill(.black.opacity(0.35)).frame(width: 72, height: 72)
+            }
+        }
+    }
+}
+
+/// Fixed-size render of the result widget for MSMessageTemplateLayout.
+struct RunnerCardBanner: View {
+    let score: Int
+    var versus: Int? = nil
+    let face: UIImage?
+    let outcome: RunnerResultWidget.Outcome
+
+    var body: some View {
+        RunnerResultWidget(score: score, versus: versus, face: face, outcome: outcome)
+            .frame(width: 340, height: 210)
     }
 }
 
@@ -244,6 +310,12 @@ struct InfiniteRunnerView: View {
     @ObservedObject var presentation: PresentationInfo
     /// A score somebody sent this chat to beat.
     var challengeScore: Int? = nil
+    /// Transcript poster: "won" / "lost" / "challenge" from the card URL.
+    var result: String? = nil
+    /// The run that produced this card, when it is a win/loss/challenge post.
+    var postedScore: Int? = nil
+    /// The score this run was trying to beat, when it is a win/loss post.
+    var versusScore: Int? = nil
     /// Sends a score card into the conversation (host wires it up): a fresh
     /// challenge, or — when a challenge score is given — a win/loss result.
     var onChallenge: ((Int, Int?) -> Void)? = nil
@@ -281,17 +353,47 @@ struct InfiniteRunnerView: View {
     }
 
     private var compact: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            WhimHeader(context: "Camera runner", chipText: running ? "Live" : "Ready", chipTint: running ? .green : .secondary)
-            Text("Pinch to jump. Run forever.").font(.system(.title3, design: .rounded).weight(.bold))
-            HStack {
-                Label("Score \(score)", systemImage: "figure.run").font(.footnote.weight(.semibold))
-                Spacer()
-                Label("Tap to play", systemImage: "hand.tap").font(.footnote.weight(.semibold)).foregroundStyle(Color.accentColor)
+        Group {
+            if let outcome = compactOutcome {
+                RunnerResultWidget(
+                    score: postedScore ?? challengeScore ?? 0,
+                    versus: versusScore,
+                    face: avatar,
+                    outcome: outcome)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    WhimHeader(context: "Camera runner", chipText: running ? "Live" : "Ready",
+                               chipTint: running ? .green : .secondary)
+                    Text("Pinch to jump. Run forever.")
+                        .font(.system(.title3, design: .rounded).weight(.bold))
+                    HStack {
+                        Label("Score \(score)", systemImage: "figure.run").font(.footnote.weight(.semibold))
+                        Spacer()
+                        Label("Tap to play", systemImage: "hand.tap").font(.footnote.weight(.semibold)).foregroundStyle(Color.accentColor)
+                    }
+                }
+                .padding(14)
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var compactOutcome: RunnerResultWidget.Outcome? {
+        switch result {
+        case "won": return .won
+        case "lost": return .lost
+        case "challenge": return .challenge
+        default: return nil
+        }
+    }
+
+    private func gameOverLine(beatChallenge: Bool) -> String {
+        if let challengeScore {
+            return beatChallenge
+                ? "You won — \(score) beats \(challengeScore)."
+                : "You lost — \(score) didn't beat \(challengeScore)."
+        }
+        return "Nice run — \(score) obstacles cleared."
     }
 
     @State private var capturing = false
@@ -394,16 +496,16 @@ struct InfiniteRunnerView: View {
             }
             runnerScene
             if gameOver {
-                let beatChallenge = challengeScore.map { best > $0 } ?? false
-                Text(beatChallenge ? "Challenge beaten — \(score)!" : "Nice run — \(score) obstacles cleared.")
+                let beatChallenge = challengeScore.map { score > $0 } ?? false
+                Text(gameOverLine(beatChallenge: beatChallenge))
                     .font(.subheadline.weight(.semibold))
                 HStack(spacing: 8) {
                     Button("Menu") { gameOver = false; running = false; tracker.stop() }
                         .buttonStyle(PillButtonStyle(prominent: false))
                     Button("Run again") { startRun() }.buttonStyle(PillButtonStyle(prominent: onChallenge == nil))
-                    if let onChallenge, best > 0 {
-                        Button(challengeScore == nil ? "Challenge the chat" : (beatChallenge ? "Claim the crown" : "Send result")) {
-                            onChallenge(best, challengeScore)
+                    if let onChallenge, score > 0 {
+                        Button(challengeScore == nil ? "Challenge the chat" : (beatChallenge ? "Send win" : "Send loss")) {
+                            onChallenge(score, challengeScore)
                         }
                         .buttonStyle(PillButtonStyle())
                     }

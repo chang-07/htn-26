@@ -12,3 +12,5 @@ dist
 ios/build/
 ios/**/*.xcuserstate
 **/xcuserdata/
+ios/build-preview/
+.visflow/

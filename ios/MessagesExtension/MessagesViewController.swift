@@ -210,14 +210,26 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
                 return
             }
             if presentationStyle == .compact { requestPresentationStyle(.expanded) }
-            showWeb(target)
+            var playURL = target
+            if var comps = URLComponents(url: target, resolvingAgainstBaseURL: false) {
+                var items = comps.queryItems ?? []
+                if items.first(where: { $0.name == "player" }) == nil {
+                    items.append(URLQueryItem(name: "player", value: UIDevice.current.name))
+                }
+                comps.queryItems = items
+                playURL = comps.url ?? target
+            }
+            showWeb(playURL)
             return
         }
         // /runner: a Camera Runner challenge card — open the game with the
         // score to beat.
         if path.hasPrefix("/runner") {
             let target = comps?.queryItems?.first(where: { $0.name == "score" })?.value.flatMap(Int.init)
-            host(AnyView(InfiniteRunnerView(presentation: presentation, challengeScore: target, onChallenge: { [weak self] score, challenge in
+            let result = comps?.queryItems?.first(where: { $0.name == "result" })?.value
+            let run = comps?.queryItems?.first(where: { $0.name == "run" })?.value.flatMap(Int.init)
+            let vs = comps?.queryItems?.first(where: { $0.name == "vs" })?.value.flatMap(Int.init)
+            host(AnyView(InfiniteRunnerView(presentation: presentation, challengeScore: target, result: result, postedScore: run, versusScore: vs, onChallenge: { [weak self] score, challenge in
                 self?.sendRunnerChallenge(score, against: challenge)
             })))
             return
@@ -294,30 +306,39 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
     private func sendRunnerChallenge(_ score: Int, against challenge: Int?) {
         guard let conversation = activeConversation else { return }
         let won = challenge.map { score > $0 }
-        // The card's target stays whatever the reigning score is.
+        // Next player still chases the reigning score; the bubble itself
+        // announces this run's win or loss.
         let target = won == false ? challenge! : score
+        let who = UIDevice.current.name
         var comps = URLComponents(url: homeURL.appendingPathComponent("runner"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "score", value: String(target))]
+        var items = [
+            URLQueryItem(name: "score", value: String(target)),
+            URLQueryItem(name: "run", value: String(score)),
+            URLQueryItem(name: "result", value: won == true ? "won" : won == false ? "lost" : "challenge"),
+        ]
+        if let challenge {
+            items.append(URLQueryItem(name: "vs", value: String(challenge)))
+        }
+        comps.queryItems = items
         let layout = MSMessageTemplateLayout()
         switch won {
         case true:
-            layout.caption = "👑 New champ: \(score)"
-            layout.subcaption = "The crown changed heads. Take it back?"
+            layout.caption = "\(who) won"
+            layout.subcaption = "\(score) beats \(challenge!)"
+            layout.trailingCaption = "WON"
         case false:
-            layout.caption = "Lost: \(score) vs \(challenge!)"
-            layout.subcaption = "The crown holds. Beat \(challenge!)?"
+            layout.caption = "\(who) lost"
+            layout.subcaption = "\(score) didn't beat \(challenge!)"
+            layout.trailingCaption = "LOST"
         default:
-            layout.caption = "Camera Runner: \(score)"
-            layout.subcaption = "Pinch to jump. Beat it if you can."
+            layout.caption = "\(who) scored \(score)"
+            layout.subcaption = "Beat \(score) to win"
+            layout.trailingCaption = "GO"
         }
-        layout.trailingCaption = "▶︎"
-        // The banner: dino course, the sender's runner, giant score.
+        // The banner is the widget: crown on a win, X on a loss.
         let face = UserDefaults.standard.data(forKey: "whim.runner.avatar").flatMap(UIImage.init(data:))
-        let banner = RunnerCardBanner(
-            big: "\(target)",
-            label: won == true ? "NEW CHAMP" : won == false ? "CROWN HOLDS" : "CAMERA RUNNER",
-            face: face,
-            crowned: won == true)
+        let outcome: RunnerResultWidget.Outcome = won == true ? .won : won == false ? .lost : .challenge
+        let banner = RunnerCardBanner(score: score, versus: challenge, face: face, outcome: outcome)
         let renderer = ImageRenderer(content: banner)
         renderer.scale = 3
         layout.image = renderer.uiImage
@@ -325,7 +346,7 @@ class MessagesViewController: MSMessagesAppViewController, WKNavigationDelegate 
         let message = MSMessage(session: session)
         message.url = comps.url
         message.layout = layout
-        message.summaryText = "A Camera Runner challenge"
+        message.summaryText = layout.caption
         conversation.insert(message)
         requestPresentationStyle(.compact)
     }
