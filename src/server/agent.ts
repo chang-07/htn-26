@@ -33,7 +33,7 @@ import { findMatches } from "./tools/match";
 import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { actProceduralGame, isProceduralGame, newProceduralGame, viewProceduralGame, type ProceduralAction, type ProceduralGameState } from "./procedural-game";
-import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameSurface, type PendingRoute } from "./game-routing";
+import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameRoute, type GameSurface, type PendingRoute } from "./game-routing";
 import { shouldBuildWebGame } from "./game-web-runtime";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
@@ -1872,7 +1872,7 @@ export class PlanAgent extends Agent<Env, PlanState> {
     }
     const route = await classifyGamePrompt(this.env, prompt);
     // Generated web games: named/board games and explicit multiplayer asks.
-    if (shouldBuildWebGame(prompt, route)) return this.gameWebCreate(prompt);
+    if (shouldBuildWebGame(prompt, route)) return this.gameWebCreate(prompt, route);
     if (route.status !== "accepted") return this.pendingGamePrompt(prompt, route);
     return this.createProceduralGame(prompt, route, creator, creatorName);
   }
@@ -1885,9 +1885,10 @@ export class PlanAgent extends Agent<Env, PlanState> {
    * referees nothing — shared play goes through the dumb revisioned state
    * blob, and anything with real stakes stays on the fixed engines.
    */
-  async gameWebCreate(prompt: string): Promise<GameCreateResponse> {
+  async gameWebCreate(prompt: string, route: GameRoute): Promise<GameCreateResponse> {
     const id = crypto.randomUUID().slice(0, 12);
     const title = prompt.trim().slice(0, 48);
+    this.note("info", "game_web.routed", { id, route: route.status, confidence: route.confidence });
     this.ctx.waitUntil(
       this.buildWebGame(id, prompt).catch(async (err) => {
         this.note("warn", "game_web.failed", errorFields(err));
