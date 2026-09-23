@@ -34,7 +34,7 @@ import { searchTrack } from "./tools/music";
 import { GameSpecZ, advance as gameAdvance, answer as gameAnswer, bjHit, bjStand, generateGame, joinGame, newGame, roundComplete, view as gameView, type GameSpec, type GameState } from "./game";
 import { actProceduralGame, isProceduralGame, newProceduralGame, viewProceduralGame, type ProceduralAction, type ProceduralGameState } from "./procedural-game";
 import { GAME_SURFACES, classifyGamePrompt, generateProceduralDefinition, type AcceptedRoute, type CopyRiskRoute, type GameRoute, type GameSurface, type PendingRoute } from "./game-routing";
-import { shouldBuildWebGame } from "./game-web-runtime";
+import { requiresMultiplayerRuntime, shouldBuildWebGame } from "./game-web-runtime";
 import { ANSWER_RELAY_SECONDS, askText, declinedText, expiredText, INTRO_TTL_MS, MAX_PENDING_PER_ASKER, openingText, type Candidate, type Intro } from "./intros";
 import { RunRecorder } from "./runs";
 import { startConcurrent } from "./tool-concurrency";
@@ -1900,30 +1900,45 @@ export class PlanAgent extends Agent<Env, PlanState> {
 
   private async buildWebGame(id: string, prompt: string) {
     const { client, model } = llmFor(this.env);
-    const res = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: `You build complete, playable, single-file HTML5 games for a group iMessage chat. Output ONLY the HTML document — no markdown fences, no commentary.
+    const system = `You build complete, playable, single-file HTML5 games for a group iMessage chat. Output ONLY the HTML document — no markdown fences, no commentary.
 
 MULTIPLAYER (required unless the game is strictly solo like solitaire):
 A \`window.WHIM\` runtime is already injected. You MUST use it for any game where friends compete or take turns on their own phones:
 - await WHIM.ready() on load — joins the lobby with WHIM.me as this player's name
-- WHIM.players() — everyone who opened the game in this chat
+- WHIM.players() — players recently active in this game
 - WHIM.myId() — this player's stable id; compare ids for turn ownership and scores, never names (two players can share a name)
-- WHIM.get() / WHIM.game() — read shared state; WHIM.setGame(obj) — save full game state after every move
+- WHIM.get() / WHIM.game() — read shared state; WHIM.updateGame(reducer) — atomically update shared game state after every move
 - WHIM.onRemote(fn) — fires whenever shared state changes, including your own saves; re-render from it, never write from it (polling is already running)
-Store turn order, board, scores, and winner inside WHIM.setGame({ ... }). Show a lobby listing connected players before start when turn-based. Highlight whose turn it is. End with a clear winner using player names from WHIM.players().
+Keep the reducer pure: it receives the latest game state and this player, returns the next state, and is safely re-run if another phone writes at the same time. Re-check the turn owner inside the reducer and return undefined when this move is no longer valid. Never replace shared game state using a snapshot captured before the tap. Store turn order, board, scores, and winner inside WHIM.game(). Show a lobby listing currently connected players before start when turn-based. Highlight whose turn it is. End with a clear winner using player names from WHIM.players().
 
-Hard rules: everything inline (CSS and JS), no external resources, mobile-first 390px touch UI, <title> naming the game, on-screen how-to-play, play-again button. Polished: bold colors, big touch targets. Layout: every card/tile/piece has explicit width AND height (cards ≥48×68px) with visible labels — never empty collapsible elements.`,
+Hard rules: everything inline (CSS and JS), no external resources, mobile-first 390px touch UI, <title> naming the game, on-screen how-to-play, play-again button. Polished: bold colors, big touch targets. Layout: every card/tile/piece has explicit width AND height (cards ≥48×68px) with visible labels — never empty collapsible elements.`;
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system" as const, content: system },
+      { role: "user" as const, content: `Build this game: ${prompt}` },
+    ];
+    const generate = () => client.chat.completions.create({ model, messages });
+    const asHtml = (content: string) => content.trim().replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
+    const hasMultiplayerWiring = (html: string) =>
+      /\bWHIM\s*\.\s*ready\s*\(/i.test(html) &&
+      /\bWHIM\s*\.\s*updateGame\s*\(/i.test(html) &&
+      /\bWHIM\s*\.\s*onRemote\s*\(/i.test(html);
+
+    let res = await generate();
+    let html = asHtml(res.choices[0]?.message?.content ?? "");
+    const needsMultiplayer = requiresMultiplayerRuntime(prompt);
+    if ((!/<html[\s>]/i.test(html) || (needsMultiplayer && !hasMultiplayerWiring(html))) && messages.length === 2) {
+      messages.push(
+        { role: "assistant", content: html || "(The previous response was empty.)" },
+        {
+          role: "user",
+          content: "Rewrite the complete HTML game. The previous version cannot be accepted because it either was not a full HTML document or omitted multiplayer wiring. This game's multiplayer code must call await WHIM.ready(), use WHIM.updateGame(current => next) for moves, and subscribe with WHIM.onRemote(render). Return only the corrected complete HTML document.",
         },
-        { role: "user", content: `Build this game: ${prompt}` },
-      ],
-    });
-    let html = (res.choices[0]?.message?.content ?? "").trim();
-    html = html.replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
+      );
+      res = await generate();
+      html = asHtml(res.choices[0]?.message?.content ?? "");
+    }
     if (!/<html[\s>]/i.test(html)) throw new Error("The generator returned no HTML document");
+    if (needsMultiplayer && !hasMultiplayerWiring(html)) throw new Error("The generator omitted required multiplayer state handling");
     const title = (html.match(/<title>([^<]{1,64})<\/title>/i)?.[1] ?? prompt.slice(0, 48)).trim();
     this.storeWebGame(id, html, title);
     await sendWebGameCard(this.env, this.name, this.name, id, title).catch(() => undefined);
@@ -1956,8 +1971,12 @@ Hard rules: everything inline (CSS and JS), no external resources, mobile-first 
 
   /** Compare-and-swap only — this referees concurrency, never rules. */
   async gameWebPutState(id: string, expectedRevision: number, state: unknown): Promise<{ ok: boolean; revision: number; state: unknown } | null> {
-    const current = await this.gameWebState(id);
-    if (!current) return null;
+    // Keep the read/check/write synchronous inside the Durable Object. An
+    // await between reading and setting metadata lets two requests both pass
+    // the revision check and overwrite one another.
+    const raw = this.getMeta(`game_web_state:${id}`);
+    if (!raw) return null;
+    const current = JSON.parse(raw) as { revision: number; state: unknown };
     if (current.revision !== expectedRevision) return { ok: false, ...current };
     const next = { revision: current.revision + 1, state };
     this.setMeta(`game_web_state:${id}`, JSON.stringify(next));
@@ -3119,7 +3138,7 @@ this.rememberCardId(id);
       case "add_song": {
         const { title, artist, who } = parseToolArgs("add_song", rawArgs);
         const found = await searchTrack(title, artist);
-        if (!found) return `iTunes has nothing for "${title}"${artist ? ` by ${artist}` : ""}. Ask for another spelling or a different song.`;
+        if (!found) return `Apple Music has no close match for "${title}"${artist ? ` by ${artist}` : ""}. Ask for another spelling or a different song.`;
         const playlist = [...(this.state.playlist ?? [])];
         const key = (t: { title: string; artist: string }) => `${t.title}|${t.artist}`.toLowerCase();
         if (playlist.some((t) => key(t) === key(found))) return `${found.title} — ${found.artist} is already on the playlist (${playlist.length} tracks).`;

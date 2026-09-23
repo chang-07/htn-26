@@ -189,15 +189,15 @@ struct PlaylistView: View {
             VStack(alignment: .leading, spacing: 10) {
                 header
                 ForEach(tracks) { t in
-                    Button { toggle(t) } label: {
-                        HStack(spacing: 10) {
-                            AsyncImage(url: t.artUrl.flatMap(URL.init)) { img in
-                                img.resizable().scaledToFill()
-                            } placeholder: {
-                                Color(uiColor: .secondarySystemFill)
-                            }
-                            .frame(width: 42, height: 42)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    HStack(spacing: 10) {
+                        AsyncImage(url: t.artUrl.flatMap(URL.init)) { img in
+                            img.resizable().scaledToFill()
+                        } placeholder: {
+                            Color(uiColor: .secondarySystemFill)
+                        }
+                        .frame(width: 42, height: 42)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        Button { toggle(t) } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(t.title).font(.subheadline.weight(.medium)).lineLimit(1).foregroundStyle(.primary)
                                 Text(t.artist + (t.addedBy.map { " · added by \($0)" } ?? ""))
@@ -208,13 +208,23 @@ struct PlaylistView: View {
                                 .font(.title2)
                                 .foregroundStyle(t.previewUrl == nil ? Color(uiColor: .tertiaryLabel) : Color.accentColor)
                         }
-                        .padding(10)
-                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .buttonStyle(.plain)
+                        .disabled(t.previewUrl == nil)
+                        if let musicURL = appleMusicURL(for: t) {
+                            Link(destination: musicURL) {
+                                Image(systemName: "arrow.up.right")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 34, height: 34)
+                                    .background(Color.accentColor.opacity(0.1), in: Circle())
+                            }
+                            .accessibilityLabel("Open \(t.title) in Apple Music")
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(t.previewUrl == nil)
+                    .padding(10)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                Text("30-second previews via iTunes. Name a song in the chat to add it.")
+                Text("Tap play for a 30-second preview, or open the full track in Apple Music. Name a song in the chat to add it.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .padding(16)
@@ -232,5 +242,15 @@ struct PlaylistView: View {
         player = AVPlayer(url: url)
         player?.play()
         playingId = t.id
+    }
+
+    private func appleMusicURL(for track: Track) -> URL? {
+        if let direct = track.appleMusicUrl.flatMap(URL.init) { return direct }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "music.apple.com"
+        components.path = "/ca/search"
+        components.queryItems = [URLQueryItem(name: "term", value: "\(track.title) \(track.artist)")]
+        return components.url
     }
 }

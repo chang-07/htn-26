@@ -31,6 +31,7 @@ struct Track: Codable, Equatable, Identifiable {
     let artist: String
     let artUrl: String?
     let previewUrl: String?
+    let appleMusicUrl: String?
     let addedBy: String?
     var id: String { title + "|" + artist }
 }

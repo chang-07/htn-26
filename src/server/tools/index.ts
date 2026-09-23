@@ -304,7 +304,7 @@ const descriptions: Record<ToolName, string> = {
   answer_intro:
     "Record this person's yes or no to the pending introduction shown in your context. Call it FIRST, before send_message. On yes a group chat is opened for the two of them.",
   add_song:
-    "Add a song someone named to the group playlist. It is looked up on iTunes, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
+    "Add a song someone named to the group playlist. It is matched against Apple's music catalog, so pass the title (and artist when given) as they said it — never invent songs nobody asked for. The playlist card in the thread updates on its own.",
   show_playlist:
     "Post (or repost) the playlist card so the group can open the player. Use when someone asks to see or play the playlist and there is no card in recent view.",
   search_flights:

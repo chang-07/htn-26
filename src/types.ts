@@ -100,13 +100,15 @@ export type PlanState = {
   version: number;
 };
 
-/** One song on the group playlist. Preview and art come from the iTunes Search API. */
+/** One song on the group playlist. Catalog details come from Apple's Search API. */
 export type Track = {
   title: string;
   artist: string;
   artUrl?: string;
   /** 30-second m4a preview; some tracks have none. */
   previewUrl?: string;
+  /** Apple Music/iTunes catalog page for the full track. */
+  appleMusicUrl?: string;
   /** Display name of whoever asked for it. */
   addedBy?: string;
 };
