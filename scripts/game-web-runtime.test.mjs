@@ -27,7 +27,9 @@ test("shouldBuildWebGame routes copy-risk and multiplayer board games to web", (
   assert.equal(shouldBuildWebGame("uno for our group", { status: "copy_risk" }), true);
   assert.equal(shouldBuildWebGame("two player tic tac toe with friends", { status: "needs_choice" }), true);
   assert.equal(shouldBuildWebGame("quick trivia about cats", { status: "needs_choice" }), false);
-  assert.equal(shouldBuildWebGame("chess with friends", { status: "accepted" }), false);
+  // A board game cannot live on a quiz surface: it goes web even when the
+  // router confidently accepted a native route.
+  assert.equal(shouldBuildWebGame("chess with friends", { status: "accepted" }), true);
 });
 
 test("runtime defines the lobby, save, and poll entry points", () => {
@@ -45,7 +47,10 @@ test("runtime reads the player from the query and caps it at 32 characters", () 
 
 test("runtime keys the lobby on a stable id, using pid when the phone supplies one", () => {
   assert.match(WHIM_MULTIPLAYER_RUNTIME, /params\.get\("pid"\)/);
-  assert.match(WHIM_MULTIPLAYER_RUNTIME, /var myId = idFor\(me\)/);
+  // pid comes from the phone (stable per device); the random fallback is for
+  // bare-browser opens only. Identity never derives from the display name —
+  // two players can share one.
+  assert.match(WHIM_MULTIPLAYER_RUNTIME, /var myId = pid \|\| randomPid\(\)/);
   assert.match(WHIM_MULTIPLAYER_RUNTIME, /p\.id === myId/);
   assert.doesNotMatch(WHIM_MULTIPLAYER_RUNTIME, /p\.name === me/);
 });
