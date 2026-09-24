@@ -291,6 +291,8 @@ export class BookingWorkflow extends AgentWorkflow<PlanAgent, BookingParams | Av
         page,
         {
           mode: "book",
+          // Calendars and time grids are drawn, not labelled: the element list alone misreads them.
+          vision: true,
           dryRun,
           startUrl: params.url,
           maxSteps: 24,
