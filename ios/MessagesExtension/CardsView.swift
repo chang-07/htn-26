@@ -49,10 +49,17 @@ struct CartListView: View {
     private var compact: some View {
         let unpaid = carts.filter { $0.paidBy == nil }.count
         let focused = carts.first { $0.shop == focusShop } ?? carts[0]
-        return VStack(alignment: .leading, spacing: 10) {
-            headerRow(unpaid: unpaid, total: focused.total)
-            Text(focused.shop).font(.title3.weight(.bold))
-            ForEach(focused.lines.prefix(2), id: \.title) { line in
+        return VStack(alignment: .leading, spacing: 8) {
+            Spacer(minLength: 0)
+            HStack(alignment: .firstTextBaseline) {
+                Text(focused.shop).font(.title3.weight(.bold)).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(focused.total).font(.title3.weight(.bold)).monospacedDigit()
+            }
+            Text(unpaid == 0 ? "All paid" : "\(focused.lines.reduce(0) { $0 + $1.quantity }) items · shipping and tax at checkout")
+                .font(.footnote).foregroundStyle(.secondary)
+            Divider()
+            ForEach(focused.lines.prefix(3), id: \.title) { line in
                 HStack(spacing: 8) {
                     Text("\(line.quantity)×").font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                     Text(line.title).font(.subheadline.weight(.medium)).lineLimit(1)
@@ -61,8 +68,8 @@ struct CartListView: View {
                 }
             }
             HStack {
-                if focused.lines.count > 2 {
-                    Text("+\(focused.lines.count - 2) more").font(.footnote).foregroundStyle(.secondary)
+                if focused.lines.count > 3 {
+                    Text("+\(focused.lines.count - 3) more").font(.footnote).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if let paidBy = focused.paidBy {
@@ -70,12 +77,13 @@ struct CartListView: View {
                         .font(.footnote.weight(.semibold)).foregroundStyle(.green)
                 } else {
                     Label("Tap to check out", systemImage: "hand.tap")
-                        .font(.footnote.weight(.semibold)).foregroundStyle(Color.accentColor)
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(Color.accentColor)
                 }
             }
+            Spacer(minLength: 0)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private var expanded: some View {
