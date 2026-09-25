@@ -69,10 +69,16 @@ struct TicketView: View {
             WhimHeader(context: "", chipText: statusLabel, chipTint: statusTint,
                        chipVisible: presentation.isTranscript)
             Text(plan.title.isEmpty ? "No plan yet" : plan.title)
-                .font(.system(presentation.isTranscript ? .title2 : .title3, design: .rounded).weight(.bold))
+                .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
-            if !plan.options.isEmpty {
+                .lineLimit(presentation.isTranscript ? 2 : nil)
+            if !plan.options.isEmpty, presentation.isTranscript {
+                // The bubble has room for the options or for giant numbers, not both.
+                Text("\(votes) \(votes == 1 ? "vote" : "votes") · \(plan.options.count) options")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else if !plan.options.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 18) {
                     HeroStat(value: "\(votes)", label: votes == 1 ? "vote" : "votes")
                     HeroStat(value: "\(plan.options.count)", label: plan.options.count == 1 ? "option" : "options", tint: .secondary)
@@ -98,26 +104,32 @@ struct TicketView: View {
 
     private func compact(_ plan: PlanState) -> some View {
         let votes = plan.counts.values.reduce(0, +)
-        return VStack(alignment: .leading, spacing: 10) {
+        let shown = 3
+        return VStack(alignment: .leading, spacing: 8) {
             header(plan, votes: votes)
             if !plan.options.isEmpty {
                 Divider()
-                ForEach(plan.options.prefix(2)) { option in
-                    HStack(spacing: 10) {
+                ForEach(plan.options.prefix(shown)) { option in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Image(systemName: plan.chosenOptionId == option.id ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(plan.chosenOptionId == option.id ? .green : Color(uiColor: .tertiaryLabel))
-                            .font(.title3)
-                        Text(option.title)
-                            .font(.body.weight(.semibold))
-                            .lineLimit(1)
+                            .font(.body)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(option.title)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                            if let sub = option.subtitle, !sub.isEmpty {
+                                Text(sub).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
                         Spacer(minLength: 6)
                         voteBadge(plan.counts[option.id] ?? 0)
                     }
                 }
                 Spacer(minLength: 0)
                 HStack {
-                    if plan.options.count > 2 {
-                        Text("+\(plan.options.count - 2) more")
+                    if plan.options.count > shown {
+                        Text("+\(plan.options.count - shown) more")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }

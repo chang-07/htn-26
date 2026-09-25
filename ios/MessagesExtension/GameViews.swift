@@ -226,7 +226,8 @@ struct TriviaGameView: View {
     /// The bubble leads with the server-rendered ticket art; the text layout
     /// stands in while it loads (or if it never arrives), so it's never blank.
     private func compact(_ g: GameView_) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
+            Spacer(minLength: 0)
             CardImage(url: store.previewURL) {
                 compactText(g)
             }
@@ -235,11 +236,12 @@ struct TriviaGameView: View {
                     .font(.subheadline.weight(.semibold)).foregroundStyle(.orange)
             } else {
                 Label("Tap to play", systemImage: "hand.tap")
-                    .font(.footnote.weight(.semibold)).foregroundStyle(Color.accentColor)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.accentColor)
             }
+            Spacer(minLength: 0)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private func compactText(_ g: GameView_) -> some View {
@@ -249,8 +251,13 @@ struct TriviaGameView: View {
             case "done": WhimHeader(context: "Game", chipText: "Final", chipTint: .orange)
             default: WhimHeader(context: "Game", chipText: nil)
             }
-            Text(g.title).font(.system(.title3, design: .rounded).weight(.bold)).lineLimit(2)
-            if g.phase == "round" || g.phase == "reveal" { ProgressDots(total: g.totalRounds, current: g.round) }
+            Text(g.title).font(.system(.title2, design: .rounded).weight(.bold)).lineLimit(2)
+            if g.phase == "round" || g.phase == "reveal" {
+                HStack(spacing: 8) {
+                    ProgressDots(total: g.totalRounds, current: g.round)
+                    Text("Round \(g.round) of \(g.totalRounds)").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
